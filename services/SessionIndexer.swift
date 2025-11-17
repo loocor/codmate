@@ -45,6 +45,11 @@ fileprivate actor DiskCache {
       try? data.write(to: url, options: .atomic)
     }
   }
+
+  func resetAll() {
+    map.removeAll()
+    try? FileManager.default.removeItem(at: url)
+  }
 }
 
 actor SessionIndexer {
@@ -174,6 +179,12 @@ actor SessionIndexer {
     cache.removeAllObjects()
   }
 
+  /// Clear both in-memory and on-disk session index caches.
+  func resetAllCaches() async {
+    cache.removeAllObjects()
+    await diskCache.resetAll()
+  }
+
   // MARK: - Private
 
   private func cachedSummary(for key: NSURL, modificationDate: Date?) -> SessionSummary? {
@@ -192,10 +203,9 @@ actor SessionIndexer {
   }
 
   nonisolated private func lastUpdatedTimestamp(for url: URL, modificationDate: Date?) -> Date? {
-    if let tail = readTailTimestamp(url: url) {
-      return tail
-    }
-    return modificationDate
+    // Updated timestamp is derived from JSONL content only; ignore file
+    // modification times to avoid treating non-session edits as activity.
+    return readTailTimestamp(url: url)
   }
 
   private func sessionFileURLs(at root: URL, scope: SessionLoadScope) throws -> [URL] {
@@ -501,12 +511,6 @@ actor SessionIndexer {
       if builder.lastUpdatedAt == nil || (builder.lastUpdatedAt ?? .distantPast) < tailDate {
         builder.seedLastUpdated(tailDate)
       }
-    } else if builder.lastUpdatedAt == nil {
-      // Final fallback: use file system modification date if everything else failed
-      let attrs = try? fileManager.attributesOfItem(atPath: url.path)
-      if let modDate = attrs?[.modificationDate] as? Date {
-        builder.seedLastUpdated(modDate)
-      }
     }
 
     if let result = builder.build(for: url) { return result }
@@ -542,7 +546,6 @@ actor SessionIndexer {
     let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
     var builder = SessionSummaryBuilder()
     if let size = values.fileSize { builder.setFileSize(UInt64(size)) }
-    if let m = values.contentModificationDate { builder.seedLastUpdated(m) }
     if let tailDate = readTailTimestamp(url: url) { builder.seedLastUpdated(tailDate) }
     guard let base = try buildSummaryFull(for: url, builder: &builder) else { return nil }
 

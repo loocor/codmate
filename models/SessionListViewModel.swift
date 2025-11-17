@@ -2500,6 +2500,14 @@ extension SessionListViewModel {
     scheduleApplyFilters()
   }
 
+  /// Fully rebuild the session index (in-memory + on-disk caches) by
+  /// clearing cached summaries and forcing a full refresh from JSONL logs.
+  func rebuildSessionIndex() async {
+    await indexer.resetAllCaches()
+    enrichmentSnapshots.removeAll()
+    await refreshSessions(force: true)
+  }
+
   /// Force refresh coverage for current view scope (Cmd+R)
   func forceRefreshCurrentScope() async {
     let projectPath = selectedPath

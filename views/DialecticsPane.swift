@@ -10,6 +10,20 @@ struct DialecticsPane: View {
     @State private var ripgrepReport: SessionRipgrepStore.Diagnostics?
     @State private var ripgrepLoading = false
     @State private var ripgrepRebuilding = false
+    @State private var sessionIndexRebuilding = false
+    @State private var activeRebuildAlert: RebuildAlert?
+
+    enum RebuildAlert: Identifiable {
+        case ripgrepCoverage
+        case sessionIndex
+
+        var id: String {
+            switch self {
+            case .ripgrepCoverage: return "ripgrepCoverage"
+            case .sessionIndex: return "sessionIndex"
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -89,18 +103,27 @@ struct DialecticsPane: View {
                                 Label("Refresh Ripgrep Stats", systemImage: "arrow.clockwise")
                             }
                             .buttonStyle(.bordered)
-                            .disabled(ripgrepLoading || ripgrepRebuilding)
-                            if ripgrepLoading {
+                            .disabled(ripgrepLoading || ripgrepRebuilding || sessionIndexRebuilding)
+                            if ripgrepLoading || ripgrepRebuilding || sessionIndexRebuilding {
                                 ProgressView().controlSize(.small)
                             }
                             Button {
-                                Task { await rebuildRipgrepIndexes() }
+                                activeRebuildAlert = .ripgrepCoverage
                             } label: {
                                 Label("Rebuild Coverage", systemImage: "hammer")
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(.orange)
-                            .disabled(ripgrepRebuilding)
+                            .disabled(ripgrepRebuilding || sessionIndexRebuilding)
+
+                            Button {
+                                activeRebuildAlert = .sessionIndex
+                            } label: {
+                                Label("Rebuild Session Index", systemImage: "arrow.counterclockwise.circle")
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(.orange)
+                            .disabled(sessionIndexRebuilding || ripgrepRebuilding)
                         }
                     }
                 }
@@ -286,6 +309,32 @@ struct DialecticsPane: View {
             }
             .task { await vm.runAll(preferences: preferences) }
             .task { await refreshRipgrepDiagnostics() }
+            .alert(item: $activeRebuildAlert) { alert in
+            switch alert {
+            case .ripgrepCoverage:
+                return Alert(
+                    title: Text("Rebuild Ripgrep Coverage?"),
+                    message: Text(
+                        "This will clear all cached ripgrep coverage, tool, and token indexes and recompute them from your current Codex and Claude session logs. It may temporarily increase CPU usage, but it does not modify any session files, notes, or projects."
+                    ),
+                    primaryButton: .destructive(Text("Rebuild")) {
+                        Task { await rebuildRipgrepIndexes() }
+                    },
+                    secondaryButton: .cancel()
+                )
+            case .sessionIndex:
+                return Alert(
+                    title: Text("Rebuild Session Index?"),
+                    message: Text(
+                        "This will clear in-memory and on-disk session index caches and rebuild them by re-parsing all session JSONL files under the configured sessions root. It may take time for large histories but does not delete or change any session logs, notes, or projects. Use this if timestamps or statistics look incorrect after changing how sessions are indexed."
+                    ),
+                    primaryButton: .destructive(Text("Rebuild")) {
+                        Task { await rebuildSessionIndex() }
+                    },
+                    secondaryButton: .cancel()
+                )
+            }
+        }
     }
 
     // Helper function to create settings card
@@ -350,5 +399,12 @@ extension DialecticsPane {
         await listViewModel.rebuildRipgrepIndexes()
         await refreshRipgrepDiagnostics()
         await MainActor.run { ripgrepRebuilding = false }
+    }
+
+    private func rebuildSessionIndex() async {
+        await MainActor.run { sessionIndexRebuilding = true }
+        await listViewModel.rebuildSessionIndex()
+        await refreshRipgrepDiagnostics()
+        await MainActor.run { sessionIndexRebuilding = false }
     }
 }
