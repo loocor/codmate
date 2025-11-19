@@ -106,10 +106,13 @@ extension GitChangesPanel {
                             revealInFinder(path: dir, isDirectory: true)
                         }
 #endif
-                        Divider()
-                        Button("Discard Folder Changes…", role: .destructive) {
-                            pendingDiscardPaths = allPaths
-                            showDiscardAlert = true
+                        if scope == .unstaged {
+                            Divider()
+                            Button("Discard Folder Changes…", role: .destructive) {
+                                pendingDiscardPaths = allPaths
+                                pendingDiscardIncludesStaged = false
+                                showDiscardAlert = true
+                            }
                         }
                     }
                 }
@@ -123,6 +126,7 @@ extension GitChangesPanel {
                 let path = node.fullPath ?? node.name
                 let isSelected = (vm.selectedPath == path) && ((scope == .staged && vm.selectedSide == .staged) || (scope == .unstaged && vm.selectedSide == .unstaged))
                 let hoverKey = scopedHoverKey(for: path, scope: scope)
+                let quickActionCount = (scope == .staged ? 2 : 3)
                 HStack(spacing: 0) {
                     // Indentation guides (vertical lines)
                     ZStack(alignment: .leading) {
@@ -148,9 +152,12 @@ extension GitChangesPanel {
                             .lineLimit(1)
                         Spacer(minLength: 0)
                     }
-                    .padding(.trailing, (hoverFilePath == hoverKey)
-                        ? (statusBadgeWidth + trailingPad + quickActionWidth*3 + hoverButtonSpacing*2)
-                        : (statusBadgeWidth + trailingPad))
+                    .padding(
+                        .trailing,
+                        (hoverFilePath == hoverKey)
+                            ? (statusBadgeWidth + trailingPad + quickActionWidth * CGFloat(quickActionCount) + hoverButtonSpacing * CGFloat(quickActionCount - 1))
+                            : (statusBadgeWidth + trailingPad)
+                    )
                     .overlay(alignment: .trailing) {
                             HStack(spacing: hoverButtonSpacing) {
                             if hoverFilePath == hoverKey {
@@ -164,18 +171,21 @@ extension GitChangesPanel {
                                 }
                                 .frame(width: quickActionWidth, height: quickActionHeight)
 
-                                Button(action: {
-                                    pendingDiscardPaths = [path]
-                                    showDiscardAlert = true
-                                }) {
-                                    Image(systemName: "arrow.uturn.backward.circle")
-                                        .foregroundStyle((hoverRevertPath == hoverKey) ? Color.red : Color.secondary)
+                                if scope == .unstaged {
+                                    Button(action: {
+                                        pendingDiscardPaths = [path]
+                                        pendingDiscardIncludesStaged = false
+                                        showDiscardAlert = true
+                                    }) {
+                                        Image(systemName: "arrow.uturn.backward.circle")
+                                            .foregroundStyle((hoverRevertPath == hoverKey) ? Color.red : Color.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .onHover { inside in
+                                        if inside { hoverRevertPath = hoverKey } else if hoverRevertPath == hoverKey { hoverRevertPath = nil }
+                                    }
+                                    .frame(width: quickActionWidth, height: quickActionHeight)
                                 }
-                                .buttonStyle(.plain)
-                                .onHover { inside in
-                                    if inside { hoverRevertPath = hoverKey } else if hoverRevertPath == hoverKey { hoverRevertPath = nil }
-                                }
-                                .frame(width: quickActionWidth, height: quickActionHeight)
 
                                 Button(action: {
                                     Task {
@@ -232,10 +242,13 @@ extension GitChangesPanel {
 #if canImport(AppKit)
                     Button("Reveal in Finder") { revealInFinder(path: path, isDirectory: false) }
 #endif
-                    Divider()
-                    Button("Discard Changes…", role: .destructive) {
-                        pendingDiscardPaths = [path]
-                        showDiscardAlert = true
+                    if scope == .unstaged {
+                        Divider()
+                        Button("Discard Changes…", role: .destructive) {
+                            pendingDiscardPaths = [path]
+                            pendingDiscardIncludesStaged = false
+                            showDiscardAlert = true
+                        }
                     }
                 }
             }

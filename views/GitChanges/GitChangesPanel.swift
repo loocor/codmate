@@ -54,6 +54,7 @@ struct GitChangesPanel: View {
   @State var hoverStagedHeader: Bool = false
   @State var hoverUnstagedHeader: Bool = false
   @State var pendingDiscardPaths: [String] = []
+  @State var pendingDiscardIncludesStaged: Bool = false
   @State var showDiscardAlert: Bool = false
   @State var showCommitConfirm: Bool = false
   // Graph view toggle + model
@@ -141,15 +142,26 @@ struct GitChangesPanel: View {
     .alert("Discard changes?", isPresented: $showDiscardAlert) {
       Button("Discard", role: .destructive) {
         let paths = pendingDiscardPaths
+        let includeStaged = pendingDiscardIncludesStaged
         pendingDiscardPaths = []
-        Task { await vm.discard(paths: paths) }
+        pendingDiscardIncludesStaged = true
+        Task { await vm.discard(paths: paths, includeStaged: includeStaged) }
       }
       Button("Cancel", role: .cancel) {
         pendingDiscardPaths = []
+        pendingDiscardIncludesStaged = true
       }
     } message: {
       let count = pendingDiscardPaths.count
-      Text("This will permanently discard changes for \(count) file\(count == 1 ? "" : "s").")
+      if pendingDiscardIncludesStaged {
+        Text(
+          "This will permanently discard staged and unstaged changes for \(count) file\(count == 1 ? "" : "s")."
+        )
+      } else {
+        Text(
+          "This will permanently discard unstaged changes for \(count) file\(count == 1 ? "" : "s"). Staged changes (if any) will be preserved."
+        )
+      }
     }
     .confirmationDialog(
       "Commit changes?",

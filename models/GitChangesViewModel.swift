@@ -364,17 +364,49 @@ final class GitChangesViewModel: ObservableObject {
     }
 
     // MARK: - Discard
-    func discard(paths: [String]) async {
+    // includeStaged=false matches VS Code Git Graph semantics:
+    // only discard unstaged/worktree changes, preserving any staged changes.
+    func discard(paths: [String], includeStaged: Bool = false) async {
         guard let repo = self.repo else { return }
         let pathSet = Set(paths)
         let map: [String: GitService.Change] = Dictionary(uniqueKeysWithValues: changes.map { ($0.path, $0) })
-        let untracked = pathSet.filter { (map[$0]?.worktree == .untracked) }
-        let tracked = pathSet.subtracting(untracked)
-        if !tracked.isEmpty {
-            _ = await service.discardTracked(in: repo, paths: Array(tracked))
+
+        var untracked: [String] = []
+        var trackedWorktreeOnly: [String] = []
+        var trackedFullReset: [String] = []
+
+        for p in pathSet {
+            guard let change = map[p] else { continue }
+            if change.worktree == .untracked {
+                untracked.append(p)
+                continue
+            }
+            // Tracked file
+            if includeStaged {
+                // Discard both staged and unstaged changes
+                if change.staged != nil || change.worktree != nil {
+                    trackedFullReset.append(p)
+                }
+            } else {
+                // Discard only unstaged/worktree changes, keep any staged state
+                if change.worktree != nil {
+                    trackedWorktreeOnly.append(p)
+                }
+            }
         }
+
+        if includeStaged {
+            if !trackedFullReset.isEmpty {
+                _ = await service.discardTracked(in: repo, paths: trackedFullReset)
+            }
+        } else {
+            if !trackedWorktreeOnly.isEmpty {
+                _ = await service.discardWorktree(in: repo, paths: trackedWorktreeOnly)
+            }
+        }
+
         if !untracked.isEmpty {
-            _ = await service.cleanUntracked(in: repo, paths: Array(untracked))
+            _ = await service.cleanUntracked(in: repo, paths: untracked)
         }
         await refreshStatus()
     }

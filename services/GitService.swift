@@ -293,6 +293,13 @@ actor GitService {
         return out?.exitCode ?? -1
     }
 
+    // Discard only worktree (unstaged) changes for specific paths, preserving the index.
+    func discardWorktree(in repo: Repo, paths: [String]) async -> Int32 {
+        guard !paths.isEmpty else { return 0 }
+        let out = try? await runGit(["restore", "--worktree", "--"] + paths, cwd: repo.root)
+        return out?.exitCode ?? -1
+    }
+
     // Discard tracked changes (both index and worktree) for specific paths
     func discardTracked(in repo: Repo, paths: [String]) async -> Int32 {
         guard !paths.isEmpty else { return 0 }
