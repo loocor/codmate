@@ -230,7 +230,7 @@ final class MCPServersViewModel: ObservableObject {
             }
             try await store.upsert(item)
             await loadServers()
-            await applyEnabledServersToCodex()
+            await applyEnabledServersToAllProviders()
             originalName = item.name
             isEditingExisting = true
             return true
@@ -244,7 +244,7 @@ final class MCPServersViewModel: ObservableObject {
         do {
             try await store.delete(name: name)
             await loadServers()
-            await applyEnabledServersToCodex()
+            await applyEnabledServersToAllProviders()
         } catch {
             errorMessage = "Failed to delete: \(error.localizedDescription)"
         }
@@ -362,7 +362,7 @@ final class MCPServersViewModel: ObservableObject {
             try await store.upsertMany(incoming)
             await loadServers()
             // Apply enabled servers into Codex config.toml
-            await applyEnabledServersToCodex()
+            await applyEnabledServersToAllProviders()
             // Reset import UI
             drafts = []
             importText = ""
@@ -384,7 +384,7 @@ final class MCPServersViewModel: ObservableObject {
             }
             try await store.setEnabled(name: server.name, enabled: enabled)
             await loadServers()
-            await applyEnabledServersToCodex()
+            await applyEnabledServersToAllProviders()
         } catch {
             errorMessage = "Failed to update: \(error.localizedDescription)"
         }
@@ -402,7 +402,7 @@ final class MCPServersViewModel: ObservableObject {
             }
             try await store.setCapabilityEnabled(name: server.name, capability: cap.name, enabled: enabled)
             await loadServers()
-            await applyEnabledServersToCodex()
+            await applyEnabledServersToAllProviders()
         } catch {
             errorMessage = "Failed to update: \(error.localizedDescription)"
         }
@@ -413,15 +413,22 @@ final class MCPServersViewModel: ObservableObject {
         // TODO: Integrate MCP Swift SDK handshake and tools discovery
         // For MVP, keep existing capabilities untouched.
         await loadServers()
-        await applyEnabledServersToCodex()
+        await applyEnabledServersToAllProviders()
     }
 
-private func applyEnabledServersToCodex() async {
+    private func applyEnabledServersToAllProviders() async {
         let list = await store.list()
+        
+        // 1. Codex
         let codex = CodexConfigService()
         try? await codex.applyMCPServers(list)
-        // Export to Claude Code user settings (~/.claude/settings.json)
+        
+        // 2. Claude Code (User settings export)
         try? await store.exportEnabledForClaudeConfig()
+        
+        // 3. Gemini CLI
+        let gemini = GeminiSettingsService()
+        try? await gemini.applyMCPServers(list)
     }
 }
 

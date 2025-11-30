@@ -77,6 +77,41 @@ actor GeminiSettingsService {
     try setValue(value, at: path)
   }
 
+  // MARK: - MCP Servers
+
+  func applyMCPServers(_ servers: [MCPServer]) throws {
+    var object = loadJSONObject()
+    let enabled = servers.filter { $0.enabled }
+    
+    if enabled.isEmpty {
+      object.removeValue(forKey: "mcpServers")
+    } else {
+      var mcpServers: JSONObject = [:]
+      for server in enabled {
+        var config: JSONObject = [:]
+        if let command = server.command {
+          config["command"] = command
+        }
+        if let args = server.args, !args.isEmpty {
+          config["args"] = args
+        }
+        if let env = server.env, !env.isEmpty {
+          config["env"] = env
+        }
+        if let url = server.url {
+          config["url"] = url
+        }
+        if let headers = server.headers, !headers.isEmpty {
+          config["headers"] = headers
+        }
+        mcpServers[server.name] = config
+      }
+      object["mcpServers"] = mcpServers
+    }
+    
+    try writeJSONObject(object)
+  }
+
   // MARK: - Internal helpers
 
   private func loadJSONObject() -> JSONObject {
