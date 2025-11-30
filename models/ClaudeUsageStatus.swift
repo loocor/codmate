@@ -11,6 +11,7 @@ struct ClaudeUsageStatus: Equatable {
     let weeklyUsedMinutes: Double?
     let weeklyWindowMinutes: Double
     let weeklyResetAt: Date?
+    let sessionExpiresAt: Date?
 
     init(
         updatedAt: Date,
@@ -22,7 +23,8 @@ struct ClaudeUsageStatus: Equatable {
         fiveHourResetAt: Date?,
         weeklyUsedMinutes: Double?,
         weeklyWindowMinutes: Double = 10_080,
-        weeklyResetAt: Date?
+        weeklyResetAt: Date?,
+        sessionExpiresAt: Date? = nil
     ) {
         self.updatedAt = updatedAt
         self.modelName = modelName
@@ -34,6 +36,7 @@ struct ClaudeUsageStatus: Equatable {
         self.weeklyUsedMinutes = weeklyUsedMinutes
         self.weeklyWindowMinutes = weeklyWindowMinutes
         self.weeklyResetAt = weeklyResetAt
+        self.sessionExpiresAt = sessionExpiresAt
     }
 
     private var contextProgress: Double? {
@@ -53,6 +56,15 @@ struct ClaudeUsageStatus: Equatable {
     private var weeklyProgress: Double? {
         guard let used = weeklyUsedMinutes, weeklyWindowMinutes > 0 else { return nil }
         return used / weeklyWindowMinutes
+    }
+
+    private var sessionProgress: Double? {
+        guard let expiresAt = sessionExpiresAt else { return nil }
+        let sessionDuration: TimeInterval = 8 * 3600 // 8 hours in seconds
+        let remaining = expiresAt.timeIntervalSince(updatedAt)
+        let elapsed = sessionDuration - remaining
+        let progress = elapsed / sessionDuration
+        return progress
     }
 
     func asProviderSnapshot() -> UsageProviderSnapshot {
@@ -94,6 +106,18 @@ struct ClaudeUsageStatus: Equatable {
             )
         )
 
+        metrics.append(
+            UsageMetricSnapshot(
+                kind: .sessionExpiry,
+                label: "Session (8h)",
+                usageText: sessionUsageText,
+                percentText: sessionPercentText,
+                progress: sessionProgress?.clamped01(),
+                resetDate: sessionExpiresAt,
+                fallbackWindowMinutes: 480 // 8 hours in minutes
+            )
+        )
+
         return UsageProviderSnapshot(
             provider: .claude,
             title: UsageProviderKind.claude.displayName,
@@ -120,8 +144,24 @@ struct ClaudeUsageStatus: Equatable {
     }
 
     private var fiveHourUsageText: String? {
-        guard let minutes = fiveHourUsedMinutes else { return nil }
-        return "Used \(UsageDurationFormatter.string(minutes: minutes))"
+        if let resetAt = fiveHourResetAt {
+            let remaining = resetAt.timeIntervalSince(updatedAt)
+            if remaining <= 0 {
+                return "Reset"
+            }
+            let minutes = Int(remaining / 60)
+            let hours = minutes / 60
+            let mins = minutes % 60
+            if hours > 0 {
+                return "\(hours)h \(mins)m remaining"
+            } else {
+                return "\(mins)m remaining"
+            }
+        }
+        // Fallback if no reset date
+        guard let usedMinutes = fiveHourUsedMinutes else { return nil }
+        let remainingMinutes = max(0, fiveHourWindowMinutes - usedMinutes)
+        return "\(UsageDurationFormatter.string(minutes: remainingMinutes)) remaining"
     }
 
     private var fiveHourPercentText: String? {
@@ -131,12 +171,58 @@ struct ClaudeUsageStatus: Equatable {
     }
 
     private var weeklyUsageText: String? {
-        guard let minutes = weeklyUsedMinutes else { return nil }
-        return "Used \(UsageDurationFormatter.string(minutes: minutes))"
+        if let resetAt = weeklyResetAt {
+            let remaining = resetAt.timeIntervalSince(updatedAt)
+            if remaining <= 0 {
+                return "Reset"
+            }
+            let minutes = Int(remaining / 60)
+            let hours = minutes / 60
+            let days = hours / 24
+            let remainingHours = hours % 24
+            let remainingMins = minutes % 60
+
+            if days > 0 {
+                if remainingHours > 0 {
+                    return "\(days)d \(remainingHours)h remaining"
+                } else {
+                    return "\(days)d remaining"
+                }
+            } else if hours > 0 {
+                return "\(hours)h \(remainingMins)m remaining"
+            } else {
+                return "\(remainingMins)m remaining"
+            }
+        }
+        // Fallback if no reset date
+        guard let usedMinutes = weeklyUsedMinutes else { return nil }
+        let remainingMinutes = max(0, weeklyWindowMinutes - usedMinutes)
+        return "\(UsageDurationFormatter.string(minutes: remainingMinutes)) remaining"
     }
 
     private var weeklyPercentText: String? {
         guard let progress = weeklyProgress else { return nil }
+        return NumberFormatter.compactPercentFormatter.string(from: NSNumber(value: progress))
+            ?? String(format: "%.0f%%", progress * 100)
+    }
+
+    private var sessionUsageText: String? {
+        guard let expiresAt = sessionExpiresAt else { return nil }
+        let remaining = expiresAt.timeIntervalSince(updatedAt)
+        if remaining <= 0 {
+            return "Expired"
+        }
+        let hours = Int(remaining / 3600)
+        let minutes = Int((remaining.truncatingRemainder(dividingBy: 3600)) / 60)
+        if hours > 0 {
+            return "\(hours)h \(minutes)m remaining"
+        } else {
+            return "\(minutes)m remaining"
+        }
+    }
+
+    private var sessionPercentText: String? {
+        guard let progress = sessionProgress else { return nil }
         return NumberFormatter.compactPercentFormatter.string(from: NSNumber(value: progress))
             ?? String(format: "%.0f%%", progress * 100)
     }

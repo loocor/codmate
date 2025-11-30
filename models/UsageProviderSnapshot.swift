@@ -22,7 +22,7 @@ enum UsageProviderKind: String, CaseIterable, Identifiable {
 }
 
 struct UsageMetricSnapshot: Identifiable, Equatable {
-  enum Kind { case context, fiveHour, weekly, snapshot }
+  enum Kind { case context, fiveHour, weekly, sessionExpiry, snapshot }
 
   let id = UUID()
   let kind: Kind
@@ -43,6 +43,10 @@ enum UsageProviderOrigin: String, Equatable {
 
 struct UsageProviderSnapshot: Identifiable, Equatable {
   enum Availability { case ready, empty, comingSoon }
+  enum Action: Hashable {
+    case refresh
+    case authorizeKeychain
+  }
 
   let id = UUID()
   let provider: UsageProviderKind
@@ -53,6 +57,7 @@ struct UsageProviderSnapshot: Identifiable, Equatable {
   let statusMessage: String?
   let requiresReauth: Bool  // True when user needs to re-authenticate
   let origin: UsageProviderOrigin
+  let action: Action?
 
   init(
     provider: UsageProviderKind,
@@ -62,7 +67,8 @@ struct UsageProviderSnapshot: Identifiable, Equatable {
     updatedAt: Date?,
     statusMessage: String? = nil,
     requiresReauth: Bool = false,
-    origin: UsageProviderOrigin = .builtin
+    origin: UsageProviderOrigin = .builtin,
+    action: Action? = nil
   ) {
     self.provider = provider
     self.title = title
@@ -72,6 +78,7 @@ struct UsageProviderSnapshot: Identifiable, Equatable {
     self.statusMessage = statusMessage
     self.requiresReauth = requiresReauth
     self.origin = origin
+    self.action = action
   }
 
   func urgentMetric(relativeTo now: Date = Date()) -> UsageMetricSnapshot? {
@@ -101,7 +108,11 @@ struct UsageProviderSnapshot: Identifiable, Equatable {
     return ordered.first
   }
 
-  static func placeholder(_ provider: UsageProviderKind, message: String) -> UsageProviderSnapshot {
+  static func placeholder(
+    _ provider: UsageProviderKind,
+    message: String,
+    action: Action? = .refresh
+  ) -> UsageProviderSnapshot {
     UsageProviderSnapshot(
       provider: provider,
       title: provider.displayName,
@@ -109,7 +120,8 @@ struct UsageProviderSnapshot: Identifiable, Equatable {
       metrics: [],
       updatedAt: nil,
       statusMessage: message,
-      origin: .builtin
+      origin: .builtin,
+      action: action
     )
   }
 }

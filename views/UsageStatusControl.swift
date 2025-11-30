@@ -37,7 +37,6 @@ struct UsageStatusControl: View {
       let outerState = ringState(for: .claude, relativeTo: referenceDate)
       let innerState = ringState(for: .codex, relativeTo: referenceDate)
       let snapshotForButton = snapshots[selectedProvider] ?? snapshots.values.first
-      let providerForButton = snapshotForButton?.provider ?? selectedProvider
 
       Button {
         showPopover.toggle()
@@ -79,26 +78,13 @@ struct UsageStatusControl: View {
       .focusable(false)
       .onHover { hovering in
         withAnimation(.easeInOut(duration: 0.2)) { isHovering = hovering }
-        if hovering,
-           shouldAttemptRefresh(providerForButton),
-           (snapshotForButton?.availability != .ready) {
-          onRequestRefresh(providerForButton)
-        }
       }
       .popover(isPresented: $showPopover, arrowEdge: .top) {
         UsageStatusPopover(
-          referenceDate: referenceDate,
           snapshots: snapshots,
           selectedProvider: $selectedProvider,
           onRequestRefresh: onRequestRefresh
         )
-      }
-      .onChange(of: showPopover) { _, open in
-        if open,
-           shouldAttemptRefresh(providerForButton),
-           (snapshotForButton?.availability != .ready) {
-          onRequestRefresh(providerForButton)
-        }
       }
     }
   }
@@ -107,11 +93,6 @@ struct UsageStatusControl: View {
     UsageProviderKind.allCases.allSatisfy { provider in
       snapshots[provider]?.origin == .thirdParty
     }
-  }
-
-  private func shouldAttemptRefresh(_ provider: UsageProviderKind) -> Bool {
-    guard let snapshot = snapshots[provider] else { return true }
-    return snapshot.origin == .builtin
   }
 
   private func providerRows(at date: Date) -> [(provider: UsageProviderKind, text: String)] {
@@ -125,8 +106,8 @@ struct UsageStatusControl: View {
       case .ready:
         let percent = urgent?.percentText ?? "—"
         let info: String
-        if let reset = urgent?.resetDate {
-          info = resetCountdown(from: reset) ?? resetFormatter.string(from: reset)
+        if let urgent = urgent, let reset = urgent.resetDate {
+          info = resetCountdown(from: reset, kind: urgent.kind) ?? resetFormatter.string(from: reset)
         } else if let minutes = urgent?.fallbackWindowMinutes {
           info = "\(minutes)m window"
         } else {
@@ -176,11 +157,14 @@ struct UsageStatusControl: View {
 
   private var resetFormatter: DateFormatter { Self.resetFormatter }
 
-  private func resetCountdown(from date: Date) -> String? {
+  private func resetCountdown(from date: Date, kind: UsageMetricSnapshot.Kind) -> String? {
     let interval = date.timeIntervalSinceNow
-    guard interval > 0 else { return "reset" }
+    guard interval > 0 else {
+      return kind == .sessionExpiry ? "expired" : "reset"
+    }
     if let formatted = countdownFormatter.string(from: interval) {
-      return "resets in \(formatted)"
+      let verb = kind == .sessionExpiry ? "expires in" : "resets in"
+      return "\(verb) \(formatted)"
     }
     return nil
   }
@@ -233,14 +217,29 @@ private struct DualUsageDonutView: View {
 }
 
 private struct UsageStatusPopover: View {
-  var referenceDate: Date
   var snapshots: [UsageProviderKind: UsageProviderSnapshot]
   @Binding var selectedProvider: UsageProviderKind
   var onRequestRefresh: (UsageProviderKind) -> Void
 
   @Environment(\.colorScheme) private var colorScheme
+  @State private var didTriggerClaudeAutoRefresh = false
 
   var body: some View {
+    TimelineView(.periodic(from: .now, by: 1)) { context in
+      content(referenceDate: context.date)
+    }
+    .padding(16)
+    .frame(width: 300)
+    .focusable(false)
+    .onAppear { maybeTriggerClaudeAutoRefresh(now: Date()) }
+    .onChange(of: snapshots[.claude]?.updatedAt ?? nil) { _ in
+      maybeTriggerClaudeAutoRefresh(now: Date())
+    }
+    .onDisappear { didTriggerClaudeAutoRefresh = false }
+  }
+
+  @ViewBuilder
+  private func content(referenceDate: Date) -> some View {
     let providers = UsageProviderKind.allCases
     VStack(alignment: .leading, spacing: 12) {
       ForEach(Array(providers.enumerated()), id: \.element.id) { index, provider in
@@ -255,7 +254,8 @@ private struct UsageStatusPopover: View {
           if let snapshot = snapshots[provider] {
             UsageSnapshotView(
               referenceDate: referenceDate,
-              snapshot: snapshot
+              snapshot: snapshot,
+              onAction: { onRequestRefresh(provider) }
             )
           } else {
             Text("No usage data available")
@@ -270,9 +270,28 @@ private struct UsageStatusPopover: View {
         }
       }
     }
-    .padding(16)
-    .frame(width: 300)
-    .focusable(false)
+  }
+
+  private func maybeTriggerClaudeAutoRefresh(now: Date) {
+    guard !didTriggerClaudeAutoRefresh else { return }
+    guard let claude = snapshots[.claude],
+      claude.origin == .builtin,
+      claude.availability == .ready
+    else { return }
+
+    let threshold: TimeInterval = 5 * 60
+    let soonest = claude.metrics
+      .filter { $0.kind == .fiveHour || $0.kind == .weekly }
+      .compactMap { metric -> TimeInterval? in
+        guard let reset = metric.resetDate else { return nil }
+        let interval = reset.timeIntervalSince(now)
+        return interval > 0 ? interval : nil
+      }
+      .min()
+
+    guard let remaining = soonest, remaining <= threshold else { return }
+    didTriggerClaudeAutoRefresh = true
+    onRequestRefresh(.claude)
   }
 
   @ViewBuilder
@@ -310,8 +329,7 @@ private struct UsageStatusPopover: View {
 private struct UsageSnapshotView: View {
   var referenceDate: Date
   var snapshot: UsageProviderSnapshot
-
-  @State private var showReauthAlert = false
+  var onAction: (() -> Void)?
 
   private static let relativeFormatter: RelativeDateTimeFormatter = {
     let formatter = RelativeDateTimeFormatter()
@@ -325,9 +343,11 @@ private struct UsageSnapshotView: View {
         VStack(alignment: .leading, spacing: 8) {
           Text("Custom provider active")
             .font(.headline)
-          Text("Usage data isn't available while a custom provider is selected. Switch Active Provider back to (Built-in) to restore usage.")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
+          Text(
+            "Usage data isn't available while a custom provider is selected. Switch Active Provider back to (Built-in) to restore usage."
+          )
+          .font(.footnote)
+          .foregroundStyle(.secondary)
         }
         .opacity(0.75)
       } else if snapshot.availability == .ready {
@@ -343,38 +363,23 @@ private struct UsageSnapshotView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-      } else if snapshot.availability == .comingSoon {
-        VStack(alignment: .leading, spacing: 8) {
-          Text("Coming soon")
-            .font(.headline)
-          Text(snapshot.statusMessage ?? "Usage data for this provider is not yet available.")
-            .foregroundStyle(.secondary)
-        }
       } else {
-        // Error state: show re-auth button if needed
-        if snapshot.requiresReauth {
-          VStack(alignment: .leading, spacing: 10) {
-            Text(snapshot.statusMessage ?? "Authentication required.")
-              .font(.footnote)
-              .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+          Text(snapshot.statusMessage ?? "No usage data yet.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
 
+          if let action = snapshot.action {
+            let label = actionLabel(for: action)
             Button {
-              showReauthAlert = true
+              onAction?()
             } label: {
-              Label("Re-authenticate", systemImage: "lock.shield")
+              Label(label.text, systemImage: label.icon)
                 .font(.subheadline)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
           }
-          .alert("Re-authenticate Claude Code", isPresented: $showReauthAlert) {
-            Button("OK") {}
-          } message: {
-            Text("To re-authenticate:\n\n1. Open Terminal or CodMate's embedded terminal\n2. Run: claude auth login\n3. Complete the sign-in flow\n4. Refresh usage status")
-          }
-        } else {
-          Text(snapshot.statusMessage ?? "No usage data yet.")
-            .foregroundStyle(.secondary)
         }
       }
     }
@@ -387,6 +392,16 @@ private struct UsageSnapshotView: View {
       return "Updated " + relative
     }
     return "Waiting for usage data"
+  }
+
+  private func actionLabel(for action: UsageProviderSnapshot.Action) -> (text: String, icon: String)
+  {
+    switch action {
+    case .refresh:
+      return ("Load usage", "arrow.clockwise")
+    case .authorizeKeychain:
+      return ("Grant access", "lock.open")
+    }
   }
 }
 
@@ -414,14 +429,67 @@ private struct MetricDisplayState {
     } else {
       progress = metric.progress
       percentText = metric.percentText
-      usageText = metric.usageText
+      // Real-time calculation of remaining time using current referenceDate
+      usageText = Self.remainingText(for: metric, referenceDate: referenceDate)
       resetText = Self.resetDescription(for: metric)
+    }
+  }
+
+  private static func remainingText(for metric: UsageMetricSnapshot, referenceDate: Date) -> String? {
+    guard let resetDate = metric.resetDate else {
+      return metric.usageText // Fallback to cached text if no reset date
+    }
+
+    let remaining = resetDate.timeIntervalSince(referenceDate)
+    if remaining <= 0 {
+      return metric.kind == .sessionExpiry ? "Expired" : "Reset"
+    }
+
+    let minutes = Int(remaining / 60)
+    let hours = minutes / 60
+    let days = hours / 24
+
+    switch metric.kind {
+    case .fiveHour:
+      let mins = minutes % 60
+      if hours > 0 {
+        return "\(hours)h \(mins)m remaining"
+      } else {
+        return "\(mins)m remaining"
+      }
+
+    case .weekly:
+      let remainingHours = hours % 24
+      if days > 0 {
+        if remainingHours > 0 {
+          return "\(days)d \(remainingHours)h remaining"
+        } else {
+          return "\(days)d remaining"
+        }
+      } else if hours > 0 {
+        let mins = minutes % 60
+        return "\(hours)h \(mins)m remaining"
+      } else {
+        return "\(minutes)m remaining"
+      }
+
+    case .sessionExpiry:
+      let mins = minutes % 60
+      if hours > 0 {
+        return "\(hours)h \(mins)m remaining"
+      } else {
+        return "\(mins)m remaining"
+      }
+
+    case .context, .snapshot:
+      return metric.usageText
     }
   }
 
   private static func resetDescription(for metric: UsageMetricSnapshot) -> String {
     if let date = metric.resetDate {
-      return "Resets " + Self.resetFormatter.string(from: date)
+      let prefix = metric.kind == .sessionExpiry ? "Expires at " : "Resets "
+      return prefix + Self.resetFormatter.string(from: date)
     }
     if let minutes = metric.fallbackWindowMinutes {
       if minutes >= 60 {

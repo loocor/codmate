@@ -47,11 +47,15 @@ struct EquatableUsageContainer: View, Equatable {
     var codexUpdatedAt: TimeInterval?
     var codexAvailability: Int
     var codexUrgentProgress: Double?
+    var codexUrgentReset: TimeInterval?
     var codexOrigin: Int
+    var codexStatusHash: Int
     var claudeUpdatedAt: TimeInterval?
     var claudeAvailability: Int
     var claudeUrgentProgress: Double?
+    var claudeUrgentReset: TimeInterval?
     var claudeOrigin: Int
+    var claudeStatusHash: Int
   }
 
   static func == (lhs: EquatableUsageContainer, rhs: EquatableUsageContainer) -> Bool {
@@ -83,9 +87,10 @@ struct EquatableUsageContainer: View, Equatable {
     )
   }
 
-  private static func digest(_ snapshots: [UsageProviderKind: UsageProviderSnapshot]) -> UsageDigest {
-    func parts(for provider: UsageProviderKind) -> (TimeInterval?, Int, Double?, Int) {
-      guard let snap = snapshots[provider] else { return (nil, -1, nil, -1) }
+  private static func digest(_ snapshots: [UsageProviderKind: UsageProviderSnapshot]) -> UsageDigest
+  {
+    func parts(for provider: UsageProviderKind) -> (TimeInterval?, Int, Double?, TimeInterval?, Int, Int) {
+      guard let snap = snapshots[provider] else { return (nil, -1, nil, nil, -1, 0) }
       let updated = snap.updatedAt?.timeIntervalSinceReferenceDate
       let availability: Int
       switch snap.availability {
@@ -93,9 +98,19 @@ struct EquatableUsageContainer: View, Equatable {
       case .empty: availability = 2
       case .comingSoon: availability = 3
       }
-      let urgent = snap.urgentMetric()?.progress
+      let urgentMetric = snap.urgentMetric()
+      let urgent = urgentMetric?.progress
+      let urgentReset = urgentMetric?.resetDate?.timeIntervalSinceReferenceDate
       let origin = snap.origin == .thirdParty ? 1 : 0
-      return (updated, availability, urgent, origin)
+      var hasher = Hasher()
+      if let message = snap.statusMessage {
+        hasher.combine(message)
+      }
+      if let action = snap.action {
+        hasher.combine(action)
+      }
+      let statusHash = hasher.finalize()
+      return (updated, availability, urgent, urgentReset, origin, statusHash)
     }
     let cdx = parts(for: .codex)
     let cld = parts(for: .claude)
@@ -103,11 +118,15 @@ struct EquatableUsageContainer: View, Equatable {
       codexUpdatedAt: cdx.0,
       codexAvailability: cdx.1,
       codexUrgentProgress: cdx.2,
-      codexOrigin: cdx.3,
+      codexUrgentReset: cdx.3,
+      codexOrigin: cdx.4,
+      codexStatusHash: cdx.5,
       claudeUpdatedAt: cld.0,
       claudeAvailability: cld.1,
       claudeUrgentProgress: cld.2,
-      claudeOrigin: cld.3
+      claudeUrgentReset: cld.3,
+      claudeOrigin: cld.4,
+      claudeStatusHash: cld.5
     )
   }
 }
@@ -130,7 +149,9 @@ struct SidebarDigest: Equatable {
 // Equatable wrapper for the Sidebar content to minimize diffs while keeping
 // the internal view hierarchy (which still uses EnvironmentObject) unchanged.
 struct EquatableSidebarContainer<Content: View>: View, Equatable {
-  static func == (lhs: EquatableSidebarContainer<Content>, rhs: EquatableSidebarContainer<Content>) -> Bool {
+  static func == (lhs: EquatableSidebarContainer<Content>, rhs: EquatableSidebarContainer<Content>)
+    -> Bool
+  {
     lhs.key == rhs.key
   }
 

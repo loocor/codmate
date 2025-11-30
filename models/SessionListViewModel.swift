@@ -235,6 +235,7 @@ final class SessionListViewModel: ObservableObject {
   private var monthCountsCache: [String: [Int: Int]] = [:]  // key: "dim|yyyy-MM" (not @Published to avoid updates during view reads)
   @Published private(set) var codexUsageStatus: CodexUsageStatus?
   @Published private(set) var usageSnapshots: [UsageProviderKind: UsageProviderSnapshot] = [:]
+  private var claudeUsageAutoRefreshEnabled = false
   // Live activity indicators
   @Published private(set) var activeUpdatingIDs: Set<String> = []
   @Published private(set) var awaitingFollowupIDs: Set<String> = []
@@ -252,11 +253,12 @@ final class SessionListViewModel: ObservableObject {
       windowStateStore.saveWorkspaceMode(projectWorkspaceMode)
       // Persist per-project mode when a single real project is selected
       if selectedProjectIDs.count == 1,
-         let pid = selectedProjectIDs.first,
-         pid != Self.otherProjectId,
-         let project = projects.first(where: { $0.id == pid }),
-         let dir = project.directory, !dir.isEmpty,
-         projectWorkspaceMode != .sessions {
+        let pid = selectedProjectIDs.first,
+        pid != Self.otherProjectId,
+        let project = projects.first(where: { $0.id == pid }),
+        let dir = project.directory, !dir.isEmpty,
+        projectWorkspaceMode != .sessions
+      {
         windowStateStore.saveProjectWorkspaceMode(projectId: pid, mode: projectWorkspaceMode)
       }
     }
@@ -599,8 +601,10 @@ final class SessionListViewModel: ObservableObject {
           }
         } else if consumer == ProvidersRegistryService.Consumer.claudeCode.rawValue {
           if providerId == nil || providerId?.isEmpty == true {
-            self.refreshClaudeUsageStatus()
+            self.claudeUsageAutoRefreshEnabled = false
+            self.setInitialClaudePlaceholder()
           } else {
+            self.claudeUsageAutoRefreshEnabled = false
             self.setUsageSnapshot(.claude, Self.thirdPartyUsageSnapshot(for: .claude))
           }
         }
@@ -630,11 +634,8 @@ final class SessionListViewModel: ObservableObject {
         if claudeOrigin == .thirdParty {
           self.setUsageSnapshot(.claude, Self.thirdPartyUsageSnapshot(for: .claude))
         } else {
-          // Keep an initial placeholder for Claude to indicate pending fetch when built-in
-          self.usageSnapshots[.claude] = UsageProviderSnapshot.placeholder(
-            .claude,
-            message: "Fetching usage…"
-          )
+          self.claudeUsageAutoRefreshEnabled = false
+          self.setInitialClaudePlaceholder()
         }
       }
     }
@@ -747,7 +748,9 @@ final class SessionListViewModel: ObservableObject {
         await MainActor.run { self.pathTreeRootPublished = tree }
       }
       refreshCodexUsageStatus()
-      refreshClaudeUsageStatus()
+      if claudeUsageAutoRefreshEnabled {
+        refreshClaudeUsageStatus()
+      }
       schedulePathTreeRefresh()
     } catch {
       if token == activeRefreshToken {
@@ -2220,8 +2223,32 @@ extension SessionListViewModel {
     case .codex:
       refreshCodexUsageStatus()
     case .claude:
+      claudeUsageAutoRefreshEnabled = true
       refreshClaudeUsageStatus()
     }
+  }
+
+  private func setInitialClaudePlaceholder() {
+    self.setClaudeUsagePlaceholder("Load Claude usage", action: .refresh)
+  }
+
+  private func setClaudeUsagePlaceholder(
+    _ message: String,
+    action: UsageProviderSnapshot.Action? = .refresh,
+    availability: UsageProviderSnapshot.Availability = .empty
+  ) {
+    let snapshot = UsageProviderSnapshot(
+      provider: .claude,
+      title: UsageProviderKind.claude.displayName,
+      availability: availability,
+      metrics: [],
+      updatedAt: nil,
+      statusMessage: message,
+      requiresReauth: false,
+      origin: .builtin,
+      action: action
+    )
+    setUsageSnapshot(.claude, snapshot)
   }
 
   private func refreshCodexUsageStatus() {
@@ -2308,6 +2335,9 @@ extension SessionListViewModel {
         }
         return
       }
+      await MainActor.run {
+        self.setClaudeUsagePlaceholder("Refreshing …", action: nil, availability: .comingSoon)
+      }
       let client = self.claudeUsageClient
       do {
         let status = try await client.fetchUsageStatus()
@@ -2318,6 +2348,7 @@ extension SessionListViewModel {
       } catch {
         NSLog("[ClaudeUsage] API fetch failed: \(error)")
         guard !Task.isCancelled else { return }
+        let descriptor = Self.claudeUsageErrorState(from: error)
         await MainActor.run {
           self.setUsageSnapshot(
             .claude,
@@ -2327,8 +2358,10 @@ extension SessionListViewModel {
               availability: .empty,
               metrics: [],
               updatedAt: nil,
-              statusMessage: Self.claudeUsageErrorMessage(from: error),
-              requiresReauth: Self.claudeUsageRequiresReauth(error: error)
+              statusMessage: descriptor.message,
+              requiresReauth: descriptor.requiresReauth,
+              origin: .builtin,
+              action: descriptor.action
             )
           )
         }
@@ -2336,46 +2369,66 @@ extension SessionListViewModel {
     }
   }
 
-  private static func claudeUsageRequiresReauth(error: Error) -> Bool {
-    guard let clientError = error as? ClaudeUsageAPIClient.ClientError else {
-      return false
-    }
-    switch clientError {
-    case .credentialNotFound, .credentialExpired, .malformedCredential, .missingAccessToken:
-      return true
-    case .requestFailed(let code):
-      return code == 401
-    case .keychainAccessRestricted:
-      return true
-    case .emptyResponse, .decodingFailed:
-      return false
-    }
+  private struct ClaudeUsageErrorDescriptor {
+    var message: String
+    var requiresReauth: Bool
+    var action: UsageProviderSnapshot.Action?
   }
 
-  private static func claudeUsageErrorMessage(from error: Error) -> String {
-    if let clientError = error as? ClaudeUsageAPIClient.ClientError {
-      switch clientError {
-      case .credentialNotFound:
-        return
-          "Claude usage is available with Subscription login only. API Key mode does not provide usage."
-      case .keychainAccessRestricted(let status):
-        return "Allow CodMate to access \"Claude Code-credentials\" in Keychain (status \(status))."
-      case .malformedCredential, .missingAccessToken:
-        return
-          "Claude usage requires Subscription login. If you're using API Key mode, usage is not available."
-      case .credentialExpired:
-        return "Claude Code credential expired. Please sign in again."
-      case .requestFailed(let code):
-        if code == 401 {
-          return
-            "Claude usage request failed (HTTP 401). Allow CodMate to access the \"Claude Code…-credentials\" entry in Keychain, then refresh."
-        }
-        return "Claude usage request failed (HTTP \(code))."
-      case .emptyResponse, .decodingFailed:
-        return "Claude usage data could not be decoded."
-      }
+  private static func claudeUsageErrorState(from error: Error) -> ClaudeUsageErrorDescriptor {
+    guard let clientError = error as? ClaudeUsageAPIClient.ClientError else {
+      return ClaudeUsageErrorDescriptor(
+        message: "Unable to get Claude usage.",
+        requiresReauth: false,
+        action: .refresh
+      )
     }
-    return "Claude usage data is unavailable."
+    switch clientError {
+    case .credentialNotFound:
+      return ClaudeUsageErrorDescriptor(
+        message: "Not logged in to Claude. Run claude code to refresh.",
+        requiresReauth: true,
+        action: .refresh
+      )
+    case .keychainAccessRestricted:
+      return ClaudeUsageErrorDescriptor(
+        message: "CodMate needs access to Claude login records in the keychain.",
+        requiresReauth: false,
+        action: .authorizeKeychain
+      )
+    case .malformedCredential, .missingAccessToken:
+      return ClaudeUsageErrorDescriptor(
+        message: "Claude login information is invalid. Please log in again and refresh.",
+        requiresReauth: true,
+        action: .refresh
+      )
+    case .credentialExpired:
+      return ClaudeUsageErrorDescriptor(
+        message:
+          "No Claude usage recently. Will be automatically updated after running Claude Code again.",
+        requiresReauth: false,
+        action: .refresh
+      )
+    case .requestFailed(let code):
+      if code == 401 {
+        return ClaudeUsageErrorDescriptor(
+          message: "Claude rejected the usage request. Please log in again and refresh.",
+          requiresReauth: true,
+          action: .refresh
+        )
+      }
+      return ClaudeUsageErrorDescriptor(
+        message: "Claude usage request failed (HTTP \(code)).",
+        requiresReauth: false,
+        action: .refresh
+      )
+    case .emptyResponse, .decodingFailed:
+      return ClaudeUsageErrorDescriptor(
+        message: "Unable to parse Claude usage temporarily. Please try again later.",
+        requiresReauth: false,
+        action: .refresh
+      )
+    }
   }
 
   private func setUsageSnapshot(_ provider: UsageProviderKind, _ new: UsageProviderSnapshot) {
@@ -2390,6 +2443,8 @@ extension SessionListViewModel {
   {
     if a.origin != b.origin { return false }
     if a.availability != b.availability { return false }
+    if a.statusMessage != b.statusMessage { return false }
+    if a.action != b.action { return false }
     let au = a.updatedAt?.timeIntervalSinceReferenceDate
     let bu = b.updatedAt?.timeIntervalSinceReferenceDate
     if au != bu { return false }
@@ -2567,7 +2622,4 @@ extension SessionListViewModel {
       self.remoteSyncStates = snapshot
     }
   }
-
 }
-
-// MARK: - Auto Title / Overview

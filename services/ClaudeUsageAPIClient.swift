@@ -96,8 +96,11 @@ struct ClaudeUsageAPIClient {
 
     func fetchUsageStatus(now: Date = Date()) async throws -> ClaudeUsageStatus {
         let credential = try fetchCredentialEnvelope()
+        var sessionExpiresAt: Date? = nil
         if let expiresAt = credential.claudeAiOauth.expiresAt {
-            let expiryDate = Date(timeIntervalSince1970: expiresAt)
+            // expiresAt is in milliseconds, convert to seconds
+            let expiryDate = Date(timeIntervalSince1970: expiresAt / 1000)
+            sessionExpiresAt = expiryDate
             if expiryDate < now {
                 throw ClientError.credentialExpired(expiryDate)
             }
@@ -127,7 +130,8 @@ struct ClaudeUsageAPIClient {
             fiveHourResetAt: response.fiveHour?.resetsAt,
             weeklyUsedMinutes: minutesUsed(from: response.sevenDay, windowMinutes: weeklyWindowMinutes),
             weeklyWindowMinutes: weeklyWindowMinutes,
-            weeklyResetAt: response.sevenDay?.resetsAt
+            weeklyResetAt: response.sevenDay?.resetsAt,
+            sessionExpiresAt: sessionExpiresAt
         )
 
         return status
