@@ -97,10 +97,10 @@ extension ContentView {
                 items.append(.init(kind: .separator))
                 for host in enabledRemoteHosts.sorted() {
                   let remoteSrc: SessionSource
-                  if currentKind == .codex {
-                    remoteSrc = .codexRemote(host: host)
-                  } else {
-                    remoteSrc = .claudeRemote(host: host)
+                  switch currentKind {
+                  case .codex: remoteSrc = .codexRemote(host: host)
+                  case .claude: remoteSrc = .claudeRemote(host: host)
+                  case .gemini: remoteSrc = .geminiRemote(host: host)
                   }
                   let remoteName = remoteSrc.branding.displayName
                   items.append(
@@ -125,16 +125,15 @@ extension ContentView {
               items.append(.init(kind: .separator))
               // Lower group: alternate provider quick targets
               let allowed = viewModel.allowedSources(for: focused)
-              // Compute alternate src from allowed set; fallback to opposite of current
+              // Compute alternate src from allowed set; fallback to first available
               let altSrc: SessionSource? = {
-                let desiredKind: ProjectSessionSource = (currentKind == .codex) ? .claude : .codex
-                if allowed.contains(desiredKind) {
-                  return desiredKind.sessionSource
+                let candidateKinds = allowed.filter { $0 != currentKind }
+                guard !candidateKinds.isEmpty else { return nil }
+                let preferredOrder: [ProjectSessionSource] = [.codex, .claude, .gemini]
+                if let preferred = preferredOrder.first(where: { candidateKinds.contains($0) }) {
+                  return preferred.sessionSource
                 }
-                if let otherKind = allowed.first(where: { $0 != currentKind }) {
-                  return otherKind.sessionSource
-                }
-                return desiredKind.sessionSource
+                return candidateKinds.first?.sessionSource
               }()
               if let alt = altSrc {
                 let altName = alt.branding.displayName
@@ -159,10 +158,10 @@ extension ContentView {
                   items.append(.init(kind: .separator))
                   for host in enabledRemoteHosts.sorted() {
                     let remoteSrc: SessionSource
-                    if alt.projectSource == .codex {
-                      remoteSrc = .codexRemote(host: host)
-                    } else {
-                      remoteSrc = .claudeRemote(host: host)
+                    switch alt.projectSource {
+                    case .codex: remoteSrc = .codexRemote(host: host)
+                    case .claude: remoteSrc = .claudeRemote(host: host)
+                    case .gemini: remoteSrc = .geminiRemote(host: host)
                     }
                     let remoteName = remoteSrc.branding.displayName
                     items.append(

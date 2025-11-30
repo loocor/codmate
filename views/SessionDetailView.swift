@@ -91,7 +91,10 @@ struct SessionDetailView: View {
                 infoRow(title: "CLI VERSION", value: summary.cliVersion, icon: "terminal")
                 infoRow(title: "ORIGINATOR", value: summary.originator, icon: "person.circle")
 
-                infoRow(title: "WORKING DIRECTORY", value: summary.cwd, icon: "folder")
+                infoRow(
+                    title: "WORKING DIRECTORY",
+                    value: viewModel.displayWorkingDirectory(for: summary),
+                    icon: "folder")
                 infoRow(title: "FILE SIZE", value: summary.fileSizeDisplay, icon: "externaldrive")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -382,11 +385,12 @@ extension SessionDetailView {
     private func reloadConversation(resetUI: Bool = false) async {
         loadingTimeline = true
         defer { loadingTimeline = false }
+        let shouldLoadDirectlyFromFile = summary.source.baseKind == .codex && !summary.source.isRemote
         let loaded: [ConversationTurn]
-        if summary.source == .claudeLocal {
-            loaded = await viewModel.timeline(for: summary)
-        } else {
+        if shouldLoadDirectlyFromFile {
             loaded = (try? loader.load(url: summary.fileURL)) ?? []
+        } else {
+            loaded = await viewModel.timeline(for: summary)
         }
         allTurns = loaded
         if resetUI {

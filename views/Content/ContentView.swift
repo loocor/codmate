@@ -289,7 +289,7 @@ struct ContentView: View {
       let cwd = workingDirectory(for: target)
       let dirURL = URL(fileURLWithPath: cwd, isDirectory: true)
       if !AuthorizationHub.shared.canAccessNow(directory: dirURL) {
-        let toolLabel = target.source == .codexLocal ? "codex" : "claude"
+        let toolLabel = target.source.baseKind.cliExecutableName
         let granted = AuthorizationHub.shared.ensureDirectoryAccessOrPromptSync(
           directory: dirURL,
           purpose: .cliConsoleCwd,
@@ -419,26 +419,8 @@ struct ContentView: View {
         viewModel.recordIntentForDetailNew(anchor: anchor)
 
         // Hint + targeted refresh so new session appears quickly in lists
-        if anchor.source == .codexLocal {
-          viewModel.setIncrementalHintForCodexToday()
-        } else {
-          viewModel.setIncrementalHintForClaudeProject(directory: dir)
-        }
-        Task {
-          if anchor.source == .codexLocal {
-            await viewModel.refreshIncrementalForNewCodexToday()
-            try? await Task.sleep(nanoseconds: 600_000_000)
-            await viewModel.refreshIncrementalForNewCodexToday()
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            await viewModel.refreshIncrementalForNewCodexToday()
-          } else {
-            await viewModel.refreshIncrementalForClaudeProject(directory: dir)
-            try? await Task.sleep(nanoseconds: 600_000_000)
-            await viewModel.refreshIncrementalForClaudeProject(directory: dir)
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            await viewModel.refreshIncrementalForClaudeProject(directory: dir)
-          }
-        }
+        applyIncrementalHint(for: anchor.source, directory: dir)
+        scheduleIncrementalRefresh(for: anchor.source, directory: dir)
 
         let app = viewModel.preferences.defaultResumeExternalApp
         switch app {
@@ -514,26 +496,8 @@ struct ContentView: View {
             )
           )
           // Event-driven incremental refresh for quick visibility in Tasks/Sessions lists
-          if target.source == .codexLocal {
-            viewModel.setIncrementalHintForCodexToday()
-          } else {
-            viewModel.setIncrementalHintForClaudeProject(directory: cwd)
-          }
-          Task {
-            if target.source == .codexLocal {
-              await viewModel.refreshIncrementalForNewCodexToday()
-              try? await Task.sleep(nanoseconds: 600_000_000)
-              await viewModel.refreshIncrementalForNewCodexToday()
-              try? await Task.sleep(nanoseconds: 1_500_000_000)
-              await viewModel.refreshIncrementalForNewCodexToday()
-            } else {
-              await viewModel.refreshIncrementalForClaudeProject(directory: cwd)
-              try? await Task.sleep(nanoseconds: 600_000_000)
-              await viewModel.refreshIncrementalForClaudeProject(directory: cwd)
-              try? await Task.sleep(nanoseconds: 1_500_000_000)
-              await viewModel.refreshIncrementalForClaudeProject(directory: cwd)
-            }
-          }
+          applyIncrementalHint(for: target.source, directory: cwd)
+          scheduleIncrementalRefresh(for: target.source, directory: cwd)
           selection.removeAll()
           isDetailMaximized = true
           columnVisibility = .detailOnly
@@ -551,26 +515,8 @@ struct ContentView: View {
           viewModel.recordIntentForDetailNew(anchor: anchor)
 
           // Hint + targeted refresh so new session appears quickly in lists
-          if anchor.source == .codexLocal {
-            viewModel.setIncrementalHintForCodexToday()
-          } else {
-            viewModel.setIncrementalHintForClaudeProject(directory: dir)
-          }
-          Task {
-            if anchor.source == .codexLocal {
-              await viewModel.refreshIncrementalForNewCodexToday()
-              try? await Task.sleep(nanoseconds: 600_000_000)
-              await viewModel.refreshIncrementalForNewCodexToday()
-              try? await Task.sleep(nanoseconds: 1_500_000_000)
-              await viewModel.refreshIncrementalForNewCodexToday()
-            } else {
-              await viewModel.refreshIncrementalForClaudeProject(directory: dir)
-              try? await Task.sleep(nanoseconds: 600_000_000)
-              await viewModel.refreshIncrementalForClaudeProject(directory: dir)
-              try? await Task.sleep(nanoseconds: 1_500_000_000)
-              await viewModel.refreshIncrementalForClaudeProject(directory: dir)
-            }
-          }
+          applyIncrementalHint(for: anchor.source, directory: dir)
+          scheduleIncrementalRefresh(for: anchor.source, directory: dir)
 
           let app = viewModel.preferences.defaultResumeExternalApp
           switch app {
@@ -749,7 +695,7 @@ struct ContentView: View {
     env["LC_ALL"] = "zh_CN.UTF-8"
     env["LC_CTYPE"] = "zh_CN.UTF-8"
     env["TERM"] = "xterm-256color"
-    if source == .codexLocal { env["CODEX_DISABLE_COLOR_QUERY"] = "1" }
+    if source.baseKind == .codex { env["CODEX_DISABLE_COLOR_QUERY"] = "1" }
     return env
   }
 
@@ -757,7 +703,7 @@ struct ContentView: View {
     if SecurityScopedBookmarks.shared.isSandboxed {
       return nil
     }
-    let exe = (session.source == .codexLocal) ? "codex" : "claude"
+    let exe = session.source.baseKind.cliExecutableName
     #if canImport(SwiftTerm)
       guard TerminalSessionManager.executableExists(exe) else {
         NSLog("⚠️ [ContentView] CLI executable %@ not found on PATH; falling back to shell", exe)
@@ -855,36 +801,9 @@ struct ContentView: View {
         )
       )
       // Event-driven incremental refresh: set a hint so directory monitor triggers a targeted refresh
-      if target.source == .codexLocal {
-        viewModel.setIncrementalHintForCodexToday()
-      } else {
-        viewModel.setIncrementalHintForClaudeProject(directory: cwd)
-      }
+      applyIncrementalHint(for: target.source, directory: cwd)
       // Proactively trigger a targeted incremental refresh for immediate visibility
-      Task {
-        if target.source == .codexLocal {
-          await viewModel.refreshIncrementalForNewCodexToday()
-          // Follow-up probes to catch late file creation (non-recursive FS monitor)
-          try? await Task.sleep(nanoseconds: 600_000_000)
-          await viewModel.refreshIncrementalForNewCodexToday()
-          try? await Task.sleep(nanoseconds: 1_500_000_000)
-          await viewModel.refreshIncrementalForNewCodexToday()
-        } else {
-          // Claude Code: more aggressive refresh schedule because CLI may delay writing content
-          await viewModel.refreshIncrementalForClaudeProject(directory: cwd)
-          // Follow-up probes to catch file creation and content fill
-          try? await Task.sleep(nanoseconds: 600_000_000)  // 0.6s
-          await viewModel.refreshIncrementalForClaudeProject(directory: cwd)
-          try? await Task.sleep(nanoseconds: 1_500_000_000)  // 1.5s
-          await viewModel.refreshIncrementalForClaudeProject(directory: cwd)
-          try? await Task.sleep(nanoseconds: 3_000_000_000)  // 3s
-          await viewModel.refreshIncrementalForClaudeProject(directory: cwd)
-          try? await Task.sleep(nanoseconds: 5_000_000_000)  // 5s
-          await viewModel.refreshIncrementalForClaudeProject(directory: cwd)
-          try? await Task.sleep(nanoseconds: 10_000_000_000)  // 10s
-          await viewModel.refreshIncrementalForClaudeProject(directory: cwd)
-        }
-      }
+      scheduleIncrementalRefresh(for: target.source, directory: cwd)
       // Clear selection so fallbackRunningAnchorId() can display the virtual anchor terminal
       selection.removeAll()
       // Ensure terminal is visible
@@ -998,29 +917,9 @@ struct ContentView: View {
     let app = viewModel.preferences.defaultResumeExternalApp
     let dir = workingDirectory(for: session)
     // Event hint for targeted incremental refresh on FS change
-    if session.source == .codexLocal {
-      viewModel.setIncrementalHintForCodexToday()
-    } else {
-      viewModel.setIncrementalHintForClaudeProject(directory: dir)
-    }
+    applyIncrementalHint(for: session.source, directory: dir)
     // Also proactively refresh the targeted subset for faster UI update
-    Task {
-      if session.source == .codexLocal {
-        await viewModel.refreshIncrementalForNewCodexToday()
-        // Follow-up probes to catch late file creation
-        try? await Task.sleep(nanoseconds: 600_000_000)
-        await viewModel.refreshIncrementalForNewCodexToday()
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-        await viewModel.refreshIncrementalForNewCodexToday()
-      } else {
-        await viewModel.refreshIncrementalForClaudeProject(directory: dir)
-        // Follow-up probes to catch late file creation
-        try? await Task.sleep(nanoseconds: 600_000_000)
-        await viewModel.refreshIncrementalForClaudeProject(directory: dir)
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
-        await viewModel.refreshIncrementalForClaudeProject(directory: dir)
-      }
-    }
+    scheduleIncrementalRefresh(for: session.source, directory: dir)
     switch app {
     case .iterm2:
       let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(session: session)

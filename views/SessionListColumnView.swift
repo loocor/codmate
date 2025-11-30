@@ -229,7 +229,13 @@ struct SessionListColumnView: View {
       } else {
         ids = [session.id]
       }
-      return NSItemProvider(object: ids.joined(separator: "\n") as NSString)
+      let payloads: [String] = ids.compactMap { id in
+        if let summary = viewModel.sessionSummary(for: id) {
+          return viewModel.sessionDragIdentifier(for: summary)
+        }
+        return id
+      }
+      return NSItemProvider(object: payloads.joined(separator: "\n") as NSString)
     }
     .listRowInsets(EdgeInsets())
     .contextMenu {
@@ -241,7 +247,7 @@ struct SessionListColumnView: View {
   private func sessionContextMenu(for session: SessionSummary) -> some View {
     let project = projectForSession(session)
 
-    if session.source == .codexLocal {
+    if session.source == .codexLocal || session.source == .geminiLocal {
       Button {
         onResume(session)
       } label: {

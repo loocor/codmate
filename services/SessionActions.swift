@@ -9,6 +9,7 @@ enum SessionActionError: LocalizedError {
     case executableNotFound(URL)
     case resumeFailed(output: String)
     case deletionFailed(URL)
+    case featureUnavailable(String)
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +19,8 @@ enum SessionActionError: LocalizedError {
             return "Failed to resume session: \(output)"
         case .deletionFailed(let url):
             return "Failed to move file to Trash: \(url.path)"
+        case .featureUnavailable(let message):
+            return message
         }
     }
 }
@@ -167,7 +170,7 @@ struct SessionActions {
     }
 
     private func remoteExecutableName(for session: SessionSummary) -> String {
-        session.source.baseKind == .codex ? "codex" : "claude"
+        session.source.baseKind.cliExecutableName
     }
 
     func resolvedSSHContext(for alias: String) -> [String]? {

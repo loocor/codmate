@@ -278,19 +278,21 @@ struct SessionDaySection: Identifiable, Hashable, Sendable {
 enum SessionSource: Hashable, Sendable {
     case codexLocal
     case claudeLocal
+    case geminiLocal
     case codexRemote(host: String)
     case claudeRemote(host: String)
+    case geminiRemote(host: String)
 
     var isRemote: Bool {
         switch self {
-        case .codexRemote, .claudeRemote: return true
+        case .codexRemote, .claudeRemote, .geminiRemote: return true
         default: return false
         }
     }
 
     var remoteHost: String? {
         switch self {
-        case .codexRemote(let host), .claudeRemote(let host): return host
+        case .codexRemote(let host), .claudeRemote(let host), .geminiRemote(let host): return host
         default: return nil
         }
     }
@@ -299,12 +301,22 @@ enum SessionSource: Hashable, Sendable {
         switch self {
         case .codexLocal, .codexRemote: return .codex
         case .claudeLocal, .claudeRemote: return .claude
+        case .geminiLocal, .geminiRemote: return .gemini
         }
     }
 
     enum Kind: String, Sendable {
     case codex
     case claude
+    case gemini
+    
+    var cliExecutableName: String {
+        switch self {
+        case .codex: return "codex"
+        case .claude: return "claude"
+        case .gemini: return "gemini"
+        }
+    }
     }
 }
 
@@ -322,6 +334,9 @@ extension SessionSource: Codable {
         case .claudeLocal:
             var container = encoder.singleValueContainer()
             try container.encode("claude")
+        case .geminiLocal:
+            var container = encoder.singleValueContainer()
+            try container.encode("gemini")
         case .codexRemote(let host):
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode("codexRemote", forKey: .kind)
@@ -329,6 +344,10 @@ extension SessionSource: Codable {
         case .claudeRemote(let host):
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode("claudeRemote", forKey: .kind)
+            try container.encode(host, forKey: .host)
+        case .geminiRemote(let host):
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode("geminiRemote", forKey: .kind)
             try container.encode(host, forKey: .host)
         }
     }
@@ -342,10 +361,14 @@ extension SessionSource: Codable {
                 self = .codexLocal
             case "claude":
                 self = .claudeLocal
+            case "gemini":
+                self = .geminiLocal
             case "codexLocal":
                 self = .codexLocal
             case "claudeLocal":
                 self = .claudeLocal
+            case "geminiLocal":
+                self = .geminiLocal
             default:
                 throw DecodingError.dataCorruptedError(
                     in: singleValue, debugDescription: "Unknown SessionSource raw value \(raw)")
@@ -362,10 +385,15 @@ extension SessionSource: Codable {
         case "claudeRemote":
             let host = try container.decode(String.self, forKey: .host)
             self = .claudeRemote(host: host)
+        case "geminiRemote":
+            let host = try container.decode(String.self, forKey: .host)
+            self = .geminiRemote(host: host)
         case "codex":
             self = .codexLocal
         case "claude":
             self = .claudeLocal
+        case "gemini":
+            self = .geminiLocal
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .kind, in: container, debugDescription: "Unknown SessionSource kind \(kind)")

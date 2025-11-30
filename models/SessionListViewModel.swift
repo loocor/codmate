@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
 
 #if canImport(Darwin)
@@ -130,8 +131,10 @@ final class SessionListViewModel: ObservableObject {
         }
       }
       scheduleToolMetricsRefresh()
+      sessionLookup = Dictionary(uniqueKeysWithValues: allSessions.map { ($0.id, $0) })
     }
   }
+  private var sessionLookup: [String: SessionSummary] = [:]
   private var fulltextMatches: Set<String> = []  // SessionSummary.id set
   private var fulltextTask: Task<Void, Never>?
   private var enrichmentTask: Task<Void, Never>?
@@ -189,6 +192,7 @@ final class SessionListViewModel: ObservableObject {
   }
   var cachedProjectVisibleCounts: (key: ProjectVisibleKey, value: [String: Int])?
   private var groupedSectionsCache: GroupedSectionsCache?
+  private var geminiProjectPathByHash: [String: String] = [:]
   struct GroupSessionsKey: Equatable {
     var dimension: DateDimension
     var sortOrder: SessionSortOrder
@@ -289,6 +293,7 @@ final class SessionListViewModel: ObservableObject {
   struct PendingIncrementalRefreshHint {
     enum Kind {
       case codexDay(Date)
+      case geminiDay(Date)
       case claudeProject(String)
     }
     let kind: Kind
@@ -300,6 +305,7 @@ final class SessionListViewModel: ObservableObject {
   let configService = CodexConfigService()
   var projectsStore: ProjectsStore
   let claudeProvider = ClaudeSessionProvider()
+  let geminiProvider: GeminiSessionProvider
   private let claudeUsageClient = ClaudeUsageAPIClient()
   private let providersRegistry = ProvidersRegistryService()
   let remoteProvider = RemoteSessionProvider()
@@ -374,7 +380,16 @@ final class SessionListViewModel: ObservableObject {
   }
 
   func setProjectMemberships(_ memberships: [String: String]) {
-    projectMemberships = memberships
+    var normalized: [String: String] = [:]
+    for (key, value) in memberships {
+      if key.contains("|") {
+        normalized[key] = value
+      } else {
+        let legacyKey = membershipKey(for: key, source: .codex)
+        normalized[legacyKey] = value
+      }
+    }
+    projectMemberships = normalized
     projectMembershipsVersion &+= 1
     invalidateProjectVisibleCountsCache()
   }
@@ -515,6 +530,7 @@ final class SessionListViewModel: ObservableObject {
       membershipsURL: pr.appendingPathComponent("memberships.json", isDirectory: false)
     )
     self.projectsStore = ProjectsStore(paths: p)
+    self.geminiProvider = GeminiSessionProvider(projectsStore: self.projectsStore)
 
     suppressFilterNotifications = true
 
@@ -670,6 +686,7 @@ final class SessionListViewModel: ObservableObject {
       async let codexTask = indexer.refreshSessions(
         root: preferences.sessionsRoot, scope: scope)
       async let claudeTask = claudeProvider.sessions(scope: scope)
+      async let geminiTask = geminiProvider.sessions(scope: scope)
 
       var sessions = try await codexTask
       let claudeSessions = await claudeTask
@@ -677,6 +694,12 @@ final class SessionListViewModel: ObservableObject {
         let existingIDs = Set(sessions.map(\.id))
         let filteredClaude = claudeSessions.filter { !existingIDs.contains($0.id) }
         sessions.append(contentsOf: filteredClaude)
+      }
+      let geminiSessions = await geminiTask
+      if !geminiSessions.isEmpty {
+        let existingIDs = Set(sessions.map(\.id))
+        let filteredGemini = geminiSessions.filter { !existingIDs.contains($0.id) }
+        sessions.append(contentsOf: filteredGemini)
       }
       if !enabledRemoteHosts.isEmpty {
         let remoteCodex = await remoteProvider.codexSessions(
@@ -729,7 +752,11 @@ final class SessionListViewModel: ObservableObject {
       Task {
         var counts = await indexer.collectCWDCounts(root: sessionsRootForCounts)
         let claudeCounts = await claudeProvider.collectCWDCounts()
+        let geminiCounts = await geminiProvider.collectCWDCounts()
         for (key, value) in claudeCounts {
+          counts[key, default: 0] += value
+        }
+        for (key, value) in geminiCounts {
           counts[key, default: 0] += value
         }
         if !enabledRemoteHostsForCounts.isEmpty {
@@ -885,6 +912,7 @@ final class SessionListViewModel: ObservableObject {
       membershipsURL: newURL.appendingPathComponent("memberships.json", isDirectory: false)
     )
     self.projectsStore = ProjectsStore(paths: p)
+    await geminiProvider.updateProjectsStore(self.projectsStore)
     await loadProjects()
     // Avoid publishing changes during view update; schedule on next runloop tick
     Task { @MainActor [weak self] in
@@ -1488,7 +1516,8 @@ final class SessionListViewModel: ObservableObject {
       var matches: [SessionSummary] = []
       matches.reserveCapacity(filtered.count)
       for summary in filtered {
-        if let assigned = memberships[summary.id] {
+        let membershipKey = "\(summary.source.projectSource.rawValue)|\(summary.id)"
+        if let assigned = memberships[membershipKey] {
           guard allowedProjects.contains(assigned) else { continue }
           let allowedSet = allowedSources[assigned] ?? ProjectSessionSource.allSet
           if allowedSet.contains(summary.source.projectSource) { matches.append(summary) }
@@ -1772,6 +1801,11 @@ final class SessionListViewModel: ObservableObject {
                   return (s.id, enriched)
                 }
                 return (s.id, s)
+              } else if s.source.baseKind == .gemini {
+                if let enriched = await self.geminiProvider.enrich(summary: s) {
+                  return (s.id, enriched)
+                }
+                return (s.id, s)
               } else if let enriched = try await self.indexer.enrich(url: s.fileURL) {
                 return (s.id, enriched)
               }
@@ -1862,6 +1896,10 @@ final class SessionListViewModel: ObservableObject {
       })
   }
 
+  func rebuildGeminiProjectHashLookup() {
+    geminiProjectPathByHash = Self.computeGeminiProjectHashes(from: projects)
+  }
+
   nonisolated static func canonicalPath(_ path: String) -> String {
     let expanded = (path as NSString).expandingTildeInPath
     var standardized = URL(fileURLWithPath: expanded).standardizedFileURL.path
@@ -1869,6 +1907,50 @@ final class SessionListViewModel: ObservableObject {
       standardized.removeLast()
     }
     return standardized
+  }
+
+  private static func computeGeminiProjectHashes(from projects: [Project]) -> [String: String] {
+    var map: [String: String] = [:]
+    for project in projects {
+      guard let dir = project.directory, !dir.isEmpty else { continue }
+      guard let hash = geminiDirectoryHash(for: dir) else { continue }
+      map[hash] = canonicalPath(dir)
+    }
+    return map
+  }
+
+  private static func geminiDirectoryHash(for directory: String) -> String? {
+    let expanded = (directory as NSString).expandingTildeInPath
+    guard let data = expanded.data(using: .utf8) else { return nil }
+    let digest = SHA256.hash(data: data)
+    return digest.map { String(format: "%02x", $0) }.joined()
+  }
+
+  private static func geminiHashComponent(in path: String) -> String? {
+    guard let range = path.range(of: "/.gemini/tmp/") else { return nil }
+    let remainder = path[range.upperBound...]
+    guard let candidate = remainder.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+      .first else { return nil }
+    let hash = String(candidate)
+    guard hash.count == 64,
+      hash.range(of: "^[0-9a-f]+$", options: .regularExpression) != nil
+    else { return nil }
+    return hash
+  }
+
+  func displayWorkingDirectory(for summary: SessionSummary) -> String {
+    guard summary.source.baseKind == .gemini else { return summary.cwd }
+    if let hash = Self.geminiHashComponent(in: summary.cwd),
+      let resolved = geminiProjectPathByHash[hash]
+    {
+      return resolved
+    }
+    if let hash = Self.geminiHashComponent(in: summary.fileURL.path),
+      let resolved = geminiProjectPathByHash[hash]
+    {
+      return resolved
+    }
+    return summary.cwd
   }
 
   private func currentScope() -> SessionLoadScope {
@@ -2063,6 +2145,12 @@ final class SessionListViewModel: ObservableObject {
     pendingIncrementalHint = PendingIncrementalRefreshHint(
       kind: .codexDay(day), expiresAt: Date().addingTimeInterval(seconds))
   }
+  
+  func setIncrementalHintForGeminiToday(window seconds: TimeInterval = 10) {
+    let day = Calendar.current.startOfDay(for: Date())
+    pendingIncrementalHint = PendingIncrementalRefreshHint(
+      kind: .geminiDay(day), expiresAt: Date().addingTimeInterval(seconds))
+  }
 
   func setIncrementalHintForClaudeProject(directory: String, window seconds: TimeInterval = 120) {
     let canonical = Self.canonicalPath(directory)
@@ -2133,6 +2221,11 @@ final class SessionListViewModel: ObservableObject {
       // Swallow errors for incremental path; full refresh will recover if needed.
     }
   }
+  
+  func refreshIncrementalForGeminiToday() async {
+    let subset = await geminiProvider.sessions(scope: .day(dayOfToday()))
+    await MainActor.run { self.mergeAndApply(subset) }
+  }
 
   func refreshIncrementalForClaudeProject(directory: String) async {
     let subset = await claudeProvider.sessions(inProjectDirectory: directory)
@@ -2143,6 +2236,8 @@ final class SessionListViewModel: ObservableObject {
     switch hint.kind {
     case .codexDay:
       await refreshIncrementalForNewCodexToday()
+    case .geminiDay:
+      await refreshIncrementalForGeminiToday()
     case .claudeProject(let dir):
       await refreshIncrementalForClaudeProject(directory: dir)
     }
@@ -2201,12 +2296,14 @@ extension SessionListViewModel {
       }
     }()
     async let claudeSummaries: [SessionSummary] = claudeProvider.sessions(scope: .all)
+    async let geminiSummaries: [SessionSummary] = geminiProvider.sessions(scope: .all)
 
     var idSet = Set<String>()
     if let codexSummaries = await codexSummariesResult {
       for s in codexSummaries { idSet.insert(s.id) }
     }
     for s in await claudeSummaries { idSet.insert(s.id) }
+    for s in await geminiSummaries { idSet.insert(s.id) }
 
     var total = idSet.count
     let enabledHosts = preferences.enabledRemoteHosts
@@ -2505,6 +2602,8 @@ extension SessionListViewModel {
 
     // Try to start access for Claude directory if needed
     SandboxPermissionsManager.shared.startAccessingIfAuthorized(directory: .claudeSessions)
+    // Try to start access for Gemini directory if needed
+    SandboxPermissionsManager.shared.startAccessingIfAuthorized(directory: .geminiSessions)
 
     // Try to start access for CodMate directory if needed
     SandboxPermissionsManager.shared.startAccessingIfAuthorized(directory: .codmateData)
@@ -2527,6 +2626,8 @@ extension SessionListViewModel {
   func timeline(for summary: SessionSummary) async -> [ConversationTurn] {
     if summary.source.baseKind == .claude {
       return await claudeProvider.timeline(for: summary) ?? []
+    } else if summary.source.baseKind == .gemini {
+      return await geminiProvider.timeline(for: summary) ?? []
     }
     let loader = SessionTimelineLoader()
     return (try? loader.load(url: summary.fileURL)) ?? []
@@ -2621,5 +2722,48 @@ extension SessionListViewModel {
     await MainActor.run {
       self.remoteSyncStates = snapshot
     }
+  }
+}
+
+extension SessionListViewModel {
+  private func membershipKey(for id: String, source: ProjectSessionSource) -> String {
+    "\(source.rawValue)|\(id)"
+  }
+
+  private func membershipKey(for summary: SessionSummary) -> String {
+    membershipKey(for: summary.id, source: summary.source.projectSource)
+  }
+
+  func projectId(for summary: SessionSummary) -> String? {
+    projectMemberships[membershipKey(for: summary)]
+  }
+
+  func projectId(for sessionId: String, source: ProjectSessionSource) -> String? {
+    projectMemberships[membershipKey(for: sessionId, source: source)]
+  }
+
+  func sessionSummary(for id: String) -> SessionSummary? {
+    sessionLookup[id]
+  }
+
+  func sessionDragIdentifier(for summary: SessionSummary) -> String {
+    "session::\(summary.source.projectSource.rawValue)::\(summary.id)"
+  }
+
+  func sessionAssignment(forIdentifier identifier: String) -> SessionAssignment? {
+    if let parsed = parseSessionIdentifier(identifier) {
+      return parsed
+    }
+    if let summary = sessionSummary(for: identifier) {
+      return SessionAssignment(id: summary.id, source: summary.source.projectSource)
+    }
+    return SessionAssignment(id: identifier, source: .codex)
+  }
+
+  private func parseSessionIdentifier(_ value: String) -> SessionAssignment? {
+    let parts = value.components(separatedBy: "::")
+    guard parts.count == 3, parts[0] == "session" else { return nil }
+    guard let source = ProjectSessionSource(rawValue: parts[1]) else { return nil }
+    return SessionAssignment(id: parts[2], source: source)
   }
 }

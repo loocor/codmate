@@ -16,6 +16,7 @@ extension SessionListViewModel {
         let memberships = await projectsStore.membershipsSnapshot()
         await MainActor.run {
             self.projects = list
+            self.rebuildGeminiProjectHashLookup()
             self.projectStructureVersion &+= 1
             self.projectCounts = counts
             self.setProjectMemberships(memberships)
@@ -23,6 +24,7 @@ extension SessionListViewModel {
             self.invalidateProjectVisibleCountsCache()
             self.scheduleApplyFilters()
         }
+        await geminiProvider.invalidateProjectMappings()
     }
 
     func setSelectedProject(_ id: String?) {
@@ -46,7 +48,9 @@ extension SessionListViewModel {
     }
 
     func assignSessions(to projectId: String?, ids: [String]) async {
-        await projectsStore.assign(sessionIds: ids, to: projectId)
+        let assignments = ids.compactMap { sessionAssignment(forIdentifier: $0) }
+        guard !assignments.isEmpty else { return }
+        await projectsStore.assign(sessions: assignments, to: projectId)
         let counts = await projectsStore.counts()
         let memberships = await projectsStore.membershipsSnapshot()
         await MainActor.run {
@@ -82,7 +86,7 @@ extension SessionListViewModel {
             if filterByDay && !matchesDayFilters(session, descriptors: descriptors) {
                 continue
             }
-            if let pid = projectMemberships[session.id] {
+            if let pid = projectId(for: session) {
                 let allowedSources = allowed[pid] ?? ProjectSessionSource.allSet
                 if !allowedSources.contains(session.source.projectSource) { continue }
                 visible[pid, default: 0] += 1
@@ -197,7 +201,7 @@ extension SessionListViewModel {
 
         var days: Set<Int> = []
         for session in allSessions {
-            if let assigned = projectMemberships[session.id] {
+            if let assigned = projectId(for: session) {
                 guard allowedProjects.contains(assigned) else { continue }
                 let allowed = allowedSourcesByProject[assigned] ?? ProjectSessionSource.allSet
                 if !allowed.contains(session.source.projectSource) { continue }
@@ -223,10 +227,10 @@ extension SessionListViewModel {
     }
 
     func allSessionsInSameProject(as anchor: SessionSummary) -> [SessionSummary] {
-        if let pid = projectMemberships[anchor.id] {
+        if let pid = projectId(for: anchor) {
             let allowed = projects.first(where: { $0.id == pid })?.sources ?? ProjectSessionSource.allSet
             return allSessions.filter {
-                projectMemberships[$0.id] == pid && allowed.contains($0.source.projectSource)
+                projectId(for: $0) == pid && allowed.contains($0.source.projectSource)
             }
         }
         return allSessions
@@ -312,10 +316,14 @@ extension SessionListViewModel {
     func importMembershipsFromNotesIfNeeded(notes: [String: SessionNote]) async {
         let existing = await projectsStore.membershipsSnapshot()
         if !existing.isEmpty { return }
-        var buckets: [String: [String]] = [:]
-        for (sid, n) in notes { if let pid = n.projectId { buckets[pid, default: []].append(sid) } }
+        var buckets: [String: [SessionAssignment]] = [:]
+        for (sid, n) in notes {
+            guard let pid = n.projectId else { continue }
+            guard let assignment = sessionAssignment(forIdentifier: sid) else { continue }
+            buckets[pid, default: []].append(assignment)
+        }
         guard !buckets.isEmpty else { return }
-        for (pid, sids) in buckets { await projectsStore.assign(sessionIds: sids, to: pid) }
+        for (pid, entries) in buckets { await projectsStore.assign(sessions: entries, to: pid) }
         let counts = await projectsStore.counts()
         let memberships = await projectsStore.membershipsSnapshot()
         await MainActor.run {
@@ -352,7 +360,7 @@ extension SessionListViewModel {
             $0[$1.id] = $1.sources
         }
         for session in allSessions {
-            if let pid = projectMemberships[session.id] {
+            if let pid = projectId(for: session) {
                 let allowedSources = allowed[pid] ?? ProjectSessionSource.allSet
                 if allowedSources.contains(session.source.projectSource) {
                     counts[pid, default: 0] += 1

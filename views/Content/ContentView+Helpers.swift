@@ -114,16 +114,36 @@ extension ContentView {
     }
 
     func exportMarkdownForSession(_ session: SessionSummary) {
-        let loader = SessionTimelineLoader()
-        // Claude Code sessions use a different on-disk format; parse via ClaudeSessionParser
-        let allTurns: [ConversationTurn] = {
-        if session.source.baseKind == .claude {
-                if let parsed = ClaudeSessionParser().parse(at: session.fileURL) {
-                    return loader.turns(from: parsed.rows)
-                }
+        Task {
+            let loader = SessionTimelineLoader()
+            let allTurns = await loadConversationTurnsForExport(
+                session: session,
+                loader: loader
+            )
+            await MainActor.run {
+                presentMarkdownExport(for: session, allTurns: allTurns)
             }
+        }
+    }
+    
+    private func loadConversationTurnsForExport(
+        session: SessionSummary,
+        loader: SessionTimelineLoader
+    ) async -> [ConversationTurn] {
+        if session.source.baseKind == .claude {
+            if let parsed = ClaudeSessionParser().parse(at: session.fileURL) {
+                return loader.turns(from: parsed.rows)
+            }
+            return []
+        } else if session.source.baseKind == .gemini {
+            return await viewModel.timeline(for: session)
+        } else {
             return (try? loader.load(url: session.fileURL)) ?? []
-        }()
+        }
+    }
+    
+    @MainActor
+    private func presentMarkdownExport(for session: SessionSummary, allTurns: [ConversationTurn]) {
         let kinds = viewModel.preferences.markdownVisibleKinds
         let turns: [ConversationTurn] = allTurns.compactMap { turn in
             let userAllowed = turn.userMessage.flatMap { kinds.contains(event: $0) } ?? false
@@ -214,6 +234,63 @@ extension ContentView {
             text = String(text[..<idx])
         }
         return text
+    }
+    
+    func applyIncrementalHint(for source: SessionSource, directory: String?) {
+        switch source.baseKind {
+        case .codex:
+            viewModel.setIncrementalHintForCodexToday()
+        case .gemini:
+            viewModel.setIncrementalHintForGeminiToday()
+        case .claude:
+            if let directory {
+                viewModel.setIncrementalHintForClaudeProject(directory: directory)
+            }
+        }
+    }
+    
+    func scheduleIncrementalRefresh(for source: SessionSource, directory: String?) {
+        guard let action = incrementalRefreshAction(for: source, directory: directory) else { return }
+        let schedule = incrementalRefreshSchedule(for: source.baseKind)
+        Task {
+            for delay in schedule {
+                if delay > 0 {
+                    try? await Task.sleep(nanoseconds: delay)
+                }
+                await action()
+            }
+        }
+    }
+    
+    private func incrementalRefreshAction(
+        for source: SessionSource,
+        directory: String?
+    ) -> (() async -> Void)? {
+        switch source.baseKind {
+        case .codex:
+            return { await viewModel.refreshIncrementalForNewCodexToday() }
+        case .gemini:
+            return { await viewModel.refreshIncrementalForGeminiToday() }
+        case .claude:
+            guard let directory else { return nil }
+            return { await viewModel.refreshIncrementalForClaudeProject(directory: directory) }
+        }
+    }
+    
+    private func incrementalRefreshSchedule(for kind: SessionSource.Kind) -> [UInt64] {
+        switch kind {
+        case .claude:
+            return [
+                0,
+                600_000_000,
+                1_500_000_000,
+                3_000_000_000,
+                5_000_000_000,
+                10_000_000_000,
+            ]
+        case .codex, .gemini:
+            return [0, 600_000_000, 1_500_000_000]
+        }
     }
 
     func sourceButtonLabel(title: String, source: SessionSource) -> some View {

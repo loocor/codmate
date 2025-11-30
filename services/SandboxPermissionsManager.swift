@@ -27,6 +27,7 @@ final class SandboxPermissionsManager: ObservableObject {
     enum RequiredDirectory: String, CaseIterable, Identifiable {
         case codexSessions = "~/.codex"
         case claudeSessions = "~/.claude"
+        case geminiSessions = "~/.gemini"
         case codmateData = "~/.codmate"
         case sshConfig = "~/.ssh"
 
@@ -36,6 +37,7 @@ final class SandboxPermissionsManager: ObservableObject {
             switch self {
             case .codexSessions: return "Codex Directory"
             case .claudeSessions: return "Claude Code Directory"
+            case .geminiSessions: return "Gemini Directory"
             case .codmateData: return "CodMate Data Directory"
             case .sshConfig: return "SSH Configuration"
             }
@@ -47,6 +49,8 @@ final class SandboxPermissionsManager: ObservableObject {
                 return "Access Codex session history and data"
             case .claudeSessions:
                 return "Access Claude Code projects and sessions"
+            case .geminiSessions:
+                return "Access Gemini CLI session history"
             case .codmateData:
                 return "Access CodMate configuration, notes, and cache"
             case .sshConfig:
@@ -66,6 +70,7 @@ final class SandboxPermissionsManager: ObservableObject {
             switch self {
             case .codexSessions: return "bookmark.codexSessions"
             case .claudeSessions: return "bookmark.claudeSessions"
+            case .geminiSessions: return "bookmark.geminiSessions"
             case .codmateData: return "bookmark.codmateData"
             case .sshConfig: return "bookmark.sshConfig"
             }
@@ -201,7 +206,7 @@ final class SandboxPermissionsManager: ObservableObject {
         guard bookmarks.isSandboxed else { return }
         
         // Only request if we actually need these directories
-        let criticalDirs: [RequiredDirectory] = [.codexSessions, .claudeSessions, .sshConfig]
+        let criticalDirs: [RequiredDirectory] = [.codexSessions, .claudeSessions, .geminiSessions, .sshConfig]
         
         for dir in criticalDirs {
             // Skip if we already have permission

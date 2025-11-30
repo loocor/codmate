@@ -80,7 +80,7 @@ extension SessionListViewModel {
     }
 
     func buildResumeCLIInvocation(session: SessionSummary) -> String {
-        let execName = (session.source == .codexLocal) ? "codex" : "claude"
+        let execName = session.source.baseKind.cliExecutableName
         return actions.buildResumeCLIInvocation(
             session: session,
             executablePath: execName,
@@ -115,7 +115,7 @@ extension SessionListViewModel {
                 options: preferences.resumeOptions)
         }
         return actions.buildResumeCLIInvocation(
-            session: session, executablePath: (session.source == .codexLocal ? "codex" : "claude"), options: preferences.resumeOptions)
+            session: session, executablePath: session.source.baseKind.cliExecutableName, options: preferences.resumeOptions)
     }
 
     func copyNewSessionCommands(session: SessionSummary) {
@@ -325,7 +325,15 @@ extension SessionListViewModel {
     }
 
     func projectIdForSession(_ id: String) -> String? {
-        projectMemberships[id]
+        if let summary = sessionSummary(for: id) {
+            return projectId(for: summary)
+        }
+        for source in ProjectSessionSource.allCases {
+            if let pid = projectId(for: id, source: source) {
+                return pid
+            }
+        }
+        return nil
     }
 
     func projectForId(_ id: String) async -> Project? {

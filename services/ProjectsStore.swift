@@ -35,7 +35,13 @@ struct ProjectMeta: Codable, Hashable, Sendable {
     }
 
     func asProject() -> Project {
-        let sourceSet = Set(sources ?? ProjectSessionSource.allCases)
+        var sourceSet = Set(sources ?? ProjectSessionSource.allCases)
+        if sourceSet.isEmpty {
+            sourceSet = ProjectSessionSource.allSet
+        }
+        if !sourceSet.contains(.gemini) {
+            sourceSet.insert(.gemini)
+        }
         return Project(
             id: id,
             name: name,
@@ -49,6 +55,11 @@ struct ProjectMeta: Codable, Hashable, Sendable {
             sources: sourceSet
         )
     }
+}
+
+struct SessionAssignment: Codable, Hashable, Sendable {
+    let id: String
+    let source: ProjectSessionSource
 }
 
 actor ProjectsStore {
@@ -75,7 +86,8 @@ actor ProjectsStore {
 
     // runtime caches
     private var projects: [String: ProjectMeta] = [:] // id -> meta
-    private var sessionToProject: [String: String] = [:] // sessionId -> projectId
+    private var sessionToProject: [String: String] = [:] // membershipKey -> projectId
+    private let membershipVersion = 2
 
     init(paths: Paths = .default(), fileManager: FileManager = .default) {
         self.fm = fileManager
@@ -85,10 +97,19 @@ actor ProjectsStore {
         try? fm.createDirectory(at: paths.metadataDir, withIntermediateDirectories: true)
         // Load memberships
         if let data = try? Data(contentsOf: paths.membershipsURL),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let map = obj["sessionToProject"] as? [String: String]
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         {
-            self.sessionToProject = map
+            let map = obj["sessionToProject"] as? [String: String] ?? [:]
+            let version = obj["version"] as? Int ?? 1
+            if version >= 2 {
+                self.sessionToProject = map
+            } else {
+                // Legacy keys did not encode the session source; assume Codex
+                self.sessionToProject = map.reduce(into: [:]) { result, entry in
+                    let legacyKey = membershipKey(for: entry.key, source: .codex)
+                    result[legacyKey] = entry.value
+                }
+            }
         }
         // Load metadata
         if let en = fm.enumerator(at: paths.metadataDir, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
@@ -142,23 +163,37 @@ actor ProjectsStore {
         if changed { saveMemberships() }
     }
 
-    func assign(sessionIds: [String], to projectId: String?) {
+    private func membershipKey(for id: String, source: ProjectSessionSource) -> String {
+        return "\(source.rawValue)|\(id)"
+    }
+
+    func assign(sessions: [SessionAssignment], to projectId: String?) {
         var changed = false
-        for sid in sessionIds {
-            let trimmed = sid.trimmingCharacters(in: .whitespacesAndNewlines)
+        for entry in sessions {
+            let trimmed = entry.id.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty { continue }
+            let key = membershipKey(for: trimmed, source: entry.source)
             if let pid = projectId {
-                if sessionToProject[trimmed] != pid { sessionToProject[trimmed] = pid; changed = true }
+                if sessionToProject[key] != pid {
+                    sessionToProject[key] = pid
+                    changed = true
+                }
             } else {
-                if sessionToProject.removeValue(forKey: trimmed) != nil { changed = true }
+                if sessionToProject.removeValue(forKey: key) != nil {
+                    changed = true
+                }
             }
         }
         if changed { saveMemberships() }
     }
 
-    func projectId(for sessionId: String) -> String? { sessionToProject[sessionId] }
+    func projectId(for sessionId: String, source: ProjectSessionSource) -> String? {
+        sessionToProject[membershipKey(for: sessionId, source: source)]
+    }
     func membershipsSnapshot() -> [String: String] { sessionToProject }
-    func counts() -> [String: Int] { sessionToProject.values.reduce(into: [:]) { $0[$1, default: 0] += 1 } }
+    func counts() -> [String: Int] {
+        sessionToProject.values.reduce(into: [:]) { $0[$1, default: 0] += 1 }
+    }
 
     // MARK: - Load/Save
     private func loadAll() { /* unused post-init; kept for future reload hooks */ }
@@ -174,7 +209,7 @@ actor ProjectsStore {
 
     private func saveMemberships() {
         let obj: [String: Any] = [
-            "version": 1,
+            "version": membershipVersion,
             "sessionToProject": sessionToProject
         ]
         if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]) {

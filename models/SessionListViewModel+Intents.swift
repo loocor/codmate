@@ -71,7 +71,8 @@ extension SessionListViewModel {
             return
         }
         Task {
-            await projectsStore.assign(sessionIds: [s.id], to: best.intent.projectId)
+            let assignment = SessionAssignment(id: s.id, source: s.source.projectSource)
+            await projectsStore.assign(sessions: [assignment], to: best.intent.projectId)
             let counts = await projectsStore.counts()
             let memberships = await projectsStore.membershipsSnapshot()
             await MainActor.run {

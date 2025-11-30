@@ -9,7 +9,7 @@ extension SessionActions {
     {
         // Always invoke via /usr/bin/env to rely on system PATH resolution.
         // This removes the need for user-configured CLI paths and aligns with app policy.
-        let exeName = session.source.baseKind == .codex ? "codex" : "claude"
+        let exeName = executableName(for: session.source.baseKind)
 
         // Prepare arguments first, including async MCP config if needed
         var args: [String]
@@ -47,6 +47,8 @@ extension SessionActions {
             let mcpStore = MCPServersStore()
             try? await mcpStore.exportEnabledForClaudeConfig()
             if let fb = options.claudeFallbackModel, !fb.isEmpty { args.append(contentsOf: ["--fallback-model", fb]) }
+        case .gemini:
+            args = ["--resume", conversationId(for: session)]
         }
         
         return try await withCheckedThrowingContinuation { continuation in
@@ -180,6 +182,10 @@ extension SessionActions {
     // expectation (UUID) and Claude's native id semantics.
     private func conversationId(for session: SessionSummary) -> String { session.id }
 
+    private func executableName(for kind: SessionSource.Kind) -> String {
+        kind.cliExecutableName
+    }
+
     private func embeddedExportLines(for source: SessionSource) -> [String] {
         var lines: [String] = [
             "export LANG=zh_CN.UTF-8",
@@ -255,6 +261,8 @@ extension SessionActions {
             if options.claudeStrictMCP { parts.append("--strict-mcp-config") }
             if let fb = options.claudeFallbackModel, !fb.isEmpty { parts.append(contentsOf: ["--fallback-model", shellQuoteIfNeeded(fb)]) }
             return parts.joined(separator: " ")
+        case .gemini:
+            return ([exe, "--resume", shellQuoteIfNeeded(conversationId(for: session))]).joined(separator: " ")
         }
     }
 
@@ -268,7 +276,9 @@ extension SessionActions {
             args += ["--model", normalized]
         }
         // Attach sandbox/approval flags from options
-        args += flags(from: options)
+        if session.source.baseKind == .codex {
+            args += flags(from: options)
+        }
         return args
     }
 
@@ -389,6 +399,21 @@ extension SessionActions {
                 parts.append(shellSingleQuoted(prompt))
             }
             return parts.joined(separator: " ")
+        case .gemini:
+            let exe = "gemini"
+            var parts: [String] = [exe]
+            let args = buildNewSessionArguments(session: session, options: options).map {
+                arg -> String in
+                if arg.contains(where: { $0.isWhitespace || $0 == "'" }) {
+                    return shellEscapedPath(arg)
+                }
+                return arg
+            }
+            parts.append(contentsOf: args)
+            if let prompt = initialPrompt, !prompt.isEmpty {
+                parts.append(shellSingleQuoted(prompt))
+            }
+            return parts.joined(separator: " ")
         }
     }
 
@@ -408,7 +433,7 @@ extension SessionActions {
         let exports = embeddedExportLines(for: session.source).joined(separator: "; ")
         // MAS sandbox: do not auto-execute external CLI inside the app. Only prepare directory and env.
         // The user can copy or insert the real command via UI prompts.
-        let cliName = session.source.baseKind == .codex ? "codex" : "claude"
+        let cliName = executableName(for: session.source.baseKind)
         let notice = "echo \"[CodMate] App Store 沙盒无法直接运行 \(cliName) CLI，请使用右侧按钮复制命令，在外部终端执行。\""
         return cd + "\n" + exports + "\n" + notice + "\n"
         #else
@@ -431,7 +456,7 @@ extension SessionActions {
         let exports = embeddedExportLines(for: session.source).joined(separator: "; ")
         let injectedPATH = CLIEnvironment.buildInjectedPATH()
         // Use bare executable name for embedded terminal to respect user's PATH resolution
-        let execPath = session.source.baseKind == .codex ? "codex" : "claude"
+        let execPath = executableName(for: session.source.baseKind)
         let invocation = buildResumeCLIInvocation(
             session: session, executablePath: execPath, options: options)
         let resume = "PATH=\(injectedPATH) \(invocation)"
@@ -449,7 +474,7 @@ extension SessionActions {
             ? session.cwd : session.fileURL.deletingLastPathComponent().path
         let cd = "cd " + shellEscapedPath(cwd)
         // MAS: do not execute external CLI in embedded terminal; only show a notice.
-        let notice = "echo \"[CodMate] App Store 沙盒无法直接运行 codex/claude CLI，请在外部终端执行复制的命令。\""
+        let notice = "echo \"[CodMate] App Store 沙盒无法直接运行 \(session.source.baseKind.cliExecutableName) CLI，请在外部终端执行复制的命令。\""
         return cd + "\n" + notice + "\n"
         #else
         if session.isRemote, let host = session.remoteHost {
@@ -520,7 +545,7 @@ extension SessionActions {
             FileManager.default.fileExists(atPath: session.cwd)
             ? session.cwd : session.fileURL.deletingLastPathComponent().path
         let cd = "cd " + shellEscapedPath(cwd)
-        let execPath = session.source.baseKind == .codex ? "codex" : "claude"
+        let execPath = executableName(for: session.source.baseKind)
         let resume = buildResumeCLIInvocation(
             session: session, executablePath: execPath, options: options)
         return cd + "\n" + resume + "\n"
@@ -792,7 +817,7 @@ extension SessionActions {
         initialPrompt: String? = nil
     ) -> String {
         // Launch using project profile; choose executable based on session source.
-        let exe = session.source.baseKind == .codex ? "codex" : "claude"
+        let exe = executableName(for: session.source.baseKind)
         var parts: [String] = [exe]
 
         // For Claude, only include model if specified; profile settings don't apply.
@@ -807,6 +832,12 @@ extension SessionActions {
             return parts.joined(separator: " ")
         }
 
+        if session.source.baseKind == .gemini {
+            if let prompt = initialPrompt, !prompt.isEmpty {
+                parts.append(shellSingleQuoted(prompt))
+            }
+            return parts.joined(separator: " ")
+        }
         // For Codex, use full project profile arguments
         let args = buildNewSessionArguments(
             using: project, fallbackModel: effectiveCodexModel(for: session), options: options
@@ -971,7 +1002,7 @@ extension SessionActions {
         session: SessionSummary, project: Project, options: ResumeOptions
     ) -> String {
         // Choose executable based on session source; select profile (no flags for Claude).
-        let exe = session.source.baseKind == .codex ? "codex" : "claude"
+        let exe = executableName(for: session.source.baseKind)
         var parts: [String] = [exe]
 
         // For Claude, profiles don't apply; use simple resume command.
@@ -1175,7 +1206,7 @@ extension SessionActions {
                 resolvedArguments: sshContext
             )
         } else {
-            let execName = session.source.baseKind == .codex ? "codex" : "claude"
+            let execName = executableName(for: session.source.baseKind)
             command = buildResumeCLIInvocation(
             session: session, executablePath: execName, options: options)
         }

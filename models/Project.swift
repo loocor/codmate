@@ -27,6 +27,7 @@ struct ProjectProfile: Codable, Hashable, Sendable {
 enum ProjectSessionSource: String, CaseIterable, Codable, Sendable, Identifiable {
     case codex
     case claude
+    case gemini
 
     var id: String { rawValue }
 
@@ -34,6 +35,7 @@ enum ProjectSessionSource: String, CaseIterable, Codable, Sendable, Identifiable
         switch self {
         case .codex: return "Codex"
         case .claude: return "Claude"
+        case .gemini: return "Gemini"
         }
     }
 }
@@ -45,6 +47,7 @@ extension ProjectSessionSource {
         switch self {
         case .codex: return .codexLocal
         case .claude: return .claudeLocal
+        case .gemini: return .geminiLocal
         }
     }
 }
@@ -54,12 +57,13 @@ extension SessionSource {
         switch self {
         case .codexLocal, .codexRemote: return .codex
         case .claudeLocal, .claudeRemote: return .claude
+        case .geminiLocal, .geminiRemote: return .gemini
         }
     }
 
     func friendlyModelName(for raw: String) -> String {
         switch self {
-        case .codexLocal, .codexRemote:
+        case .codexLocal, .codexRemote, .geminiLocal, .geminiRemote:
             return raw
         case .claudeLocal, .claudeRemote:
             return Self.normalizeClaudeModel(raw)

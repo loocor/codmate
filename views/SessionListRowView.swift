@@ -43,6 +43,22 @@ extension SessionSource {
         badgeBackground: Color.purple.opacity(0.10),
         badgeAssetName: "ClaudeIcon"
       )
+    case .geminiLocal:
+      return SessionSourceBranding(
+        displayName: "Gemini",
+        symbolName: "sparkles.rectangle.stack.fill",
+        iconColor: Color.blue,
+        badgeBackground: Color.blue.opacity(0.1),
+        badgeAssetName: "GeminiIcon"
+      )
+    case .geminiRemote(let host):
+      return SessionSourceBranding(
+        displayName: "Gemini (\(host))",
+        symbolName: "sparkles.rectangle.stack.fill",
+        iconColor: Color.blue,
+        badgeBackground: Color.blue.opacity(0.1),
+        badgeAssetName: "GeminiIcon"
+      )
     }
   }
 }
@@ -184,7 +200,7 @@ struct SessionListRowView: View {
               .frame(width: 18, height: 18)
               .modifier(
                 DarkModeInvertModifier(
-                  active: summary.source.baseKind == .codex
+                  active: summary.source.baseKind == .codex || summary.source.baseKind == .gemini
                     && (colorScheme == .dark || isSelected)
                 )
               )
