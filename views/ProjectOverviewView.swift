@@ -1,12 +1,14 @@
+import AppKit
 import SwiftUI
 
 struct ProjectOverviewView: View {
   @ObservedObject var viewModel: ProjectOverviewViewModel
   var project: Project
   var onSelectSession: (SessionSummary) -> Void
-  var onResumeSession: (SessionSummary) -> Void // Keeping this for consistency, though not used in ProjectOverviewViewModel directly
-  var onFocusToday: () -> Void // Keeping this for consistency, though not used in ProjectOverviewViewModel directly
+  var onResumeSession: (SessionSummary) -> Void  // Keeping this for consistency, though not used in ProjectOverviewViewModel directly
+  var onFocusToday: () -> Void  // Keeping this for consistency, though not used in ProjectOverviewViewModel directly
   var onEditProject: (Project) -> Void
+  @Environment(\.colorScheme) private var colorScheme
 
   private func columns(for width: CGFloat) -> [GridItem] {
     let minWidth: CGFloat = 220
@@ -15,13 +17,13 @@ struct ProjectOverviewView: View {
     let count = max(1, Int((availableWidth + spacing) / (minWidth + spacing)))
     // Cap at 4 columns to match the max number of items per section (4)
     var targetCount = min(4, count)
-    
+
     // Optimization: Avoid 3 columns for 4-item grids to prevent "3 on top, 1 on bottom" layout.
     // Since we mostly have sets of 4 items (Hero, Projects), a 2x2 grid looks better than 3+1.
     if targetCount == 3 {
       targetCount = 2
     }
-    
+
     return Array(repeating: GridItem(.flexible(), spacing: spacing), count: targetCount)
   }
 
@@ -96,9 +98,9 @@ struct ProjectOverviewView: View {
           detail: "Tokens \(snapshot.totalTokens.formatted())"
         )
         heroMetric(
-            title: "Tool Invocations",
-            value: snapshot.totalToolInvocations.formatted(),
-            detail: "Tools used"
+          title: "Tool Invocations",
+          value: snapshot.totalToolInvocations.formatted(),
+          detail: "Tools used"
         )
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -111,7 +113,9 @@ struct ProjectOverviewView: View {
   }
 
   private var projectOverviewLine: String {
-    if let overview = project.overview?.trimmingCharacters(in: .whitespacesAndNewlines), !overview.isEmpty {
+    if let overview = project.overview?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !overview.isEmpty
+    {
       return overview
     }
     return "Project Overview"
@@ -148,23 +152,23 @@ struct ProjectOverviewView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
-                
+
                 VStack(alignment: .leading, spacing: 4) {
-                    Label {
-                        Text("Total \(stat.totalTokens.formatted()) tokens")
-                    } icon: {
-                        Image(systemName: "text.quote")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    
-                    Label {
-                        Text("Avg \(Self.durationFormatter.string(from: stat.avgDuration) ?? "—")")
-                    } icon: {
-                        Image(systemName: "clock")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                  Label {
+                    Text("Total \(stat.totalTokens.formatted()) tokens")
+                  } icon: {
+                    Image(systemName: "text.quote")
+                  }
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+
+                  Label {
+                    Text("Avg \(Self.durationFormatter.string(from: stat.avgDuration) ?? "—")")
+                  } icon: {
+                    Image(systemName: "clock")
+                  }
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
                 }
                 .padding(.top, 4)
               }
@@ -178,29 +182,43 @@ struct ProjectOverviewView: View {
 
   @ViewBuilder
   private var recentSection: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text("Recent Sessions in Project") // Changed from Recent Sessions
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Recent Sessions")
         .font(.headline)
       if snapshot.recentSessions.isEmpty {
         OverviewCard {
-          Text("No sessions in this project for the selected range.") // Changed message
+          Text("No sessions in this project for the selected range.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
       } else {
-        VStack(spacing: 12) {
-          ForEach(snapshot.recentSessions, id: \.id) { session in
-            let projectInfo = viewModel.resolveProject(for: session)
-            OverviewCard {
-              // Removed onProjectClick as we are already in the project view
-              sessionRow(
-                session: session,
-                project: projectInfo,
-                onProjectClick: nil, // Project already selected
-                actionTitle: "Open"
-              ) {
+        OverviewCard {
+          VStack(spacing: 2) {
+            ForEach(Array(snapshot.recentSessions.enumerated()), id: \.element.id) {
+              index, session in
+              Button {
                 onSelectSession(session)
+              } label: {
+                sessionRow(session: session)
+                  .padding(.vertical, 8)
+                  .padding(.leading, 0)
+                  .padding(.trailing, 8)
+                  .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+              .onHover { hovering in
+                if hovering {
+                  NSCursor.pointingHand.set()
+                } else {
+                  NSCursor.arrow.set()
+                }
+              }
+
+              if index < snapshot.recentSessions.count - 1 {
+                Divider()
+                  .padding(.leading, 36)
+                  .padding(.trailing, 4)
               }
             }
           }
@@ -209,46 +227,46 @@ struct ProjectOverviewView: View {
     }
   }
 
-  private func sessionRow(
-    session: SessionSummary,
-    project: (id: String, name: String)?,
-    onProjectClick: ((String) -> Void)?,
-    actionTitle: String,
-    action: @escaping () -> Void
-  ) -> some View {
+  private func sessionRow(session: SessionSummary) -> some View {
     HStack(alignment: .center, spacing: 12) {
-      // In Project Overview, we don't need project name column to jump to itself.
-      // We can just show project name as text or remove it. Let's remove the column.
-      // The overall context is this project.
+      let branding = session.source.branding
+      if let asset = branding.badgeAssetName {
+        Image(asset)
+          .resizable()
+          .renderingMode(.original)
+          .aspectRatio(contentMode: .fit)
+          .frame(width: 16, height: 16)
+          .modifier(
+            DarkModeInvertModifier(
+              active: session.source.baseKind == .codex && colorScheme == .dark
+            )
+          )
+      } else {
+        Image(systemName: branding.symbolName)
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(branding.iconColor)
+          .frame(width: 16)
+      }
 
-      // Leading: Title and Date
-      VStack(alignment: .leading, spacing: 2) {
+      VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 8) {
           Text(session.effectiveTitle)
-            .font(.subheadline)
+            .font(.headline)
             .fontWeight(.medium)
             .lineLimit(1)
             .truncationMode(.tail)
-          
-          Text(session.displayModel ?? session.source.branding.displayName)
-            .font(.caption2)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color.secondary.opacity(0.1))
-            .cornerRadius(4)
-            .foregroundStyle(.secondary)
         }
-        
+
         HStack(spacing: 6) {
           let date = session.lastUpdatedAt ?? session.startedAt
           Text(date, style: .relative)
             .font(.caption)
             .foregroundStyle(.secondary)
-          
+
           Text("·")
             .font(.caption)
             .foregroundStyle(.tertiary)
-            
+
           Text(session.commentSnippet)
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -256,15 +274,12 @@ struct ProjectOverviewView: View {
             .truncationMode(.tail)
         }
       }
-      
+
       Spacer()
-      
-      Button(actionTitle, action: action)
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+      Image(systemName: "chevron.right")
         .font(.caption)
+        .foregroundStyle(.tertiary)
     }
-    .padding(.vertical, 4)
   }
 
   private struct OverviewCard<Content: View>: View {

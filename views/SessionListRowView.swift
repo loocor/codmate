@@ -199,7 +199,8 @@ struct SessionListRowView: View {
                 reduceMotion ? 1.0 : (awaitingFollowup ? (breathing ? 1.0 : 0.55) : 1.0)
               )
           } else if let asset = branding.badgeAssetName {
-            if isSelected && !summary.source.isGemini {
+            let shouldInvertCodexDark = summary.source.baseKind == .codex && colorScheme == .dark
+            if isSelected && !summary.source.isGemini && !shouldInvertCodexDark {
               Image(asset)
                 .resizable()
                 .renderingMode(.template)
@@ -213,6 +214,9 @@ struct SessionListRowView: View {
                 .renderingMode(.original)
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 18, height: 18)
+                .modifier(
+                  DarkModeInvertModifier(active: shouldInvertCodexDark)
+                )
                 .help(branding.displayName)
             }
           } else {
