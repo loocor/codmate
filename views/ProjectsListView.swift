@@ -603,46 +603,11 @@ struct ProjectEditorSheet: View {
           }
           .padding(16)
         }
-        Tab("Instructions", systemImage: "text.alignleft") {
-          HStack {
-            Spacer(minLength: 0)
-            VStack(alignment: .leading, spacing: 6) {
-              TextEditor(text: $instructions)
-                .font(.body)
-                .frame(minHeight: 120, maxHeight: 220)
-                .frame(width: fieldColWidth)
-                .overlay(
-                  RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.secondary.opacity(0.2))
-                )
-              Text("Default instructions for new sessions")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-          }
-          .padding(16)
-        }
         Tab("Profile", systemImage: "person.crop.square") {
           VStack(alignment: .leading, spacing: 12) {
             Text("Project Profile (applies to new sessions)")
               .font(.subheadline)
               .foregroundStyle(.secondary)
-
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
-              GridRow {
-                Text("Model")
-                  .font(.subheadline)
-                  .frame(width: labelColWidth, alignment: .trailing)
-                TextField(
-                  "e.g. gpt-4o-mini",
-                  text: Binding(
-                    get: { profileModel ?? "" }, set: { profileModel = $0.isEmpty ? nil : $0 })
-                )
-                .textFieldStyle(.roundedBorder)
-                .frame(width: fieldColWidth, alignment: .leading)
-              }
-            }
 
             // Sandbox + Approval (left-aligned)
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
