@@ -9,6 +9,12 @@ struct SessionSourceBranding {
 }
 
 extension SessionSource {
+  var isGemini: Bool {
+    switch self {
+    case .geminiLocal, .geminiRemote: return true
+    default: return false
+    }
+  }
   var branding: SessionSourceBranding {
     switch self {
     case .codexLocal:
@@ -199,7 +205,7 @@ struct SessionListRowView: View {
               .aspectRatio(contentMode: .fit)
               .frame(width: 18, height: 18)
               .modifier(
-                DarkModeInvertModifier(active: isSelected)
+                DarkModeInvertModifier(active: isSelected && !summary.source.isGemini)
               )
               .help(branding.displayName)
           } else {
