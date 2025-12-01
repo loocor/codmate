@@ -251,22 +251,7 @@ final class SessionListViewModel: ObservableObject {
   @Published var projectReviewPanelStates: [String: ReviewPanelState] = [:]
 
   // Project workspace mode (toolbar segmented)
-  @Published var projectWorkspaceMode: ProjectWorkspaceMode = .overview {
-    didSet {
-      guard oldValue != projectWorkspaceMode else { return }
-      windowStateStore.saveWorkspaceMode(projectWorkspaceMode)
-      // Persist per-project mode when a single real project is selected
-      if selectedProjectIDs.count == 1,
-        let pid = selectedProjectIDs.first,
-        pid != Self.otherProjectId,
-        let project = projects.first(where: { $0.id == pid }),
-        let dir = project.directory, !dir.isEmpty,
-        projectWorkspaceMode != .sessions
-      {
-        windowStateStore.saveProjectWorkspaceMode(projectId: pid, mode: projectWorkspaceMode)
-      }
-    }
-  }
+  @Published var projectWorkspaceMode: ProjectWorkspaceMode = .overview
 
   let windowStateStore = WindowStateStore()
 
@@ -582,9 +567,8 @@ final class SessionListViewModel: ObservableObject {
       self.sidebarMonthStart = Self.normalizeMonthStart(today)
     }
 
-    // Restore project selection and workspace mode
+    // Restore project selection
     self.selectedProjectIDs = windowStateStore.restoreProjectSelection()
-    self.projectWorkspaceMode = windowStateStore.restoreWorkspaceMode()
     self.expandedProjectIDs = windowStateStore.restoreProjectExpansions()
 
     suppressFilterNotifications = false

@@ -11,8 +11,6 @@ final class WindowStateStore: ObservableObject {
     static let selectedDay = "codmate.window.selectedDay"
     static let selectedDays = "codmate.window.selectedDays"
     static let monthStart = "codmate.window.monthStart"
-    static let projectWorkspaceMode = "codmate.window.projectWorkspaceMode"
-    static let projectWorkspaceModesById = "codmate.window.projectWorkspaceModesById"
     static let selectedSessionIDs = "codmate.window.selectedSessionIDs"
     static let selectionPrimaryId = "codmate.window.selectionPrimaryId"
     static let contentColumnWidth = "codmate.window.contentColumnWidth"
@@ -42,19 +40,6 @@ final class WindowStateStore: ObservableObject {
     defaults.set(intervals, forKey: Keys.selectedDays)
 
     defaults.set(monthStart.timeIntervalSinceReferenceDate, forKey: Keys.monthStart)
-  }
-
-  func saveWorkspaceMode(_ mode: ProjectWorkspaceMode) {
-    defaults.set(mode.rawValue, forKey: Keys.projectWorkspaceMode)
-  }
-
-  // Per-project workspace mode persistence
-  func saveProjectWorkspaceMode(projectId: String, mode: ProjectWorkspaceMode) {
-    // Sessions mode is reserved for the virtual "Other" node; do not persist for real projects
-    guard mode != .sessions else { return }
-    var dict = (defaults.dictionary(forKey: Keys.projectWorkspaceModesById) as? [String: String]) ?? [:]
-    dict[projectId] = mode.rawValue
-    defaults.set(dict, forKey: Keys.projectWorkspaceModesById)
   }
 
   func saveSessionSelection(selectedIDs: Set<SessionSummary.ID>, primaryId: SessionSummary.ID?) {
@@ -121,23 +106,6 @@ final class WindowStateStore: ObservableObject {
     return (selectedDay, selectedDays, monthStart)
   }
 
-  func restoreWorkspaceMode() -> ProjectWorkspaceMode {
-    guard let rawValue = defaults.string(forKey: Keys.projectWorkspaceMode),
-      let mode = ProjectWorkspaceMode(rawValue: rawValue)
-    else {
-      return .overview  // default to the Overview surface
-    }
-    return mode
-  }
-
-  func restoreWorkspaceMode(for projectId: String) -> ProjectWorkspaceMode? {
-    guard let dict = defaults.dictionary(forKey: Keys.projectWorkspaceModesById) as? [String: String],
-          let raw = dict[projectId], let mode = ProjectWorkspaceMode(rawValue: raw) else {
-      return nil
-    }
-    return mode
-  }
-
   func restoreSessionSelection() -> (
     selectedIDs: Set<SessionSummary.ID>, primaryId: SessionSummary.ID?
   ) {
@@ -171,8 +139,6 @@ final class WindowStateStore: ObservableObject {
     defaults.removeObject(forKey: Keys.selectedDay)
     defaults.removeObject(forKey: Keys.selectedDays)
     defaults.removeObject(forKey: Keys.monthStart)
-    defaults.removeObject(forKey: Keys.projectWorkspaceMode)
-    defaults.removeObject(forKey: Keys.projectWorkspaceModesById)
     defaults.removeObject(forKey: Keys.contentColumnWidth)
     defaults.removeObject(forKey: Keys.reviewLeftPaneWidth)
     defaults.removeObject(forKey: Keys.selectedSessionIDs)

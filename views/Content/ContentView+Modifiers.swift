@@ -53,17 +53,15 @@ extension ContentView {
       }
       return
     }
-    // Single real project: restore its last workspace mode, default to the Overview surface; sanitize hidden modes
+    // Single real project: default to Overview (settings surface) when coming from global/other modes
     if viewModel.selectedProjectIDs.count == 1,
        let pid = viewModel.selectedProjectIDs.first,
        let project = viewModel.projects.first(where: { $0.id == pid }),
        let dir = project.directory, !dir.isEmpty {
-      var restored = viewModel.windowStateStore.restoreWorkspaceMode(for: pid) ?? .settings
-      // Legacy Overview/Memory/Sessions modes map back to the project Overview surface
-      if restored == .overview || restored == .memory || restored == .sessions {
-        restored = .settings
+      guard pendingSelectionID == nil else { return }
+      if viewModel.projectWorkspaceMode != .settings {
+        viewModel.projectWorkspaceMode = .settings
       }
-      if viewModel.projectWorkspaceMode != restored { viewModel.projectWorkspaceMode = restored }
     }
   }
   func navigationSplitView(geometry: GeometryProxy) -> some View {

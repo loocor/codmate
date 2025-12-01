@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 struct ProjectOverviewView: View {
@@ -8,7 +7,6 @@ struct ProjectOverviewView: View {
   var onResumeSession: (SessionSummary) -> Void  // Keeping this for consistency, though not used in ProjectOverviewViewModel directly
   var onFocusToday: () -> Void  // Keeping this for consistency, though not used in ProjectOverviewViewModel directly
   var onEditProject: (Project) -> Void
-  @Environment(\.colorScheme) private var colorScheme
 
   private func columns(for width: CGFloat) -> [GridItem] {
     let minWidth: CGFloat = 220
@@ -182,126 +180,11 @@ struct ProjectOverviewView: View {
 
   @ViewBuilder
   private var recentSection: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text("Recent Sessions")
-        .font(.headline)
-      if snapshot.recentSessions.isEmpty {
-        OverviewCard {
-          Text("No sessions in this project for the selected range.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-      } else {
-        OverviewCard {
-          VStack(spacing: 2) {
-            ForEach(Array(snapshot.recentSessions.enumerated()), id: \.element.id) {
-              index, session in
-              Button {
-                onSelectSession(session)
-              } label: {
-                sessionRow(session: session)
-                  .padding(.vertical, 8)
-                  .padding(.leading, 0)
-                  .padding(.trailing, 8)
-                  .contentShape(Rectangle())
-              }
-              .buttonStyle(.plain)
-              .onHover { hovering in
-                if hovering {
-                  NSCursor.pointingHand.set()
-                } else {
-                  NSCursor.arrow.set()
-                }
-              }
-
-              if index < snapshot.recentSessions.count - 1 {
-                Divider()
-                  .padding(.leading, 36)
-                  .padding(.trailing, 4)
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  private func sessionRow(session: SessionSummary) -> some View {
-    HStack(alignment: .center, spacing: 12) {
-      let branding = session.source.branding
-      if let asset = branding.badgeAssetName {
-        Image(asset)
-          .resizable()
-          .renderingMode(.original)
-          .aspectRatio(contentMode: .fit)
-          .frame(width: 16, height: 16)
-          .modifier(
-            DarkModeInvertModifier(
-              active: session.source.baseKind == .codex && colorScheme == .dark
-            )
-          )
-      } else {
-        Image(systemName: branding.symbolName)
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(branding.iconColor)
-          .frame(width: 16)
-      }
-
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 8) {
-          Text(session.effectiveTitle)
-            .font(.headline)
-            .fontWeight(.medium)
-            .lineLimit(1)
-            .truncationMode(.tail)
-        }
-
-        HStack(spacing: 6) {
-          let date = session.lastUpdatedAt ?? session.startedAt
-          Text(date, style: .relative)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-
-          Text("·")
-            .font(.caption)
-            .foregroundStyle(.tertiary)
-
-          Text(session.commentSnippet)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
-        }
-      }
-
-      Spacer()
-      Image(systemName: "chevron.right")
-        .font(.caption)
-        .foregroundStyle(.tertiary)
-    }
-  }
-
-  private struct OverviewCard<Content: View>: View {
-    let content: Content
-
-    init(@ViewBuilder content: () -> Content) {
-      self.content = content()
-    }
-
-    var body: some View {
-      content
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-        )
-    }
+    RecentSessionsListView(
+      sessions: snapshot.recentSessions,
+      emptyMessage: "No sessions in this project for the selected range.",
+      onSelectSession: onSelectSession
+    )
   }
 
   private static let durationFormatter: DateComponentsFormatter = {

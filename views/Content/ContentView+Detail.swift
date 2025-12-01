@@ -189,9 +189,8 @@ extension ContentView {
     isListHidden = false
     if id == SessionListViewModel.otherProjectId {
       viewModel.projectWorkspaceMode = .sessions
-    } else if viewModel.projectWorkspaceMode == .overview
-                || viewModel.projectWorkspaceMode == .settings {
-      viewModel.projectWorkspaceMode = .tasks
+    } else {
+      viewModel.projectWorkspaceMode = .settings
     }
   }
 
