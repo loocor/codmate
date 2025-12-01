@@ -45,37 +45,53 @@ final class AllOverviewViewModel: ObservableObject {
       try? await Task.sleep(nanoseconds: 120_000_000)
       guard !Task.isCancelled else { return }
       guard let self else { return }
-      await MainActor.run { self.recomputeSnapshot() }
+      
+      // Capture data on MainActor
+      let filteredSessions: [SessionSummary] = self.sessionListViewModel.sections.flatMap { $0.sessions }
+      let usageSnapshots = self.sessionListViewModel.usageSnapshots
+      let projectCount = self.sessionListViewModel.projects.count
+      
+      // Run computation in background
+      let newSnapshot = await Self.computeSnapshot(
+        sessions: filteredSessions,
+        usageSnapshots: usageSnapshots,
+        projectCount: projectCount
+      )
+      
+      guard !Task.isCancelled else { return }
+      await MainActor.run {
+        self.snapshot = newSnapshot
+      }
     }
   }
 
-  private func recomputeSnapshot() {
-    // Use filtered sessions (from the middle list) for all stats
-    // to respect the user's calendar/search selection.
-    let filteredSessions: [SessionSummary] = sessionListViewModel.sections.flatMap { $0.sessions }
-    
+  private static func computeSnapshot(
+    sessions: [SessionSummary],
+    usageSnapshots: [UsageProviderKind: UsageProviderSnapshot],
+    projectCount: Int
+  ) async -> AllOverviewSnapshot {
     let now = Date()
     
     func anchorDate(for session: SessionSummary) -> Date {
       session.lastUpdatedAt ?? session.startedAt
     }
 
-    let totalDuration = filteredSessions.reduce(0) { $0 + $1.duration }
-    let totalTokens = filteredSessions.reduce(0) { $0 + $1.turnContextCount }
-    let userMessages = filteredSessions.reduce(0) { $0 + $1.userMessageCount }
-    let assistantMessages = filteredSessions.reduce(0) { $0 + $1.assistantMessageCount }
+    let totalDuration = sessions.reduce(0) { $0 + $1.duration }
+    let totalTokens = sessions.reduce(0) { $0 + $1.turnContextCount }
+    let userMessages = sessions.reduce(0) { $0 + $1.userMessageCount }
+    let assistantMessages = sessions.reduce(0) { $0 + $1.assistantMessageCount }
 
     let recentTop = Array(
-      filteredSessions
+      sessions
         .sorted { anchorDate(for: $0) > anchorDate(for: $1) }
         .prefix(5)
     )
 
-    let sourceStats = buildSourceStats(from: filteredSessions)
-    let activityData = filteredSessions.generateChartData()
+    let sourceStats = buildSourceStats(from: sessions)
+    let activityData = sessions.generateChartData()
 
-    snapshot = AllOverviewSnapshot(
-      totalSessions: filteredSessions.count,
+    return AllOverviewSnapshot(
+      totalSessions: sessions.count,
       totalDuration: totalDuration,
       totalTokens: totalTokens,
       userMessages: userMessages,
@@ -83,13 +99,13 @@ final class AllOverviewViewModel: ObservableObject {
       recentSessions: recentTop,
       sourceStats: sourceStats,
       activityChartData: activityData,
-      usageSnapshots: sessionListViewModel.usageSnapshots,
-      projectCount: sessionListViewModel.projects.count,
+      usageSnapshots: usageSnapshots,
+      projectCount: projectCount,
       lastUpdated: now
     )
   }
   
-  private func buildSourceStats(from sessions: [SessionSummary]) -> [AllOverviewSnapshot.SourceStat] {
+  private static func buildSourceStats(from sessions: [SessionSummary]) -> [AllOverviewSnapshot.SourceStat] {
     var groups: [SessionSource.Kind: [SessionSummary]] = [:]
     for session in sessions {
       groups[session.source.baseKind, default: []].append(session)
@@ -133,6 +149,10 @@ final class AllOverviewViewModel: ObservableObject {
     }
     
     return stats
+  }
+
+  private func recomputeSnapshot() {
+    scheduleSnapshotRefresh()
   }
 
   func resolveProject(for session: SessionSummary) -> (id: String, name: String)? {

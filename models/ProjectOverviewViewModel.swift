@@ -57,17 +57,32 @@ final class ProjectOverviewViewModel: ObservableObject {
       try? await Task.sleep(nanoseconds: 120_000_000)
       guard !Task.isCancelled else { return }
       guard let self else { return }
-      await MainActor.run { self.recomputeSnapshot() }
+      
+      // Capture data on MainActor
+      // Filter sessions on MainActor because projectId(for:) accesses MainActor state
+      let filteredSessions = self.sessionListViewModel.sections.flatMap { $0.sessions }
+      let projectSessions: [SessionSummary] = filteredSessions
+        .filter { self.sessionListViewModel.projectId(for: $0) == self.project.id }
+      
+      let usageSnapshots = self.sessionListViewModel.usageSnapshots
+      
+      // Run computation in background
+      let newSnapshot = await Self.computeSnapshot(
+        projectSessions: projectSessions,
+        usageSnapshots: usageSnapshots
+      )
+      
+      guard !Task.isCancelled else { return }
+      await MainActor.run {
+        self.snapshot = newSnapshot
+      }
     }
   }
 
-  private func recomputeSnapshot() {
-    // Use the currently filtered sections so calendar/date/search selections
-    // affect the statistics just like the middle session list.
-    let filteredSessions = sessionListViewModel.sections.flatMap { $0.sessions }
-    let projectSessions: [SessionSummary] = filteredSessions
-      .filter { sessionListViewModel.projectId(for: $0) == project.id }
-
+  private static func computeSnapshot(
+    projectSessions: [SessionSummary],
+    usageSnapshots: [UsageProviderKind: UsageProviderSnapshot]
+  ) async -> ProjectOverviewSnapshot {
     let now = Date()
     
     func anchorDate(for session: SessionSummary) -> Date {
@@ -78,7 +93,7 @@ final class ProjectOverviewViewModel: ObservableObject {
     let totalTokens = projectSessions.reduce(0) { $0 + $1.turnContextCount }
     let userMessages = projectSessions.reduce(0) { $0 + $1.userMessageCount }
     let assistantMessages = projectSessions.reduce(0) { $0 + $1.assistantMessageCount }
-    let totalToolInvocations = projectSessions.reduce(0) { $0 + $1.toolInvocationCount } // New calculation
+    let totalToolInvocations = projectSessions.reduce(0) { $0 + $1.toolInvocationCount }
 
     let recentTop = Array(
       projectSessions
@@ -89,22 +104,22 @@ final class ProjectOverviewViewModel: ObservableObject {
     let sourceStats = buildSourceStats(from: projectSessions)
     let activityData = projectSessions.generateChartData()
 
-    snapshot = ProjectOverviewSnapshot(
+    return ProjectOverviewSnapshot(
       totalSessions: projectSessions.count,
       totalDuration: totalDuration,
       totalTokens: totalTokens,
       userMessages: userMessages,
       assistantMessages: assistantMessages,
-      totalToolInvocations: totalToolInvocations, // New field
+      totalToolInvocations: totalToolInvocations,
       recentSessions: recentTop,
       sourceStats: sourceStats,
       activityChartData: activityData,
-      usageSnapshots: sessionListViewModel.usageSnapshots,
+      usageSnapshots: usageSnapshots,
       lastUpdated: now
     )
   }
   
-  private func buildSourceStats(from sessions: [SessionSummary]) -> [ProjectOverviewSnapshot.SourceStat] {
+  private static func buildSourceStats(from sessions: [SessionSummary]) -> [ProjectOverviewSnapshot.SourceStat] {
     var groups: [SessionSource.Kind: [SessionSummary]] = [:]
     for session in sessions {
       groups[session.source.baseKind, default: []].append(session)
@@ -148,6 +163,10 @@ final class ProjectOverviewViewModel: ObservableObject {
     }
     
     return stats
+  }
+
+  private func recomputeSnapshot() {
+    scheduleSnapshotRefresh()
   }
 
   func resolveProject(for session: SessionSummary) -> (id: String, name: String)? {

@@ -102,7 +102,7 @@ struct RecentSessionsListView: View {
 
         HStack(spacing: 6) {
           let date = session.lastUpdatedAt ?? session.startedAt
-          Text(date, style: .relative)
+          LiveRelativeDateText(date: date)
             .font(.caption)
             .foregroundStyle(.secondary)
 
@@ -143,4 +143,20 @@ struct RecentSessionsListView: View {
         .truncationMode(.tail)
     }
   }
+}
+
+private struct LiveRelativeDateText: View {
+  let date: Date
+  
+  var body: some View {
+    TimelineView(.periodic(from: .now, by: 60.0)) { context in
+      Text(Self.formatter.localizedString(for: date, relativeTo: context.date))
+    }
+  }
+  
+  private static let formatter: RelativeDateTimeFormatter = {
+    let f = RelativeDateTimeFormatter()
+    f.unitsStyle = .short
+    return f
+  }()
 }
