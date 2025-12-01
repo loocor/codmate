@@ -206,7 +206,7 @@ extension ContentView {
             .init(title: "Tasks", systemImage: "checklist", tag: .tasks),
             .init(title: "Review", systemImage: "doc.text.magnifyingglass", tag: .review),
             .init(title: "Agents", systemImage: "book.pages", tag: .agents),
-            .init(title: "Settings", systemImage: "slider.horizontal.3", tag: .settings)
+            .init(title: "Overview", systemImage: "chart.bar", tag: .settings)
           ]
           SegmentedIconPicker(items: items, selection: $viewModel.projectWorkspaceMode)
             .help("Project workspace mode")

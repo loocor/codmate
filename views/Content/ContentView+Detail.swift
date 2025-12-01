@@ -17,7 +17,7 @@ extension ContentView {
         placeholderSurface(title: "Memory", systemImage: "bookmark")
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       } else if viewModel.projectWorkspaceMode == .settings {
-        placeholderSurface(title: "Project Settings", systemImage: "gearshape")
+        projectOverviewContent() // Now Project Settings shows the Overview
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       } else {
         // Tasks or Sessions mode (both show session-focused UI)
@@ -121,15 +121,27 @@ extension ContentView {
   @ViewBuilder
   func projectOverviewContent() -> some View {
     if viewModel.selectedProjectIDs.isEmpty {
+      // Global overview when no specific project is selected
       AllOverviewView(
         viewModel: overviewViewModel,
         onSelectSession: { focusSessionFromOverview($0) },
         onResumeSession: { resumeFromList($0) },
-        onFocusToday: { focusTodayFromOverview() },
+        onFocusToday: { focusTodayFromOverview() }, // No longer visible but still part of API
         onSelectProject: { focusProjectFromOverview(id: $0) }
       )
+    } else if let project = currentSelectedProject() {
+      // Project-specific overview
+      ProjectSpecificOverviewContainerView(
+          sessionListViewModel: viewModel,
+          project: project,
+          onSelectSession: { focusSessionFromOverview($0) },
+          onResumeSession: { resumeFromList($0) },
+          onFocusToday: { focusTodayFromOverview() }
+      )
+      .id(project.id)
     } else {
-      placeholderSurface(title: "Overview", systemImage: "square.grid.2x2")
+      // Fallback placeholder if no project and no global overview
+      placeholderSurface(title: "Select a Project", systemImage: "folder.badge.questionmark")
     }
   }
 

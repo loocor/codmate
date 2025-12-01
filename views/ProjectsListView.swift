@@ -15,85 +15,43 @@ struct ProjectsListView: View {
   var body: some View {
     let countsDisplay = viewModel.projectCountsDisplay()
     let tree = buildProjectTree(viewModel.projects)
+    
     let selectionBinding: Binding<Set<String>> = Binding(
       get: { viewModel.selectedProjectIDs },
       set: { viewModel.setSelectedProjects($0) }
     )
 
-    let expandedBinding = Binding(
+    let expandedBinding: Binding<Set<String>> = Binding(
       get: { viewModel.expandedProjectIDs },
       set: { viewModel.expandedProjectIDs = $0 }
     )
 
-    return List(selection: selectionBinding) {
+    return makeListView(
+      tree: tree,
+      countsDisplay: countsDisplay,
+      selectionBinding: selectionBinding,
+      expandedBinding: expandedBinding
+    )
+  }
+  
+  private func makeListView(
+    tree: [ProjectTreeNode],
+    countsDisplay: [String: (visible: Int, total: Int)],
+    selectionBinding: Binding<Set<String>>,
+    expandedBinding: Binding<Set<String>>
+  ) -> some View {
+    List(selection: selectionBinding) {
       if tree.isEmpty {
         ContentUnavailableView("No Projects", systemImage: "square.grid.2x2")
       } else {
         ForEach(tree) { node in
-          ProjectTreeNodeView(
+          makeProjectTreeNodeView(
             node: node,
             countsDisplay: countsDisplay,
-            displayName: displayName(_:),
-            expanded: expandedBinding,
-            onTap: { handleSelection(for: $0) },
-            onDoubleTap: {
-              editingProject = $0
-              showEdit = true
-            },
-            onNewSession: { viewModel.newSession(project: $0) },
-            onNewSubproject: { parent in
-              newParentProject = parent
-              showNewProject = true
-            },
-            onNewTask: { project in
-              guard project.id != SessionListViewModel.otherProjectId else { return }
-              draftTaskForNew = CodMateTask(
-                title: "",
-                description: nil,
-                projectId: project.id
-              )
-            },
-            onEdit: {
-              editingProject = $0
-              showEdit = true
-            },
-            onDelete: { project in
-              pendingDelete = project
-              showDeleteConfirm = true
-            },
-            onReveal: { viewModel.revealProjectDirectory($0) },
-            onOpenInEditor: { project, editor in
-              viewModel.openProjectInEditor(project, using: editor)
-            },
-            onAssignSessions: { projectId, ids in
-              Task { await viewModel.assignSessions(to: projectId, ids: ids) }
-            },
-            onChangeParent: { projectId, newParentId in
-              Task {
-                await viewModel.changeProjectParent(projectId: projectId, newParentId: newParentId)
-              }
-            }
+            expandedBinding: expandedBinding
           )
         }
-        // Synthetic "Other" bucket for unassigned sessions
-        let otherId = SessionListViewModel.otherProjectId
-        let otherProject = Project(
-          id: otherId, name: "Other", directory: nil, trustLevel: nil, overview: nil,
-          instructions: nil, profileId: nil, profile: nil, parentId: nil,
-          sources: ProjectSessionSource.allSet)
-        ProjectRow(
-          project: otherProject,
-          displayName: "Other",
-          visible: countsDisplay[otherId]?.visible ?? 0,
-          total: countsDisplay[otherId]?.total ?? 0,
-          onNewSession: {},
-          onEdit: {},
-          onDelete: {}
-        )
-        .listRowInsets(EdgeInsets())
-        .contentShape(Rectangle())
-        .onTapGesture { handleSelection(for: otherProject) }
-        .tag(otherId)
+        makeOtherProjectRow(countsDisplay: countsDisplay)
       }
     }
     .listStyle(.sidebar)
@@ -145,7 +103,6 @@ struct ProjectsListView: View {
           directory: newParentProject?.directory,
           trustLevel: nil,
           overview: nil,
-          instructions: nil,
           profileId: nil,
           parentId: newParentProject?.id
         )
@@ -220,6 +177,79 @@ struct ProjectsListView: View {
       return base.isEmpty ? p.id : base
     }
     return p.id
+  }
+  
+  private func makeProjectTreeNodeView(
+    node: ProjectTreeNode,
+    countsDisplay: [String: (visible: Int, total: Int)],
+    expandedBinding: Binding<Set<String>>
+  ) -> some View {
+    ProjectTreeNodeView(
+      node: node,
+      countsDisplay: countsDisplay,
+      displayName: displayName(_:),
+      expanded: expandedBinding,
+      onTap: { handleSelection(for: $0) },
+      onDoubleTap: {
+        editingProject = $0
+        showEdit = true
+      },
+      onNewSession: { viewModel.newSession(project: $0) },
+      onNewSubproject: { parent in
+        newParentProject = parent
+        showNewProject = true
+      },
+      onNewTask: { project in
+        guard project.id != SessionListViewModel.otherProjectId else { return }
+        draftTaskForNew = CodMateTask(
+          title: "",
+          description: nil,
+          projectId: project.id
+        )
+      },
+      onEdit: {
+        editingProject = $0
+        showEdit = true
+      },
+      onDelete: { project in
+        pendingDelete = project
+        showDeleteConfirm = true
+      },
+      onReveal: { viewModel.revealProjectDirectory($0) },
+      onOpenInEditor: { project, editor in
+        viewModel.openProjectInEditor(project, using: editor)
+      },
+      onAssignSessions: { projectId, ids in
+        Task { await viewModel.assignSessions(to: projectId, ids: ids) }
+      },
+      onChangeParent: { projectId, newParentId in
+        Task {
+          await viewModel.changeProjectParent(projectId: projectId, newParentId: newParentId)
+        }
+      }
+    )
+  }
+  
+  private func makeOtherProjectRow(countsDisplay: [String: (visible: Int, total: Int)]) -> some View {
+    let otherId = SessionListViewModel.otherProjectId
+    let otherProject = Project(
+      id: otherId, name: "Other", directory: nil, trustLevel: nil, overview: nil,
+      instructions: nil, profileId: nil, profile: nil, parentId: nil,
+      sources: ProjectSessionSource.allSet)
+    
+    return ProjectRow(
+      project: otherProject,
+      displayName: "Other",
+      visible: countsDisplay[otherId]?.visible ?? 0,
+      total: countsDisplay[otherId]?.total ?? 0,
+      onNewSession: {},
+      onEdit: {},
+      onDelete: {}
+    )
+    .listRowInsets(EdgeInsets())
+    .contentShape(Rectangle())
+    .onTapGesture { handleSelection(for: otherProject) }
+    .tag(otherId)
   }
 }
 

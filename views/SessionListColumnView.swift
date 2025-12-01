@@ -663,13 +663,11 @@ extension SessionListColumnView {
         // limit to ~220 chars to keep it short
         return s.count <= 220 ? s : String(s.prefix(220)) + "…"
       }
-    let instructions = session.instructions?.trimmingCharacters(in: .whitespacesAndNewlines)
     return ProjectEditorSheet.Prefill(
       name: name,
       directory: dir,
       trustLevel: nil,
       overview: overview,
-      instructions: instructions,
       profileId: nil
     )
   }
