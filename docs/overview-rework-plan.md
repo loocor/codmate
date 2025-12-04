@@ -101,10 +101,63 @@ Overview 聚合
 - 缓存迁移：放弃旧 JSON 缓存迁移，首次全量依赖重新解析构建 SQLite 缓存。
 - 首次全量 UI 提示：首次索引时展示骨架屏/刷新按钮旋转等轻量状态指示，提示缓存正在构建。
 
-2025-12-04 差异对齐与统一策略（新增）
-- 统一接口：抽象 xSessionProvider 协议（枚举/增量/缓存键/来源标签/timeline-enrich），Codex/Claude/Gemini 同一入口，上层不再来源特判。
-- 统一变更检测与缓存：Claude/Gemini 引入 mtime+size（可含文件数/总 size）轻量检测，SQLite + 内存同策略命中；未变更不重解析、tokens 不重算。
-- 统一刷新流程：冷启动先加载缓存→填 UI；增量刷新统一入口按来源策略调度（可保留 Codex 轻量预热，但主增量同批次）。延迟增量仅补差，不阻塞 UI。
-- 统一 token 汇总：Codex/Gemini 继续尾扫/汇总；Claude 在 provider 内累加 usage，total 写缓存；0-token 稳定态可缓存，不反复扫描。
-- 统一日志/指标：cache hit/miss、枚举/解析/增量耗时、来源/计数、延迟合并起止同一口径，便于回归分析。
-- 预期收益：Workspace/Project Overview 以及项目/日期组合过滤均走缓存摘要过滤聚合，准确且响应快；冷启动/切换不触发全量重扫，三来源可观测性与维护成本下降。
+2025-12-04 差异对齐与统一策略（新增，以下为最新执行顺序，旧文留痕不再校验）
+- 说明：后续阅读/校验以本清单为准，早先的新增策略段落仅作存档不再作为验收依据。
+- 1) 抽象统一 SessionProvider 接口：覆盖枚举/增量/缓存键/来源标签/可选 timeline enrich，Codex/Claude/Gemini/远程同一入口，调用层不再来源特判。
+- 2) 统一变更检测与缓存写入：Claude/Gemini 引入 mtime+size 轻量命中，SQLite upsert 写 tokenBreakdown/schemaVersion，0-token 稳定态不重扫。
+- 3) 刷新流程收敛：冷启动先读缓存→仅当前可见 scope 做增量；Cmd+R/前台/文件事件也只刷新可见 scope；内部元数据直写缓存不触发解析。
+- 4) SQLite 聚合扩展到 scope：按项目/日期返回 aggregates，Overview/Projects/日历等 UI 全走 SQL 聚合，去掉内存全量聚合。
+- 5) 性能护栏与指标：并发限流（含 Claude 单独限流）、失败标记/退避、批量事务；统一日志口径覆盖 cache hit/miss、枚举/解析/增量耗时与来源计数。
+- 6) 校验与 UI 细节：按新流程做校验（不再使用固定样本值以免误导），补充状态提示/加载反馈，确保冷启动与 scope 切换体验匹配新策略。
+
+2025-12-04 性能优化深化（最新完成）
+- 说明：在统一策略的基础上，进一步深化刷新触发、查询效率和文件事件处理，降低重复刷新和无谓扫描。
+- 1) **Scope-based 刷新防抖（SessionListViewModel）**：
+  - 为每个 scope（All/Project/Date）维护独立的防抖任务队列（scopedRefreshTasks）和执行状态追踪（activeScopeRefreshes）
+  - **基于"正在执行"状态的智能去重**：
+    - force=true（用户主动 Cmd+R）：永远不跳过，立即执行，保证响应性
+    - force=false（自动触发）：如果该 scope 正在执行则跳过，避免并发重复
+    - 刚完成的刷新（< 200ms）会过滤极快速的重复请求
+  - 相比固定 0.5s 冷却期，新策略更智能且响应更快
+  - 实现位置：SessionListViewModel.swift shouldSkipRefresh(scope:force:), activeScopeRefreshes
+
+- 2) **Updated 单日快速候选查询（SessionIndexer + SQLiteStore）**：
+  - 新增 fetchFilePathsForDate() 方法，使用 SQLite date() 函数直接筛选特定日期的文件路径
+  - 单日 Updated 查询时无需加载所有缓存记录到内存，仅查询目标日期候选文件
+  - 若 SQLite 候选存在但文件缺失，自动 fallback 到枚举模式，确保覆盖度
+  - 实现位置：SessionIndexSQLiteStore.swift fetchFilePathsForDate(), SessionIndexer.swift Layer 0.5
+
+- 3) **UI 批量推送节流（SessionListViewModel）**：
+  - 现有机制已包含 snapshot hash 去重、pendingApplyFilters 合并、filterGeneration 取消过时任务
+  - 验证确认当前实现已足够高效，无需额外节流层（避免影响响应性）
+
+- 4) **RemoteSessionProvider scope 防抖**：
+  - 添加 activeRefreshes 集合追踪正在执行的刷新，避免并发重复拉取
+  - 刚完成的刷新（< 100ms）会过滤极快速的重复请求，比之前的 0.5s 更精准
+  - 基于执行状态而非固定时间窗口，对用户操作响应更快
+  - 实现位置：RemoteSessionProvider.swift shouldSkipRefresh(key:), activeRefreshes
+
+- 5) **文件事件管线聚合（DirectoryMonitor → scheduleDirectoryRefresh）**：
+  - 500ms 快速窗口 + 最多 1000ms 总窗口，聚合短时间内的多次文件变更事件
+  - 检测事件密度：若最近 100ms 内仍有新事件到达且未超 1000ms，延长等待 200ms 以进一步合并
+  - 聚合完成后调用 scope-based scheduleFilterRefresh(force: true)，单次刷新覆盖所有变更
+  - 实现位置：SessionListViewModel.swift scheduleDirectoryRefresh(), fileEventAggregationTask
+
+- 6) **覆盖度与一致性**：
+  - Claude/Gemini/Codex provider 均已传递 projectDirectories 白名单，与 scope 过滤一致
+  - 远程 provider 防抖确保相同 scope 不重复拉取
+  - SQLite 单日查询降低 Updated 维度的内存峰值，适配大规模会话场景
+
+验收要点（性能优化深化）
+- 快速切换项目/日期时，不再出现多次全库枚举，日志显示 scope key 合并生效
+- 用户主动刷新（Cmd+R）立即响应，不被防抖延迟；自动触发的刷新才会被去重
+- Updated 单日查询日志显示 "Single-day fast path" 命中，且无全量 fetchRecords
+- 文件保存/编辑后 500-1000ms 内的多次变更合并为单次刷新，日志无重复 "refreshSessions"
+- RemoteSessionProvider 日志显示并发请求被"already executing"跳过，无冗余远程枚举
+- 正在执行的刷新不会被新的自动触发请求中断（除非是 force=true）
+
+实施完成度
+- ✅ SQL 聚合：已完全在 SQL 层实现（fetchTotals/fetchSourceAggregates/fetchDailyAggregates 均使用 SUM/COUNT/GROUP BY）
+- ✅ UI 加载提示：首次索引时显示 ProgressView + "Building Session Index" 提示 + 骨架屏
+- ✅ 缓存状态显示：Overview 页面显示缓存条目数、来源和最后索引时间
+- ✅ 编译通过，所有优化已实现

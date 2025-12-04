@@ -5,6 +5,35 @@ struct ClaudeParsedLog {
     let rows: [SessionRow]
 }
 
+private struct ActiveDurationAccumulator {
+    var currentTurnStart: Date?
+    var lastOutput: Date?
+    var total: TimeInterval = 0
+
+    mutating func observe(type: String?, timestamp: Date?) {
+        guard let ts = timestamp else { return }
+        switch type {
+        case "user":
+            flush()
+            currentTurnStart = ts
+            lastOutput = nil
+        case "assistant", "system", "summary":
+            lastOutput = ts
+        default:
+            break
+        }
+    }
+
+    mutating func flush() {
+        guard let end = lastOutput else { return }
+        let start = currentTurnStart ?? end
+        let delta = end.timeIntervalSince(start)
+        if delta > 0 { total += delta }
+        currentTurnStart = nil
+        lastOutput = nil
+    }
+}
+
 struct ClaudeSessionParser {
     private let decoder: JSONDecoder
     private let newline: UInt8 = 0x0A
@@ -41,12 +70,14 @@ struct ClaudeSessionParser {
 
         var buffer = Data()
         var accumulator = SummaryAccumulator()
+        var activeAccumulator = ActiveDurationAccumulator()
         var lineCount = 0
 
         func processLine(_ data: Data) {
             guard let line = decodeLine(data) else { return }
             if line.isSidechain == true { return }
             accumulator.consume(line)
+            activeAccumulator.observe(type: line.type, timestamp: line.timestamp)
             lineCount += 1
         }
 
@@ -71,10 +102,12 @@ struct ClaudeSessionParser {
             if !trimmed.isEmpty { processLine(Data(trimmed)) }
         }
 
+        activeAccumulator.flush()
         return accumulator.buildSummary(
             url: url,
             fileSize: fileSize,
-            lineCount: lineCount
+            lineCount: lineCount,
+            activeDuration: activeAccumulator.total > 0 ? activeAccumulator.total : nil
         )
     }
 
@@ -89,6 +122,7 @@ struct ClaudeSessionParser {
               !data.isEmpty else { return nil }
 
         var accumulator = MetadataAccumulator()
+        var activeAccumulator = ActiveDurationAccumulator()
         var rows: [SessionRow] = []
         rows.reserveCapacity(256)
 
@@ -96,12 +130,15 @@ struct ClaudeSessionParser {
             if slice.last == carriageReturn { slice = slice.dropLast() }
             guard !slice.isEmpty else { continue }
             guard let line = decodeLine(Data(slice)) else { continue }
+            if line.isSidechain == true { continue }
             let renderedText = line.message.flatMap(renderFlatText)
             let model = line.message?.model
             let usageTokens = line.message?.usage?.totalTokens
             accumulator.consume(line, renderedText: renderedText, model: model, usageTokens: usageTokens)
+            activeAccumulator.observe(type: line.type, timestamp: line.timestamp)
             rows.append(contentsOf: convert(line))
         }
+        activeAccumulator.flush()
 
         let contextRow = accumulator.makeContextRow()
         guard let metaRow = accumulator.makeMetaRow(),
@@ -112,7 +149,8 @@ struct ClaudeSessionParser {
                 contextRow: contextRow,
                 additionalRows: rows,
                 totalTokens: accumulator.totalTokens,
-                lastTimestamp: accumulator.lastTimestamp) else {
+                lastTimestamp: accumulator.lastTimestamp,
+                activeDuration: activeAccumulator.total > 0 ? activeAccumulator.total : nil) else {
             return nil
         }
 
@@ -275,7 +313,8 @@ struct ClaudeSessionParser {
         contextRow: SessionRow?,
         additionalRows: [SessionRow],
         totalTokens: Int,
-        lastTimestamp: Date?
+        lastTimestamp: Date?,
+        activeDuration: TimeInterval?
     ) -> SessionSummary? {
         var builder = SessionSummaryBuilder()
         builder.setSource(.claudeLocal)
@@ -287,7 +326,38 @@ struct ClaudeSessionParser {
         for row in additionalRows { builder.observe(row) }
         if let lastTimestamp { builder.seedLastUpdated(lastTimestamp) }
         builder.setModelFallback("Claude")
-        return builder.build(for: url)
+        guard let summary = builder.build(for: url) else { return nil }
+        if let activeDuration {
+            return SessionSummary(
+                id: summary.id,
+                fileURL: summary.fileURL,
+                fileSizeBytes: summary.fileSizeBytes,
+                startedAt: summary.startedAt,
+                endedAt: summary.endedAt,
+                activeDuration: activeDuration,
+                cliVersion: summary.cliVersion,
+                cwd: summary.cwd,
+                originator: summary.originator,
+                instructions: summary.instructions,
+                model: summary.model,
+                approvalPolicy: summary.approvalPolicy,
+                userMessageCount: summary.userMessageCount,
+                assistantMessageCount: summary.assistantMessageCount,
+                toolInvocationCount: summary.toolInvocationCount,
+                responseCounts: summary.responseCounts,
+                turnContextCount: summary.turnContextCount,
+                totalTokens: summary.totalTokens,
+                eventCount: summary.eventCount,
+                lineCount: summary.lineCount,
+                lastUpdatedAt: summary.lastUpdatedAt,
+                source: summary.source,
+                remotePath: summary.remotePath,
+                userTitle: summary.userTitle,
+                userComment: summary.userComment,
+                taskId: summary.taskId
+            )
+        }
+        return summary
     }
 
     private func blocks(from message: ClaudeMessage) -> [ClaudeContentBlock] {
@@ -540,20 +610,25 @@ struct ClaudeSessionParser {
             }
         }
 
-        func buildSummary(url: URL, fileSize: UInt64?, lineCount: Int) -> SessionSummary? {
+        func buildSummary(
+            url: URL,
+            fileSize: UInt64?,
+            lineCount: Int,
+            activeDuration: TimeInterval?
+        ) -> SessionSummary? {
             guard let sessionId, let started = firstTimestamp, let cwd else { return nil }
-            let summary = SessionSummary(
-                id: sessionId,
-                fileURL: url,
-                fileSizeBytes: fileSize,
-                startedAt: started,
-                endedAt: lastTimestamp,
-                activeDuration: nil,
-                cliVersion: "claude-code \(version ?? "unknown")",
-                cwd: cwd,
-                originator: "Claude Code",
-                instructions: nil,
-                model: model,
+        let summary = SessionSummary(
+            id: sessionId,
+            fileURL: url,
+            fileSizeBytes: fileSize,
+            startedAt: started,
+            endedAt: lastTimestamp,
+            activeDuration: activeDuration,
+            cliVersion: "claude-code \(version ?? "unknown")",
+            cwd: cwd,
+            originator: "Claude Code",
+            instructions: nil,
+            model: model,
                 approvalPolicy: nil,
                 userMessageCount: userMessageCount,
                 assistantMessageCount: assistantMessageCount,

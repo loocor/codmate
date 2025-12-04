@@ -28,13 +28,23 @@ actor SessionIndexer {
     }
   }
 
-  init(fileManager: FileManager = .default) {
+  init(
+    fileManager: FileManager = .default,
+    sqliteStore: SessionIndexSQLiteStore = SessionIndexSQLiteStore()
+  ) {
     self.fileManager = fileManager
-    self.sqliteStore = SessionIndexSQLiteStore()
+    self.sqliteStore = sqliteStore
     decoder = FlexibleDecoders.iso8601Flexible()
   }
 
-  func refreshSessions(root: URL, scope: SessionLoadScope) async throws -> [SessionSummary] {
+  func refreshSessions(
+    root: URL,
+    scope: SessionLoadScope,
+    dateRange: (Date, Date)? = nil,
+    projectIds: Set<String>? = nil,
+    projectDirectories: [String]? = nil,
+    dateDimension: DateDimension = .updated
+  ) async throws -> [SessionSummary] {
     // First, try cached meta fast path so repeated .all refreshes don't re-enumerate
     if case .all = scope, let cached = await cachedAllSummariesFromMeta() {
       return cached
@@ -51,7 +61,79 @@ actor SessionIndexer {
     isRefreshing = true
     defer { isRefreshing = false }
 
-    let sessionFiles = try sessionFileURLs(at: root, scope: scope)
+    // Layer 0.5: Single-day fast path using SQLite date query (optimized for Updated dimension)
+    // Directly query files by date without loading all cached records into memory
+    let dateColumn = dateDimension == .updated ? "COALESCE(last_updated_at, started_at)" : "started_at"
+    var cachedRecords: [String: SessionIndexRecord] = [:]
+
+    if dateDimension == .updated, case .day(let targetDate) = scope {
+      // Use optimized single-day query to get candidate file paths directly from SQLite
+      if let dateCandidates = try? await sqliteStore.fetchFilePathsForDate(
+        kinds: [.codex],
+        includeRemote: false,
+        dateColumn: dateColumn,
+        targetDate: targetDate
+      ), !dateCandidates.isEmpty {
+        logger.info("Single-day fast path: found \(dateCandidates.count, privacy: .public) candidates for date")
+        // Build minimal cachedRecords from file paths for change detection
+        for _ in dateCandidates {
+          // Fetch full record only if file still exists and needs processing
+          if let fullRecords = try? await sqliteStore.fetchRecords(
+            kinds: [.codex],
+            includeRemote: false,
+            dateColumn: dateColumn,
+            dateRange: (targetDate.addingTimeInterval(-86400), targetDate.addingTimeInterval(86400)),
+            projectIds: projectIds
+          ) {
+            cachedRecords = Dictionary(uniqueKeysWithValues: fullRecords.map { ($0.filePath, $0) })
+            break
+          }
+        }
+      }
+    }
+
+    // Layer 1: scoped cached records to skip SQLite fetch per file (fallback or non-single-day queries)
+    if cachedRecords.isEmpty {
+      let initialRecords = try? await sqliteStore.fetchRecords(
+        kinds: [.codex],
+        includeRemote: false,
+        dateColumn: dateRange != nil ? dateColumn : nil,
+        dateRange: dateRange,
+        projectIds: projectIds
+      )
+      if let initialRecords, !initialRecords.isEmpty {
+        cachedRecords = Dictionary(uniqueKeysWithValues: initialRecords.map { ($0.filePath, $0) })
+      } else if cachedRecords.isEmpty {
+        // Layer 1 baseline: fallback to all cached records for change detection to avoid reparsing unchanged files.
+        if let allRecords = try? await sqliteStore.fetchRecords(
+          kinds: [.codex],
+          includeRemote: false,
+          dateColumn: nil,
+          dateRange: nil,
+          projectIds: nil
+        ) {
+          cachedRecords = Dictionary(uniqueKeysWithValues: allRecords.map { ($0.filePath, $0) })
+        }
+      }
+    }
+
+    let scopedDirectories = scopedDirectoriesForRefresh(
+      root: root,
+      scope: scope,
+      dateRange: dateRange,
+      dateDimension: dateDimension,
+      cachedRecords: cachedRecords,
+      projectIds: projectIds,
+      projectDirectories: projectDirectories
+    )
+    let sessionFiles = try sessionFileURLs(
+      at: root,
+      scope: scope,
+      dateRange: dateRange,
+      dateDimension: dateDimension,
+      directories: scopedDirectories,
+      cachedRecords: cachedRecords
+    )
     logger.info(
       "Refreshing sessions under \(root.path, privacy: .public) scope=\(String(describing: scope), privacy: .public) count=\(sessionFiles.count)"
     )
@@ -62,11 +144,54 @@ actor SessionIndexer {
     summaries.reserveCapacity(sessionFiles.count)
     var pending: [(url: URL, modificationDate: Date?, fileSize: Int?)] = []
 
+    // Layer 1.5: if all files are covered by cachedRecords with matching mtime/size, short-circuit.
+    if !cachedRecords.isEmpty {
+      var allCovered = true
+      for url in sessionFiles {
+        let values = try url.resourceValues(
+          forKeys: Set<URLResourceKey>([.contentModificationDateKey, .fileSizeKey, .isRegularFileKey])
+        )
+        guard values.isRegularFile == true else { continue }
+        let mdate = values.contentModificationDate
+        let fsize = values.fileSize
+        guard let record = cachedRecords[url.path],
+              let m = record.fileModificationTime,
+              mdate == m,
+              (record.fileSize == nil || fsize == nil || record.fileSize == fsize.map { UInt64($0) })
+        else {
+          allCovered = false
+          break
+        }
+      }
+      if allCovered {
+        let fastSummaries = Array(cachedRecords.values.map(\.summary))
+        logger.info("SessionIndexer fast path: all files covered by scoped cache count=\(fastSummaries.count, privacy: .public)")
+        if case .all = scope {
+          try? await sqliteStore.setMeta(lastFullIndexAt: Date(), sessionCount: sessionFiles.count)
+        }
+        return fastSummaries
+      }
+    }
+
     for url in sessionFiles {
-      let values = try url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey])
+      let values = try url.resourceValues(
+        forKeys: Set<URLResourceKey>([.contentModificationDateKey, .fileSizeKey, .isRegularFileKey])
+      )
       guard values.isRegularFile == true else { continue }
       let mdate = values.contentModificationDate
       let fsize = values.fileSize
+
+      if let record = cachedRecords[url.path],
+         let m = record.fileModificationTime,
+         mdate == m,
+         (record.fileSize == nil || fsize == nil || record.fileSize == fsize.map { UInt64($0) })
+      {
+        let summary = record.summary
+        store(summary: summary, for: url as NSURL, modificationDate: mdate)
+        summaries.append(summary)
+        continue
+      }
+
       if let cached = cachedSummary(for: url as NSURL, modificationDate: mdate) {
         if shouldRecomputeTokens(for: url.path, modificationDate: mdate, summary: cached) {
           pending.append((url, mdate, fsize))
@@ -75,19 +200,21 @@ actor SessionIndexer {
         }
         continue
       }
-      if
-        let disk = try? await sqliteStore.fetch(
-          path: url.path,
-          modificationDate: mdate,
-          fileSize: fsize.flatMap { UInt64($0) })
-      {
-        if shouldRecomputeTokens(for: url.path, modificationDate: mdate, summary: disk) {
-          pending.append((url, mdate, fsize))
-        } else {
-          store(summary: disk, for: url as NSURL, modificationDate: mdate)
-          summaries.append(disk)
+      if cachedRecords.isEmpty {
+        if
+          let disk = try? await sqliteStore.fetch(
+            path: url.path,
+            modificationDate: mdate,
+            fileSize: fsize.flatMap { UInt64($0) })
+        {
+          if shouldRecomputeTokens(for: url.path, modificationDate: mdate, summary: disk) {
+            pending.append((url, mdate, fsize))
+          } else {
+            store(summary: disk, for: url as NSURL, modificationDate: mdate)
+            summaries.append(disk)
+          }
+          continue
         }
-        continue
       }
       pending.append((url, mdate, fsize))
     }
@@ -104,6 +231,10 @@ actor SessionIndexer {
       }
       return summaries
     }
+
+    logger.info(
+      "Change detection: pending=\(pending.count, privacy: .public) cacheHits=\(summaries.count, privacy: .public) total=\(sessionFiles.count, privacy: .public)"
+    )
 
     let cpuCount = ProcessInfo.processInfo.processorCount
     let workerCount = max(2, cpuCount / 2)
@@ -177,6 +308,7 @@ actor SessionIndexer {
       }
     }
 
+    // Layer 0: meta update only when full scope refreshed
     if case .all = scope {
       do {
         try await sqliteStore.setMeta(lastFullIndexAt: Date(), sessionCount: sessionFiles.count)
@@ -190,6 +322,24 @@ actor SessionIndexer {
       logger.info(
         "SessionIndexer refresh complete (partial scope). summaries=\(summaries.count, privacy: .public) pending=0"
       )
+    }
+
+    // Remove SQLite entries no longer present in scoped refresh
+    if let cached = try? await sqliteStore.fetchRecords(
+      kinds: [.codex],
+      includeRemote: false,
+      dateColumn: dateColumn,
+      dateRange: dateRange,
+      projectIds: projectIds
+    ) {
+      let alivePaths = Set(sessionFiles.map { $0.path })
+      let staleIds = cached.filter { !alivePaths.contains($0.filePath) }.map { $0.summary.id }
+      for id in staleIds {
+        do { try await sqliteStore.delete(sessionId: id) }
+        catch {
+          logger.error("Failed to delete stale cache id=\(id, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+        }
+      }
     }
 
     if summaries.isEmpty, let error = firstError {
@@ -206,6 +356,19 @@ actor SessionIndexer {
     cache.removeAllObjects()
   }
 
+  /// Remove cached entries (memory + SQLite) for deleted sessions.
+  func deleteSessions(ids: [String]) async {
+    guard !ids.isEmpty else { return }
+    for id in ids {
+      cache.removeAllObjects()
+      do {
+        try await sqliteStore.delete(sessionId: id)
+      } catch {
+        logger.error("Failed to delete session from cache id=\(id, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+      }
+    }
+  }
+
   /// Clear both in-memory and on-disk session index caches.
   func resetAllCaches() async {
     cache.removeAllObjects()
@@ -215,6 +378,11 @@ actor SessionIndexer {
   /// Fetch aggregated overview metrics from SQLite cache (all sources).
   func fetchOverviewAggregate() async -> OverviewAggregate? {
     return try? await sqliteStore.fetchOverviewAggregate()
+  }
+
+  /// Fetch scoped aggregated overview metrics (project/date).
+  func fetchOverviewAggregate(scope: OverviewAggregateScope?) async -> OverviewAggregate? {
+    return try? await sqliteStore.fetchOverviewAggregate(scope: scope)
   }
 
   /// Current cache coverage (sources present + meta).
@@ -304,34 +472,144 @@ actor SessionIndexer {
   }
 
   /// Fast tail scan to retrieve latest token_count for Codex/Gemini sessions.
-  private func sessionFileURLs(at root: URL, scope: SessionLoadScope) throws -> [URL] {
+  private func sessionFileURLs(
+    at root: URL,
+    scope: SessionLoadScope,
+    dateRange: (Date, Date)?,
+    dateDimension: DateDimension,
+    directories: [URL]? = nil,
+    cachedRecords: [String: SessionIndexRecord]? = nil
+  ) throws -> [URL] {
     var urls: [URL] = []
-    guard let enumeratorURL = scopeBaseURL(root: root, scope: scope) else {
+    let targets: [URL]
+    if let directories, !directories.isEmpty {
+      targets = directories
+    } else if let base = scopeBaseURL(root: root, scope: scope) {
+      targets = [base]
+    } else {
       logger.warning(
         "No enumerator URL for scope=\(String(describing: scope), privacy: .public) root=\(root.path, privacy: .public)"
       )
       return []
     }
 
-    guard
-      let enumerator = fileManager.enumerator(
-        at: enumeratorURL,
-        includingPropertiesForKeys: [.isRegularFileKey],
-        options: [.skipsHiddenFiles, .skipsPackageDescendants]
-      )
-    else {
-      logger.warning("Enumerator could not open \(enumeratorURL.path, privacy: .public)")
-      return []
-    }
-
-    while let obj = enumerator.nextObject() {
-      guard let fileURL = obj as? URL else { continue }
-      if fileURL.pathExtension.lowercased() == "jsonl" {
-        urls.append(fileURL)
+    // Updated single-day fast path: if cached records cover the day, avoid wide enumeration
+    if let cachedRecords,
+       let dateRange,
+       dateDimension == .updated,
+       Calendar.current.isDate(dateRange.0, inSameDayAs: dateRange.1)
+    {
+      let start = dateRange.0
+      let end = dateRange.1
+      var candidates: [URL] = []
+      for record in cachedRecords.values {
+        let updated = record.summary.lastUpdatedAt ?? record.summary.endedAt ?? record.summary.startedAt
+        if updated < start || updated > end { continue }
+        let url = URL(fileURLWithPath: record.filePath)
+        if fileManager.fileExists(atPath: url.path) {
+          candidates.append(url)
+        } else {
+          // Keep directory for fallback enumeration below
+          if let dir = directoryIfExists(url.deletingLastPathComponent()) {
+            urls.append(dir)
+          }
+        }
+      }
+      if !candidates.isEmpty {
+        logger.info("Updated-day fast path: returning \(candidates.count, privacy: .public) cached files without enumeration")
+        return candidates
       }
     }
-    logger.info("Enumerated \(urls.count) files under \(enumeratorURL.path, privacy: .public)")
+
+    var seen = Set<URL>()
+
+    for enumeratorURL in targets {
+      guard
+        let enumerator = fileManager.enumerator(
+          at: enumeratorURL,
+          includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey] as [URLResourceKey],
+          options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        )
+      else {
+        logger.warning("Enumerator could not open \(enumeratorURL.path, privacy: .public)")
+        continue
+      }
+
+      while let obj = enumerator.nextObject() {
+        guard let fileURL = obj as? URL else { continue }
+        if fileURL.pathExtension.lowercased() == "jsonl" {
+          if let dateRange, dateDimension == .updated {
+            let values = try? fileURL.resourceValues(forKeys: Set<URLResourceKey>([.contentModificationDateKey]))
+            if let mdate = values?.contentModificationDate {
+              if mdate < dateRange.0 || mdate > dateRange.1 { continue }
+            }
+          }
+          if seen.insert(fileURL).inserted {
+            urls.append(fileURL)
+          }
+        }
+      }
+    }
+    logger.info("Enumerated \(urls.count) files under scoped targets count=\(targets.count, privacy: .public)")
     return urls
+  }
+
+  /// Build a narrowed set of directories for enumeration when a project or date range is active.
+  private func scopedDirectoriesForRefresh(
+    root: URL,
+    scope: SessionLoadScope,
+    dateRange: (Date, Date)? = nil,
+    dateDimension: DateDimension,
+    cachedRecords: [String: SessionIndexRecord],
+    projectIds: Set<String>?,
+    projectDirectories: [String]?
+  ) -> [URL]? {
+    var directories: Set<URL> = []
+    // Use cached records to re-scan only directories that previously contained matching sessions
+    if let projectIds, !projectIds.isEmpty {
+      for record in cachedRecords.values {
+        if let project = record.project, projectIds.contains(project) {
+          let url = URL(fileURLWithPath: record.filePath)
+            .deletingLastPathComponent()
+          directories.insert(url)
+        }
+      }
+    }
+
+    if !cachedRecords.isEmpty {
+      for record in cachedRecords.values {
+        let url = URL(fileURLWithPath: record.filePath)
+          .deletingLastPathComponent()
+        directories.insert(url)
+      }
+    }
+
+    if let projectDirectories, !projectDirectories.isEmpty {
+      for path in projectDirectories {
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        if let dir = directoryIfExists(url) {
+          directories.insert(dir)
+        }
+      }
+    }
+
+    // If created dimension with explicit date range, add day directories to cover new files
+    if let dateRange, dateDimension == .created {
+      let cal = Calendar.current
+      var cursor = cal.startOfDay(for: dateRange.0)
+      let end = cal.startOfDay(for: dateRange.1)
+      while cursor <= end {
+        if let dayDir = dayDirectory(root: root, date: cursor) {
+          directories.insert(dayDir)
+        }
+        guard let next = cal.date(byAdding: .day, value: 1, to: cursor) else { break }
+        cursor = next
+      }
+    }
+
+    // When no narrowing information exists, fall back to default scope directory
+    if directories.isEmpty { return nil }
+    return Array(directories)
   }
 
   private func mappedDataIfAvailable(at url: URL) throws -> Data? {
@@ -903,8 +1181,83 @@ actor SessionIndexer {
     return try? await sqliteStore.fetchMeta()
   }
 
+  /// Persist project assignments into the shared SQLite cache for scoped aggregates.
+  func updateProjects(
+    for sessions: [SessionSummary],
+    resolver: @escaping @Sendable (SessionSummary) -> String?
+  ) async {
+    guard !sessions.isEmpty else { return }
+    for session in sessions {
+      let project = resolver(session)
+      do {
+        try await sqliteStore.updateProject(sessionId: session.id, project: project)
+      } catch {
+        logger.error("Failed to update project for \(session.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+      }
+    }
+  }
+
   /// Returns cached summaries when a full index already exists.
   func cachedAllSummaries() async -> [SessionSummary]? {
     return await cachedAllSummariesFromMeta()
+  }
+}
+
+// MARK: - SessionProvider
+
+extension SessionIndexer: SessionProvider {
+  nonisolated var kind: SessionSource.Kind { .codex }
+  nonisolated var identifier: String { "codex-local" }
+  nonisolated var label: String { "Codex (local)" }
+
+  func load(context: SessionProviderContext) async throws -> SessionProviderResult {
+    guard let root = context.sessionsRoot else {
+      return SessionProviderResult(summaries: [], coverage: nil, cacheHit: true)
+    }
+    switch context.cachePolicy {
+    case .cacheOnly:
+      // Try scoped cached summaries first
+      if let cached = try? await sqliteStore.fetchSummaries(
+        kinds: [.codex],
+        includeRemote: false,
+        dateColumn: dateColumn(for: context.dateDimension),
+        dateRange: context.dateRange,
+        projectIds: context.projectIds
+      ), !cached.isEmpty {
+        let coverage = await currentCoverage()
+        return SessionProviderResult(summaries: cached, coverage: coverage, cacheHit: true)
+      }
+      if context.scope == .all, let cached = await cachedAllSummaries() {
+        let coverage = await currentCoverage()
+        return SessionProviderResult(
+          summaries: cached,
+          coverage: coverage,
+          cacheHit: true
+        )
+      }
+      return SessionProviderResult(summaries: [], coverage: await currentCoverage(), cacheHit: false)
+    case .refresh:
+      let summaries = try await refreshSessions(
+        root: root,
+        scope: context.scope,
+        dateRange: context.dateRange,
+        projectIds: context.projectIds,
+        projectDirectories: context.projectDirectories,
+        dateDimension: context.dateDimension
+      )
+      let coverage = await currentCoverage()
+      return SessionProviderResult(
+        summaries: summaries,
+        coverage: coverage,
+        cacheHit: false
+      )
+    }
+  }
+
+  private func dateColumn(for dimension: DateDimension) -> String {
+    switch dimension {
+    case .created: return "started_at"
+    case .updated: return "COALESCE(last_updated_at, started_at)"
+    }
   }
 }

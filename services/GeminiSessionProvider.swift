@@ -20,6 +20,7 @@ actor GeminiSessionProvider {
   private var projectsStore: ProjectsStore
   private let fileManager: FileManager
   private let tmpRoot: URL?
+  private let cacheStore: SessionIndexSQLiteStore?
 
   private var hashToPath: [String: String] = [:]
   private var canonicalURLById: [String: URL] = [:]
@@ -28,6 +29,12 @@ actor GeminiSessionProvider {
   private var aggregatedCacheByHash: [String: AggregatedCacheEntry] = [:]
   private let logDateFormatter: ISO8601DateFormatter
   private let fallbackLogFormatter: ISO8601DateFormatter
+  private static func hash(for path: String) -> String? {
+    let canonical = (path as NSString).expandingTildeInPath
+    guard let data = canonical.data(using: .utf8) else { return nil }
+    let digest = SHA256.hash(data: data)
+    return digest.map { String(format: "%02x", $0) }.joined()
+  }
 
   private struct AggregatedCacheEntry {
     let signature: HashSignature
@@ -42,9 +49,28 @@ actor GeminiSessionProvider {
     let logMtime: Date?
   }
 
-  init(projectsStore: ProjectsStore, fileManager: FileManager = .default) {
+  private func persist(summary: SessionSummary, modificationDate: Date?, fileSize: UInt64?) {
+    guard let cacheStore else { return }
+    Task.detached { [cacheStore] in
+      try? await cacheStore.upsert(
+        summary: summary,
+        project: nil,
+        fileModificationTime: modificationDate,
+        fileSize: fileSize,
+        tokenBreakdown: nil,
+        parseError: nil
+      )
+    }
+  }
+
+  init(
+    projectsStore: ProjectsStore,
+    fileManager: FileManager = .default,
+    cacheStore: SessionIndexSQLiteStore? = nil
+  ) {
     self.projectsStore = projectsStore
     self.fileManager = fileManager
+    self.cacheStore = cacheStore
     let home = SessionPreferencesStore.getRealUserHomeURL()
     let root = home.appendingPathComponent(".gemini", isDirectory: true)
       .appendingPathComponent("tmp", isDirectory: true)
@@ -60,11 +86,19 @@ actor GeminiSessionProvider {
     self.fallbackLogFormatter.formatOptions = [.withInternetDateTime]
   }
 
-  func sessions(scope: SessionLoadScope) async -> [SessionSummary] {
+  func sessions(scope: SessionLoadScope, allowedProjectDirectories: [String]? = nil) async -> [SessionSummary] {
     guard let tmpRoot else { return [] }
     guard let hashes = try? fileManager.contentsOfDirectory(
       at: tmpRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
     else { return [] }
+    let allowedHashes: Set<String>? = {
+      guard let allowed = allowedProjectDirectories, !allowed.isEmpty else { return nil }
+      var hashes: Set<String> = []
+      for path in allowed {
+        if let hash = Self.hash(for: path) { hashes.insert(hash) }
+      }
+      return hashes.isEmpty ? nil : hashes
+    }()
 
     rowsCacheBySessionId.removeAll()
     var summaries: [SessionSummary] = []
@@ -75,6 +109,7 @@ actor GeminiSessionProvider {
       guard hash.count == 64,
         hash.range(of: "^[0-9a-f]+$", options: .regularExpression) != nil
       else { continue }
+      if let allowedHashes, !allowedHashes.contains(hash) { continue }
       let resolvedPath = await resolveProjectPath(forHash: hash)
       let aggregated = aggregatedSessions(
         forHash: hash,
@@ -343,6 +378,7 @@ actor GeminiSessionProvider {
       if cacheResults {
         rowsCacheBySessionId[aggregated.summary.id] = aggregated.rows
         canonicalURLById[aggregated.summary.id] = aggregated.primaryFileURL
+        persist(summary: aggregated.summary, modificationDate: fileInfo.signature.latestChatMtime, fileSize: fileInfo.signature.chatsTotalSize)
       }
     }
 
@@ -563,5 +599,61 @@ actor GeminiSessionProvider {
   private func parseLogDate(_ value: String) -> Date? {
     if let date = logDateFormatter.date(from: value) { return date }
     return fallbackLogFormatter.date(from: value)
+  }
+}
+
+// MARK: - SessionProvider
+
+extension GeminiSessionProvider: SessionProvider {
+  nonisolated var kind: SessionSource.Kind { .gemini }
+  nonisolated var identifier: String { "gemini-local" }
+  nonisolated var label: String { "Gemini (local)" }
+
+  func load(context: SessionProviderContext) async throws -> SessionProviderResult {
+    switch context.cachePolicy {
+    case .cacheOnly:
+      if let cacheStore {
+        let dateColumn = context.dateDimension == .updated ? "COALESCE(last_updated_at, started_at)" : "started_at"
+        let range = context.dateRange ?? Self.dateRange(for: context.scope)
+        if let cached = try? await cacheStore.fetchSummaries(
+          kinds: [.gemini],
+          includeRemote: false,
+          dateColumn: dateColumn,
+          dateRange: range,
+          projectIds: context.projectIds
+        ), !cached.isEmpty {
+          return SessionProviderResult(summaries: cached, coverage: nil, cacheHit: true)
+        }
+      }
+      return SessionProviderResult(summaries: [], coverage: nil, cacheHit: true)
+    case .refresh:
+      let summaries = await sessions(
+        scope: context.scope,
+        allowedProjectDirectories: context.projectDirectories
+      )
+      return SessionProviderResult(summaries: summaries, coverage: nil, cacheHit: false)
+    }
+  }
+
+  private static func dateRange(for scope: SessionLoadScope) -> (Date, Date)? {
+    let cal = Calendar.current
+    switch scope {
+    case .all:
+      return nil
+    case .today:
+      let start = cal.startOfDay(for: Date())
+      guard let end = cal.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else { return nil }
+      return (start, end)
+    case .day(let day):
+      let start = cal.startOfDay(for: day)
+      guard let end = cal.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else { return nil }
+      return (start, end)
+    case .month(let date):
+      guard
+        let start = cal.date(from: cal.dateComponents([.year, .month], from: date)),
+        let end = cal.date(byAdding: DateComponents(month: 1, second: -1), to: start)
+      else { return nil }
+      return (start, end)
+    }
   }
 }

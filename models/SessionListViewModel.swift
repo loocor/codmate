@@ -41,13 +41,7 @@ final class SessionListViewModel: ObservableObject {
     didSet {
       guard !suppressFilterNotifications, oldValue != selectedDay else { return }
       invalidateVisibleCountCache()
-      // In Updated mode, sessions are already loaded - just refilter
-      // In Created mode, only refresh if crossing month boundary
-      if shouldRefreshSessionsForDateChange(oldValue: oldValue, newValue: selectedDay) {
-        scheduleFilterRefresh(force: true)
-      } else {
-        scheduleApplyFilters()
-      }
+      scheduleSelectionDrivenUpdate()
       windowStateStore.saveCalendarSelection(
         selectedDay: selectedDay, selectedDays: selectedDays, monthStart: sidebarMonthStart)
     }
@@ -74,19 +68,8 @@ final class SessionListViewModel: ObservableObject {
   @Published var selectedDays: Set<Date> = [] {
     didSet {
       guard !suppressFilterNotifications else { return }
-      if dateDimension == .updated {
-        for day in selectedDays {
-          requestCoverageIfNeeded(for: day)
-        }
-      }
       invalidateVisibleCountCache()
-      // In Updated mode, sessions are already loaded - just refilter
-      // In Created mode, only refresh if crossing month boundary
-      if shouldRefreshSessionsForDaysChange(oldValue: oldValue, newValue: selectedDays) {
-        scheduleFilterRefresh(force: true)
-      } else {
-        scheduleApplyFilters()
-      }
+      scheduleSelectionDrivenUpdate()
       windowStateStore.saveCalendarSelection(
         selectedDay: selectedDay, selectedDays: selectedDays, monthStart: sidebarMonthStart)
     }
@@ -182,6 +165,18 @@ final class SessionListViewModel: ObservableObject {
   /// Debounce refresh triggers to avoid repeated full enumerations
   private var refreshDebounceTask: Task<Void, Never>?
   private var lastRefreshAt: Date?
+  private var lastRefreshScope: SessionLoadScope?
+  private let refreshCooldown: TimeInterval = 0.5
+  private var pendingRefreshForce: Bool = false
+  /// Scope-based refresh debouncing: track pending refresh by scope key to enable merging
+  private var scopedRefreshTasks: [String: Task<Void, Never>] = [:]
+  private var pendingScopeRefreshForce: [String: Bool] = [:]
+  /// Track actively executing refreshes by scope to prevent concurrent duplicates
+  private var activeScopeRefreshes: [String: UUID] = [:]
+  /// File event aggregation: collect file change events within a time window
+  private var pendingFileEvents: Set<String> = []  // file paths that changed
+  private var fileEventAggregationTask: Task<Void, Never>?
+  private var lastFileEventAt: Date = .distantPast
   struct VisibleCountKey: Equatable {
     var dimension: DateDimension
     var selectedDay: Date?
@@ -203,7 +198,6 @@ final class SessionListViewModel: ObservableObject {
   private var geminiUsageTask: Task<Void, Never>?
   private var pathTreeRefreshTask: Task<Void, Never>?
   private var calendarRefreshTasks: [String: Task<Void, Never>] = [:]
-  private var deferredExternalMergeTask: Task<Void, Never>?
   private var cancellables = Set<AnyCancellable>()
   private let pathTreeStore = PathTreeStore()
   private var lastPathCounts: [String: Int] = [:]
@@ -286,12 +280,13 @@ final class SessionListViewModel: ObservableObject {
   // Projects
   let configService = CodexConfigService()
   var projectsStore: ProjectsStore
-  let claudeProvider = ClaudeSessionProvider()
+  let claudeProvider: ClaudeSessionProvider
   let geminiProvider: GeminiSessionProvider
   private let claudeUsageClient = ClaudeUsageAPIClient()
   private let geminiUsageClient = GeminiUsageAPIClient()
   private let providersRegistry = ProvidersRegistryService()
-  let remoteProvider = RemoteSessionProvider()
+  let remoteProvider: RemoteSessionProvider
+  let sqliteStore: SessionIndexSQLiteStore
   @Published var projects: [Project] = []
   var projectCounts: [String: Int] = [:]
   var projectMemberships: [String: String] = [:]
@@ -322,7 +317,7 @@ final class SessionListViewModel: ObservableObject {
         }
       }
       invalidateProjectVisibleCountsCache()
-      scheduleFiltersUpdate()
+      scheduleSelectionDrivenUpdate()
       windowStateStore.saveProjectSelection(selectedProjectIDs)
     }
   }
@@ -510,11 +505,13 @@ final class SessionListViewModel: ObservableObject {
 
   init(
     preferences: SessionPreferencesStore,
-    indexer: SessionIndexer = SessionIndexer(),
+    sqliteStore: SessionIndexSQLiteStore = SessionIndexSQLiteStore(),
+    indexer: SessionIndexer? = nil,
     actions: SessionActions = SessionActions()
   ) {
     self.preferences = preferences
-    self.indexer = indexer
+    self.sqliteStore = sqliteStore
+    self.indexer = indexer ?? SessionIndexer(sqliteStore: sqliteStore)
     self.actions = actions
     self.notesStore = SessionNotesStore(notesRoot: preferences.notesRoot)
     // Initialize ProjectsStore using configurable projectsRoot (defaults to ~/.codmate/projects)
@@ -525,7 +522,9 @@ final class SessionListViewModel: ObservableObject {
       membershipsURL: pr.appendingPathComponent("memberships.json", isDirectory: false)
     )
     self.projectsStore = ProjectsStore(paths: p)
-    self.geminiProvider = GeminiSessionProvider(projectsStore: self.projectsStore)
+    self.claudeProvider = ClaudeSessionProvider(cacheStore: sqliteStore)
+    self.geminiProvider = GeminiSessionProvider(projectsStore: self.projectsStore, cacheStore: sqliteStore)
+    self.remoteProvider = RemoteSessionProvider(indexer: SessionIndexer(sqliteStore: sqliteStore))
 
     suppressFilterNotifications = true
 
@@ -684,7 +683,17 @@ final class SessionListViewModel: ObservableObject {
     scheduledFilterRefresh = nil
     let token = UUID()
     activeRefreshToken = token
+    let scope = currentScope()
+    let scopeKeyValue = scopeKey(scope)
+
+    if shouldSkipRefresh(scope: scope, force: force) {
+      diagLogger.log("refreshSessions skipped (executing or recent) scope=\(scopeKeyValue, privacy: .public) force=\(force, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+      await MainActor.run { self.isLoading = false }
+      return
+    }
+
     isLoading = true
+    activeScopeRefreshes[scopeKeyValue] = token
     if force {
       invalidateEnrichmentCache(for: selectedDay)
     }
@@ -693,122 +702,206 @@ final class SessionListViewModel: ObservableObject {
       if token == activeRefreshToken {
         isLoading = false
         let elapsed = Date().timeIntervalSince(refreshBegan)
-      diagLogger.log("refreshSessions done in \(elapsed, format: .fixed(precision: 3))s sessions=\(self.allSessions.count, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+        lastRefreshAt = Date()
+        lastRefreshScope = currentScope()
+        // Clean up active refresh tracker
+        if activeScopeRefreshes[scopeKeyValue] == token {
+          activeScopeRefreshes.removeValue(forKey: scopeKeyValue)
+        }
+        diagLogger.log("refreshSessions done in \(elapsed, format: .fixed(precision: 3))s sessions=\(self.allSessions.count, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
       }
     }
 
     // Ensure we have access to the sessions directory in sandbox mode
     await ensureSessionsAccess()
 
-    do {
-      let scope = currentScope()
-      diagLogger.log("refreshSessions start force=\(force, privacy: .public) scope=\(String(describing: scope), privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
-      let enabledRemoteHosts = preferences.enabledRemoteHosts
-      async let codexTask = indexer.refreshSessions(
-        root: preferences.sessionsRoot, scope: scope)
-      // External providers: defer to background merge; do not block initial render.
-      _ = Task.detached { [] as [SessionSummary] }
-      _ = Task.detached { [] as [SessionSummary] }
-      _ = Task.detached { [] as [SessionSummary] }
-      _ = Task.detached { [] as [SessionSummary] }
+    let enabledRemoteHosts = preferences.enabledRemoteHosts
+    diagLogger.log("refreshSessions start force=\(force, privacy: .public) scope=\(String(describing: scope), privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3)) hosts=\(enabledRemoteHosts.count, privacy: .public)")
 
-      var sessions = try await codexTask
-      if !sessions.isEmpty {
-        var seen: Set<String> = []
-        var unique: [SessionSummary] = []
-        unique.reserveCapacity(sessions.count)
-        for summary in sessions {
-          if seen.insert(summary.id).inserted {
-            unique.append(summary)
-          }
-        }
-        sessions = unique
-      }
+    let providers = buildProviders(enabledRemoteHosts: Set(enabledRemoteHosts))
+    let projectDirectories = singleSelectedProjectDirectory()
+    let cacheContext = SessionProviderContext(
+      scope: scope,
+      sessionsRoot: preferences.sessionsRoot,
+      enabledRemoteHosts: Set(enabledRemoteHosts),
+      projectDirectories: projectDirectories,
+      dateDimension: dateDimension,
+      dateRange: currentDateRange(),
+      projectIds: singleSelectedProject(),
+      cachePolicy: .cacheOnly
+    )
+    let refreshContext = SessionProviderContext(
+      scope: scope,
+      sessionsRoot: preferences.sessionsRoot,
+      enabledRemoteHosts: Set(enabledRemoteHosts),
+      projectDirectories: projectDirectories,
+      dateDimension: dateDimension,
+      dateRange: currentDateRange(),
+      projectIds: singleSelectedProject(),
+      cachePolicy: .refresh
+    )
 
-      guard token == activeRefreshToken else { return }
-      let previousIDs = Set(allSessions.map { $0.id })
-      let notes = await notesStore.all()
-      notesSnapshot = notes
-      // Refresh projects/memberships snapshot and import legacy mappings if needed
-      Task { @MainActor in
-        await self.loadProjects()
-        await self.importMembershipsFromNotesIfNeeded(notes: notes)
+    let cachedResults = await loadProviders(providers, context: cacheContext)
+    var sessions = dedupProviderSessions(cachedResults)
+    let refreshedResults = await loadProviders(providers, context: refreshContext)
+    sessions = dedupProviderSessions(sessions + refreshedResults)
+
+    guard token == activeRefreshToken else { return }
+    let previousIDs = Set(allSessions.map { $0.id })
+    let notes = await notesStore.all()
+    notesSnapshot = notes
+    // Refresh projects/memberships snapshot and import legacy mappings if needed
+    Task { @MainActor in
+      await self.loadProjects()
+      await self.importMembershipsFromNotesIfNeeded(notes: notes)
+    }
+    apply(notes: notes, to: &sessions)
+    // Auto-assign on newly appeared sessions matched with pending intents
+    let newlyAppeared = sessions.filter { !previousIDs.contains($0.id) }
+    if !newlyAppeared.isEmpty {
+      for s in newlyAppeared { self.handleAutoAssignIfMatches(s) }
+    }
+    registerActivityHeartbeat(previous: allSessions, current: sessions)
+    allSessions = sessions  // didSet will call invalidateCalendarCaches()
+    persistProjectAssignmentsToCache(sessions)
+    recomputeProjectCounts()
+    rebuildCanonicalCwdCache()
+    await computeCalendarCaches()
+    scheduleFiltersUpdate()
+    startBackgroundEnrichment()
+    currentMonthDimension = dateDimension
+    currentMonthKey = monthKey(for: selectedDay, dimension: dateDimension)
+    Task { await self.refreshGlobalCount() }
+    // Refresh path tree to ensure newly created files appear via refresh
+    let enabledRemoteHostsForCounts = enabledRemoteHosts
+    let sessionsRootForCounts = sessionsRoot
+    Task {
+      var counts = await indexer.collectCWDCounts(root: sessionsRootForCounts)
+      let claudeCounts = await claudeProvider.collectCWDCounts()
+      let geminiCounts = await geminiProvider.collectCWDCounts()
+      for (key, value) in claudeCounts {
+        counts[key, default: 0] += value
       }
-      apply(notes: notes, to: &sessions)
-      // Auto-assign on newly appeared sessions matched with pending intents
-      let newlyAppeared = sessions.filter { !previousIDs.contains($0.id) }
-      if !newlyAppeared.isEmpty {
-        for s in newlyAppeared { self.handleAutoAssignIfMatches(s) }
+      for (key, value) in geminiCounts {
+        counts[key, default: 0] += value
       }
-      registerActivityHeartbeat(previous: allSessions, current: sessions)
-      allSessions = sessions  // didSet will call invalidateCalendarCaches()
-      recomputeProjectCounts()
-      rebuildCanonicalCwdCache()
-      await computeCalendarCaches()
-      scheduleFiltersUpdate()
-      startBackgroundEnrichment()
-      currentMonthDimension = dateDimension
-      currentMonthKey = monthKey(for: selectedDay, dimension: dateDimension)
-      Task { await self.refreshGlobalCount() }
-      // Refresh path tree to ensure newly created files appear via refresh
-      let enabledRemoteHostsForCounts = enabledRemoteHosts
-      let sessionsRootForCounts = sessionsRoot
-      Task {
-        var counts = await indexer.collectCWDCounts(root: sessionsRootForCounts)
-        let claudeCounts = await claudeProvider.collectCWDCounts()
-        let geminiCounts = await geminiProvider.collectCWDCounts()
-        for (key, value) in claudeCounts {
+      if !enabledRemoteHostsForCounts.isEmpty {
+        let remoteCodex = await remoteProvider.collectCWDAggregates(
+          kind: .codex, enabledHosts: enabledRemoteHostsForCounts)
+        for (key, value) in remoteCodex {
           counts[key, default: 0] += value
         }
-        for (key, value) in geminiCounts {
+        let remoteClaude = await remoteProvider.collectCWDAggregates(
+          kind: .claude, enabledHosts: enabledRemoteHostsForCounts)
+        for (key, value) in remoteClaude {
           counts[key, default: 0] += value
         }
-        if !enabledRemoteHostsForCounts.isEmpty {
-          let remoteCodex = await remoteProvider.collectCWDAggregates(
-            kind: .codex, enabledHosts: enabledRemoteHostsForCounts)
-          for (key, value) in remoteCodex {
-            counts[key, default: 0] += value
-          }
-          let remoteClaude = await remoteProvider.collectCWDAggregates(
-            kind: .claude, enabledHosts: enabledRemoteHostsForCounts)
-          for (key, value) in remoteClaude {
-            counts[key, default: 0] += value
+      }
+      let tree = counts.buildPathTreeFromCounts()
+      await MainActor.run { self.pathTreeRootPublished = tree }
+    }
+    Task { [weak self] in
+      guard let self else { return }
+      self.indexMeta = await self.indexer.currentMeta()
+      self.cacheCoverage = await self.indexer.currentCoverage()
+      self.diagLogger.log("refreshSessions meta/coverage updated metaCount=\(self.indexMeta?.sessionCount ?? -1, privacy: .public) coverageCount=\(self.cacheCoverage?.sessionCount ?? -1, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+    }
+    refreshCodexUsageStatus()
+    if claudeUsageAutoRefreshEnabled {
+      refreshClaudeUsageStatus()
+    }
+    refreshGeminiUsageStatus()
+    schedulePathTreeRefresh()
+  }
+
+  private func buildProviders(enabledRemoteHosts: Set<String>) -> [any SessionProvider] {
+    var providers: [any SessionProvider] = [
+      indexer,
+      claudeProvider,
+      geminiProvider
+    ]
+    if !enabledRemoteHosts.isEmpty {
+      providers.append(
+        RemoteSessionProviderAdapter(
+          kind: .codex,
+          remoteKind: .codex,
+          provider: remoteProvider,
+          label: "CodexRemote"
+        )
+      )
+      providers.append(
+        RemoteSessionProviderAdapter(
+          kind: .claude,
+          remoteKind: .claude,
+          provider: remoteProvider,
+          label: "ClaudeRemote"
+        )
+      )
+    }
+    return providers
+  }
+
+  private func loadProviders(
+    _ providers: [any SessionProvider],
+    context: SessionProviderContext
+  ) async -> [SessionSummary] {
+    await withTaskGroup(of: ([SessionSummary], SessionIndexCoverage?, SessionSource.Kind).self) { group in
+      for provider in providers {
+        group.addTask {
+          do {
+            let result = try await provider.load(context: context)
+            return (result.summaries, result.coverage, provider.kind)
+          } catch {
+            return ([], nil, provider.kind)
           }
         }
-        let tree = counts.buildPathTreeFromCounts()
-        await MainActor.run { self.pathTreeRootPublished = tree }
       }
-      Task { [weak self] in
-        guard let self else { return }
-        self.indexMeta = await self.indexer.currentMeta()
-        self.cacheCoverage = await self.indexer.currentCoverage()
-        self.diagLogger.log("refreshSessions meta/coverage updated metaCount=\(self.indexMeta?.sessionCount ?? -1, privacy: .public) coverageCount=\(self.cacheCoverage?.sessionCount ?? -1, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+      var all: [SessionSummary] = []
+      var latestCoverage: SessionIndexCoverage?
+      for await output in group {
+        all.append(contentsOf: output.0)
+        if output.2 == .codex, let cov = output.1 {
+          latestCoverage = cov
+        }
       }
-      // External providers: schedule delayed, so cold start is cache-only.
-      scheduleDeferredExternalMerge(scope: scope, enabledHosts: Array(enabledRemoteHosts))
-      refreshCodexUsageStatus()
-      if claudeUsageAutoRefreshEnabled {
-        refreshClaudeUsageStatus()
+      if let cov = latestCoverage {
+        await MainActor.run { self.cacheCoverage = cov }
       }
-      refreshGeminiUsageStatus()
-      schedulePathTreeRefresh()
-    } catch {
-      if token == activeRefreshToken {
-        errorMessage = error.localizedDescription
-      }
+      return all
     }
   }
 
-  /// Deduplicate provider sessions against existing ones by id.
-  private func dedupExtraSessions(base: [SessionSummary], extras: [SessionSummary]) -> [SessionSummary] {
-    guard !extras.isEmpty else { return [] }
-    let existingIDs = Set(base.map(\.id))
-    return extras.filter { !existingIDs.contains($0.id) }
+  private func dedupProviderSessions(_ sessions: [SessionSummary]) -> [SessionSummary] {
+    guard !sessions.isEmpty else { return [] }
+    var best: [String: SessionSummary] = [:]
+    for session in sessions {
+      if let existing = best[session.id] {
+        best[session.id] = preferSession(lhs: existing, rhs: session)
+      } else {
+        best[session.id] = session
+      }
+    }
+    return Array(best.values)
+  }
+
+  private func preferSession(lhs: SessionSummary, rhs: SessionSummary) -> SessionSummary {
+    let lt = lhs.lastUpdatedAt ?? lhs.startedAt
+    let rt = rhs.lastUpdatedAt ?? rhs.startedAt
+    if lt != rt { return lt > rt ? lhs : rhs }
+    let ls = lhs.fileSizeBytes ?? 0
+    let rs = rhs.fileSizeBytes ?? 0
+    if ls != rs { return ls > rs ? lhs : rhs }
+    return lhs.id < rhs.id ? lhs : rhs
   }
 
   /// Aggregated overview metrics from cached index (all sources).
   func fetchOverviewAggregate() async -> OverviewAggregate? {
     await indexer.fetchOverviewAggregate()
+  }
+
+  /// Aggregated overview metrics with scoped filters when supported by SQLite cache.
+  func fetchOverviewAggregate(scope: OverviewAggregateScope?) async -> OverviewAggregate? {
+    await indexer.fetchOverviewAggregate(scope: scope)
   }
 
   private func registerActivityHeartbeat(previous: [SessionSummary], current: [SessionSummary]) {
@@ -859,6 +952,18 @@ final class SessionListViewModel: ObservableObject {
     awaitingFollowupIDs.remove(id)
   }
 
+  private func persistProjectAssignmentsToCache(_ sessions: [SessionSummary]) {
+    guard !sessions.isEmpty else { return }
+    let mapping = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, projectId(for: $0)) })
+    let resolver: @Sendable (SessionSummary) -> String? = { session in
+      mapping[session.id] ?? nil
+    }
+    Task { [weak self] in
+      guard let self else { return }
+      await self.indexer.updateProjects(for: sessions, resolver: resolver)
+    }
+  }
+
   // Cancel ongoing background tasks (fulltext, enrichment, scheduled refreshes, quick pulses).
   // Useful when a heavy modal/sheet is presented and the UI should stay responsive.
   func cancelHeavyWork() {
@@ -870,16 +975,23 @@ final class SessionListViewModel: ObservableObject {
     filterDebounceTask = nil
     scheduledFilterRefresh?.cancel()
     scheduledFilterRefresh = nil
+    // Cancel all scoped refresh tasks
+    for (_, task) in scopedRefreshTasks {
+      task.cancel()
+    }
+    scopedRefreshTasks.removeAll()
+    pendingScopeRefreshForce.removeAll()
     directoryRefreshTask?.cancel()
     directoryRefreshTask = nil
+    fileEventAggregationTask?.cancel()
+    fileEventAggregationTask = nil
+    pendingFileEvents.removeAll()
     quickPulseTask?.cancel()
     quickPulseTask = nil
     codexUsageTask?.cancel()
     codexUsageTask = nil
     geminiUsageTask?.cancel()
     geminiUsageTask = nil
-    deferredExternalMergeTask?.cancel()
-    deferredExternalMergeTask = nil
     pathTreeRefreshTask?.cancel()
     pathTreeRefreshTask = nil
     for task in calendarRefreshTasks.values { task.cancel() }
@@ -895,9 +1007,7 @@ final class SessionListViewModel: ObservableObject {
   func delete(summaries: [SessionSummary]) async {
     do {
       try actions.delete(summaries: summaries)
-      for summary in summaries {
-        await indexer.invalidate(url: summary.fileURL)
-      }
+      await indexer.deleteSessions(ids: summaries.map(\.id))
       await refreshSessions(force: true)
     } catch {
       errorMessage = error.localizedDescription
@@ -1402,7 +1512,7 @@ final class SessionListViewModel: ObservableObject {
     // Manually save calendar state since didSet was suppressed
     windowStateStore.saveCalendarSelection(
       selectedDay: selectedDay, selectedDays: selectedDays, monthStart: sidebarMonthStart)
-    scheduleFilterRefresh(force: true)
+    scheduleSelectionDrivenUpdate()
     // Keep searchText unchanged to allow consecutive searches
   }
 
@@ -1412,7 +1522,7 @@ final class SessionListViewModel: ObservableObject {
     selectedPath = nil
     selectedProjectIDs.removeAll()
     suppressFilterNotifications = false
-    scheduleFilterRefresh(force: true)
+    scheduleSelectionDrivenUpdate()
   }
 
   private func scheduleFiltersUpdate() {
@@ -1424,6 +1534,49 @@ final class SessionListViewModel: ObservableObject {
       }
       self.scheduleApplyFilters()
     }
+  }
+
+  private func scheduleSelectionDrivenUpdate() {
+    let needRefresh = shouldRefreshForSelection()
+    if needRefresh {
+      scheduleFilterRefresh(force: true)
+    } else {
+      scheduleApplyFilters()
+    }
+  }
+
+  private func shouldRefreshForSelection() -> Bool {
+    let projectIsSingle = selectedProjectIDs.count == 1
+    let calendarIsSingle = (selectedDay != nil) || selectedDays.count == 1
+    return projectIsSingle || calendarIsSingle
+  }
+
+  private func singleSelectedProject() -> Set<String>? {
+    guard selectedProjectIDs.count == 1, let first = selectedProjectIDs.first else { return nil }
+    return [first]
+  }
+
+  private func singleSelectedProjectDirectory() -> [String]? {
+    guard let pid = selectedProjectIDs.first, selectedProjectIDs.count == 1 else { return nil }
+    guard let project = projects.first(where: { $0.id == pid }), let dir = project.directory, !dir.isEmpty else {
+      return nil
+    }
+    return [Self.canonicalPath(dir)]
+  }
+
+  private func currentDateRange() -> (Date, Date)? {
+    let cal = Calendar.current
+    var allDays: [Date] = []
+    if let day = selectedDay {
+      allDays.append(cal.startOfDay(for: day))
+    }
+    allDays.append(contentsOf: selectedDays.map { cal.startOfDay(for: $0) })
+    guard let minDay = allDays.min(), let maxDay = allDays.max() else { return nil }
+    let start = minDay
+    guard let end = cal.date(byAdding: .day, value: 1, to: maxDay)?.addingTimeInterval(-1) else {
+      return nil
+    }
+    return (start, end)
   }
 
   func applyFilters() {
@@ -1490,54 +1643,6 @@ final class SessionListViewModel: ObservableObject {
         }
       } else {
         self.filterTask = nil
-      }
-    }
-  }
-
-  private func scheduleDeferredExternalMerge(scope: SessionLoadScope, enabledHosts: [String]) {
-    deferredExternalMergeTask?.cancel()
-    // Delay to let UI settle; we fetch external sessions after 5s.
-    deferredExternalMergeTask = Task { [weak self] in
-      guard let self else { return }
-      try? await Task.sleep(nanoseconds: 5_000_000_000)
-      guard !Task.isCancelled else { return }
-      let providerStarted = Date()
-      async let claudeTask = claudeProvider.sessions(scope: scope)
-      async let geminiTask = geminiProvider.sessions(scope: scope)
-      let remoteCodexTask: Task<[SessionSummary], Never> = enabledHosts.isEmpty
-        ? Task { [] }
-        : Task { [weak self] in
-          guard let self else { return [] }
-          return await self.remoteProvider.codexSessions(scope: scope, enabledHosts: Set(enabledHosts))
-        }
-      let remoteClaudeTask: Task<[SessionSummary], Never> = enabledHosts.isEmpty
-        ? Task { [] }
-        : Task { [weak self] in
-          guard let self else { return [] }
-          return await self.remoteProvider.claudeSessions(scope: scope, enabledHosts: Set(enabledHosts))
-        }
-
-      let claudeSessions = await claudeTask
-      let geminiSessions = await geminiTask
-      let remoteCodex = await remoteCodexTask.value
-      let remoteClaude = await remoteClaudeTask.value
-      let afterFetch = Date()
-
-      let extra = self.dedupExtraSessions(
-        base: self.allSessions,
-        extras: claudeSessions + geminiSessions + remoteCodex + remoteClaude)
-      if !extra.isEmpty {
-        await self.indexer.cacheExternalSummaries(extra)
-        await MainActor.run {
-          self.mergeAndApply(extra)
-        }
-      }
-      let elapsed = afterFetch.timeIntervalSince(providerStarted)
-      self.diagLogger.log("provider merge (delayed) fetched claude=\(claudeSessions.count, privacy: .public) gemini=\(geminiSessions.count, privacy: .public) remoteCodex=\(remoteCodex.count, privacy: .public) remoteClaude=\(remoteClaude.count, privacy: .public) in \(elapsed, format: .fixed(precision: 3))s ts=\(self.ts(), format: .fixed(precision: 3))")
-      Task { [weak self] in
-        guard let self else { return }
-        self.cacheCoverage = await self.indexer.currentCoverage()
-        self.diagLogger.log("coverage refresh after delayed merge count=\(self.cacheCoverage?.sessionCount ?? -1, privacy: .public) sources=\(self.cacheCoverage?.sources ?? [], privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
       }
     }
   }
@@ -2070,6 +2175,50 @@ final class SessionListViewModel: ObservableObject {
     }
   }
 
+  func overviewAggregateScope() -> OverviewAggregateScope? {
+    if selectedPath != nil { return nil }
+    if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
+    if !quickSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
+    let projects = selectedProjectIDs.isEmpty ? nil : selectedProjectIDs
+    let cal = Calendar.current
+    var allDays: [Date] = []
+    if let day = selectedDay {
+      allDays.append(cal.startOfDay(for: day))
+    }
+    allDays.append(contentsOf: selectedDays.map { cal.startOfDay(for: $0) })
+    if allDays.isEmpty, let projects {
+      return OverviewAggregateScope(
+        dateDimension: dateDimension,
+        start: Date(timeIntervalSince1970: 0),
+        end: .distantFuture,
+        projectIds: projects
+      )
+    }
+    guard !allDays.isEmpty else { return nil }
+    let start = allDays.min() ?? Date()
+    let endBase = allDays.max() ?? start
+    guard let end = cal.date(byAdding: .day, value: 1, to: endBase)?.addingTimeInterval(-1) else {
+      return nil
+    }
+    return OverviewAggregateScope(
+      dateDimension: dateDimension,
+      start: start,
+      end: end,
+      projectIds: projects?.isEmpty == false ? projects : nil
+    )
+  }
+
+  /// Whether the Overview can safely use global cached aggregates without clashing with filters.
+  var canUseGlobalOverviewAggregate: Bool {
+    if dateDimension != .updated { return false }
+    if selectedDay != nil || !selectedDays.isEmpty { return false }
+    if selectedPath != nil { return false }
+    if !selectedProjectIDs.isEmpty { return false }
+    if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
+    if !quickSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
+    return true
+  }
+
   private func logApplyFiltersStart(reason: String) {
     diagLogger.log("applyFilters start reason=\(reason, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
   }
@@ -2117,17 +2266,45 @@ final class SessionListViewModel: ObservableObject {
   }
 
   private func scheduleDirectoryRefresh() {
-    directoryRefreshTask?.cancel()
-    directoryRefreshTask = Task { [weak self] in
-      try? await Task.sleep(nanoseconds: 400_000_000)
-      guard !Task.isCancelled else { return }
+    // Use file event aggregation to collect changes within 500-1000ms window
+    lastFileEventAt = Date()
+
+    // Cancel existing aggregation task and start a new one
+    fileEventAggregationTask?.cancel()
+    fileEventAggregationTask = Task { @MainActor [weak self] in
       guard let self else { return }
+
+      // Aggregate file events: wait 500ms for rapid changes, up to 1000ms total
+      let rapidChangeWindow: UInt64 = 500_000_000  // 500ms
+      let maxAggregationWindow: UInt64 = 1_000_000_000  // 1000ms
+      let startTime = Date()
+
+      // Wait for the rapid change window
+      try? await Task.sleep(nanoseconds: rapidChangeWindow)
+      guard !Task.isCancelled else { return }
+
+      // Check if more events came in recently (within last 100ms)
+      let timeSinceLastEvent = Date().timeIntervalSince(self.lastFileEventAt)
+      if timeSinceLastEvent < 0.1 && Date().timeIntervalSince(startTime) < 1.0 {
+        // More events are coming in, wait a bit more (up to max window)
+        let remainingTime = maxAggregationWindow - UInt64(Date().timeIntervalSince(startTime) * 1_000_000_000)
+        if remainingTime > 0 {
+          try? await Task.sleep(nanoseconds: min(remainingTime, 200_000_000))
+        }
+      }
+
+      guard !Task.isCancelled else { return }
+
+      // Now trigger the refresh with aggregated events
       if let hint = self.pendingIncrementalHint, Date() < hint.expiresAt {
         await self.refreshIncremental(using: hint)
       } else {
         self.enrichmentSnapshots.removeAll()
-        await self.scheduleRefreshDebounced(force: true)
+        // Use scope-based debouncing for the refresh
+        self.scheduleFilterRefresh(force: true)
       }
+
+      self.fileEventAggregationTask = nil
     }
   }
 
@@ -2152,33 +2329,91 @@ final class SessionListViewModel: ObservableObject {
     return "\(dateDimension.rawValue)|all|\(pathKey)"
   }
 
+  private func scopeKey(_ scope: SessionLoadScope) -> String {
+    switch scope {
+    case .all: return "all"
+    case .today: return "today"
+    case .day(let date): return "day-\(Int(date.timeIntervalSince1970))"
+    case .month(let date): return "month-\(Int(date.timeIntervalSince1970))"
+    }
+  }
+
   private func scheduleFilterRefresh(force: Bool) {
-    scheduledFilterRefresh?.cancel()
+    let scope = currentScope()
+    let key = scopeKey(scope)
+
+    // Cancel existing task for this scope only (allows different scopes to coexist)
+    scopedRefreshTasks[key]?.cancel()
+    pendingScopeRefreshForce[key] = (pendingScopeRefreshForce[key] ?? false) || force
+
     if force {
       sections = []
       isLoading = true
     }
-    scheduledFilterRefresh = Task { [weak self] in
+
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return }
       // Use longer debounce delay for non-force refreshes to reduce frequency
       // force=true: 10ms (user-initiated, responsive)
       // force=false: 300ms (auto-triggered, debounced)
-      let debounceNanoseconds: UInt64 = force ? 10_000_000 : 300_000_000
+      let runForce = self.pendingScopeRefreshForce[key] ?? false
+      let debounceNanoseconds: UInt64 = runForce ? 10_000_000 : 300_000_000
       try? await Task.sleep(nanoseconds: debounceNanoseconds)
-      guard let self, !Task.isCancelled else { return }
-      await self.refreshSessions(force: force)
-      self.scheduledFilterRefresh = nil
+      guard !Task.isCancelled else {
+        self.cleanupScopedTask(key: key)
+        return
+      }
+      self.pendingScopeRefreshForce[key] = nil
+      await self.refreshSessions(force: runForce)
+      self.cleanupScopedTask(key: key)
     }
+
+    scopedRefreshTasks[key] = task
+    // Keep backward compatibility with existing code that cancels scheduledFilterRefresh
+    scheduledFilterRefresh = task
+  }
+
+  private func cleanupScopedTask(key: String) {
+    scopedRefreshTasks[key] = nil
+    pendingScopeRefreshForce[key] = nil
   }
 
   /// Debounced wrapper around refreshSessions to reduce repeated full enumerations.
   private func scheduleRefreshDebounced(force: Bool) async {
     refreshDebounceTask?.cancel()
+    pendingRefreshForce = pendingRefreshForce || force
     refreshDebounceTask = Task { [weak self] in
-      let delay: UInt64 = force ? 10_000_000 : 300_000_000
+      guard let self else { return }
+      // File-event aggregation: coalesce bursts into a single refresh
+      let delay: UInt64 = self.pendingRefreshForce ? 50_000_000 : 500_000_000
       try? await Task.sleep(nanoseconds: delay)
-      guard let self, !Task.isCancelled else { return }
-      await self.refreshSessions(force: force)
+      guard !Task.isCancelled else { return }
+      let runForce = self.pendingRefreshForce
+      self.pendingRefreshForce = false
+      await self.refreshSessions(force: runForce)
     }
+  }
+
+  private func shouldSkipRefresh(scope: SessionLoadScope, force: Bool) -> Bool {
+    let key = scopeKey(scope)
+
+    // force=true (user-initiated): never skip
+    if force {
+      return false
+    }
+
+    // force=false (auto-triggered): check if already executing
+    if activeScopeRefreshes[key] != nil {
+      return true  // Skip if refresh for this scope is already in progress
+    }
+
+    // Skip if just completed (< 200ms) to filter rapid duplicates
+    guard let lastScope = lastRefreshScope, let lastTs = lastRefreshAt else { return false }
+    if lastScope == scope && Date().timeIntervalSince(lastTs) < 0.2 {
+      return true
+    }
+
+    return false
   }
 
   private func shouldRefreshSessionsForDateChange(oldValue: Date?, newValue: Date?) -> Bool {
@@ -2336,7 +2571,11 @@ final class SessionListViewModel: ObservableObject {
   func refreshIncrementalForNewCodexToday() async {
     do {
       let subset = try await indexer.refreshSessions(
-        root: preferences.sessionsRoot, scope: .day(dayOfToday()))
+        root: preferences.sessionsRoot,
+        scope: .day(dayOfToday()),
+        dateRange: currentDateRange(),
+        projectIds: singleSelectedProject(),
+        dateDimension: dateDimension)
       await MainActor.run { self.mergeAndApply(subset) }
     } catch {
       // Swallow errors for incremental path; full refresh will recover if needed.

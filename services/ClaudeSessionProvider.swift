@@ -1,6 +1,4 @@
 import Foundation
-
-import Foundation
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -9,6 +7,7 @@ actor ClaudeSessionProvider {
     private let parser = ClaudeSessionParser()
     private let fileManager: FileManager
     private let root: URL?
+    private let cacheStore: SessionIndexSQLiteStore?
     // Best-effort cache: sessionId -> canonical file URL (updated on scans)
     private var canonicalURLById: [String: URL] = [:]
     // mtime/size summary cache to skip re-parse when unchanged
@@ -20,8 +19,9 @@ actor ClaudeSessionProvider {
         let summary: SessionSummary
     }
 
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, cacheStore: SessionIndexSQLiteStore? = nil) {
         self.fileManager = fileManager
+        self.cacheStore = cacheStore
         // Use real user home directory, not sandbox container
         let home = Self.getRealUserHomeURL()
         let projects = home
@@ -68,6 +68,7 @@ actor ClaudeSessionProvider {
             guard let summary else { continue }
             guard matches(scope: scope, summary: summary) else { continue }
             cache(summary: summary, for: url, modificationDate: mtime, fileSize: fileSize)
+            persist(summary: summary, modificationDate: mtime, fileSize: fileSize)
 
             if let existing = bestById[summary.id] {
                 let pick = prefer(lhs: existing, rhs: summary)
@@ -105,9 +106,11 @@ actor ClaudeSessionProvider {
             if let summary = cachedSummary(for: url, modificationDate: mtime, fileSize: fileSize)
                 ?? parser.parseSummary(at: url, fileSize: fileSize) {
                 cache(summary: summary, for: url, modificationDate: mtime, fileSize: fileSize)
+                persist(summary: summary, modificationDate: mtime, fileSize: fileSize)
                 results.append(summary)
             } else if let parsed = parser.parse(at: url, fileSize: fileSize) {
                 cache(summary: parsed.summary, for: url, modificationDate: mtime, fileSize: fileSize)
+                persist(summary: parsed.summary, modificationDate: mtime, fileSize: fileSize)
                 results.append(parsed.summary)
             }
         }
@@ -262,6 +265,20 @@ actor ClaudeSessionProvider {
         canonicalURLById[summary.id] = url
     }
 
+    private func persist(summary: SessionSummary, modificationDate: Date?, fileSize: UInt64?) {
+        guard let cacheStore else { return }
+        Task.detached { [cacheStore] in
+            try? await cacheStore.upsert(
+                summary: summary,
+                project: nil,
+                fileModificationTime: modificationDate,
+                fileSize: fileSize,
+                tokenBreakdown: nil,
+                parseError: nil
+            )
+        }
+    }
+
     private func resolveFileSize(for url: URL) -> UInt64? {
         if let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
            let size = values.fileSize {
@@ -359,5 +376,58 @@ actor ClaudeSessionProvider {
             return a.url.lastPathComponent < b.url.lastPathComponent
         }
         return candidates.first?.url
+    }
+}
+
+// MARK: - SessionProvider
+
+extension ClaudeSessionProvider: SessionProvider {
+    nonisolated var kind: SessionSource.Kind { .claude }
+    nonisolated var identifier: String { "claude-local" }
+    nonisolated var label: String { "Claude (local)" }
+
+    func load(context: SessionProviderContext) async throws -> SessionProviderResult {
+        switch context.cachePolicy {
+        case .cacheOnly:
+            if let cacheStore {
+                let dateColumn = context.dateDimension == .updated ? "COALESCE(last_updated_at, started_at)" : "started_at"
+                let range = context.dateRange ?? Self.dateRange(for: context.scope)
+                if let cached = try? await cacheStore.fetchSummaries(
+                    kinds: [.claude],
+                    includeRemote: false,
+                    dateColumn: dateColumn,
+                    dateRange: range,
+                    projectIds: context.projectIds
+                ), !cached.isEmpty {
+                    return SessionProviderResult(summaries: cached, coverage: nil, cacheHit: true)
+                }
+            }
+            return SessionProviderResult(summaries: [], coverage: nil, cacheHit: true)
+        case .refresh:
+            let summaries = sessions(scope: context.scope)
+            return SessionProviderResult(summaries: summaries, coverage: nil, cacheHit: false)
+        }
+    }
+
+    private static func dateRange(for scope: SessionLoadScope) -> (Date, Date)? {
+        let cal = Calendar.current
+        switch scope {
+        case .all:
+            return nil
+        case .today:
+            let start = cal.startOfDay(for: Date())
+            guard let end = cal.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else { return nil }
+            return (start, end)
+        case .day(let day):
+            let start = cal.startOfDay(for: day)
+            guard let end = cal.date(byAdding: .day, value: 1, to: start)?.addingTimeInterval(-1) else { return nil }
+            return (start, end)
+        case .month(let date):
+            guard
+              let start = cal.date(from: cal.dateComponents([.year, .month], from: date)),
+              let end = cal.date(byAdding: DateComponents(month: 1, second: -1), to: start)
+            else { return nil }
+            return (start, end)
+        }
     }
 }

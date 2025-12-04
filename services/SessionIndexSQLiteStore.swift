@@ -200,12 +200,12 @@ actor SessionIndexSQLiteStore {
   }
 
   /// 聚合 Overview 统计（全部来源，使用缓存数据）。
-  func fetchOverviewAggregate() throws -> OverviewAggregate {
+  func fetchOverviewAggregate(scope: OverviewAggregateScope? = nil) throws -> OverviewAggregate {
     let started = Date()
     try openIfNeeded()
-    let totals = try fetchTotals()
-    let sources = try fetchSourceAggregates()
-    let daily = try fetchDailyAggregates()
+    let totals = try fetchTotals(scope: scope)
+    let sources = try fetchSourceAggregates(scope: scope)
+    let daily = try fetchDailyAggregates(scope: scope)
     let elapsed = Date().timeIntervalSince(started)
     logger.log("fetchOverviewAggregate totals.sessions=\(totals.sessions, privacy: .public) sources=\(sources.count, privacy: .public) daily=\(daily.count, privacy: .public) in \(elapsed, format: .fixed(precision: 3))s")
     return OverviewAggregate(
@@ -364,6 +364,22 @@ actor SessionIndexSQLiteStore {
     }
   }
 
+  /// Update project assignment for a session without touching other fields.
+  func updateProject(sessionId: String, project: String?) throws {
+    try openIfNeeded()
+    let sql = "UPDATE sessions SET project = ?1 WHERE session_id = ?2"
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+      throw SessionIndexSQLiteStoreError.stepFailed(errorMessage)
+    }
+    defer { sqlite3_finalize(stmt) }
+    bindText(stmt, index: 1, value: project)
+    sqlite3_bind_text(stmt, 2, sessionId, -1, SQLITE_TRANSIENT)
+    guard sqlite3_step(stmt) == SQLITE_DONE else {
+      throw SessionIndexSQLiteStoreError.stepFailed(errorMessage)
+    }
+  }
+
   func delete(sessionId: String) throws {
     try openIfNeeded()
     let sql = "DELETE FROM sessions WHERE session_id = ?1"
@@ -427,6 +443,51 @@ actor SessionIndexSQLiteStore {
     try exec("PRAGMA temp_store=MEMORY;")
     try exec("PRAGMA cache_size=-2000;") // ~2MB page cache
     try exec("PRAGMA busy_timeout=5000;")
+  }
+
+  private func predicate(
+    for scope: OverviewAggregateScope?
+  ) -> (clause: String, binder: (OpaquePointer?, Int32) -> Int32) {
+    guard let scope else {
+      return ("", { _, idx in idx })
+    }
+    let dateColumn: String
+    switch scope.dateDimension {
+    case .created:
+      dateColumn = "started_at"
+    case .updated:
+      dateColumn = "COALESCE(last_updated_at, started_at)"
+    }
+
+    var components: [String] = []
+    components.append("\(dateColumn) >= ?")
+    components.append("\(dateColumn) <= ?")
+
+    let projects = Array(scope.projectIds ?? [])
+    if !projects.isEmpty {
+      let placeholders = Array(repeating: "?", count: projects.count).joined(separator: ",")
+      components.append("project IN (\(placeholders))")
+    }
+
+    let clause = components.joined(separator: " AND ")
+    let start = scope.start.timeIntervalSince1970
+    let end = scope.end.timeIntervalSince1970
+
+    let binder: (OpaquePointer?, Int32) -> Int32 = { stmt, startIndex in
+      var idx = startIndex
+      sqlite3_bind_double(stmt, idx, start)
+      idx += 1
+      sqlite3_bind_double(stmt, idx, end)
+      idx += 1
+      if !projects.isEmpty {
+        for project in projects {
+          sqlite3_bind_text(stmt, idx, project, -1, SQLITE_TRANSIENT)
+          idx += 1
+        }
+      }
+      return idx
+    }
+    return (clause, binder)
   }
 
   private func migrateIfNeeded() throws {
@@ -638,7 +699,9 @@ actor SessionIndexSQLiteStore {
     return Array(Set(kinds)).sorted { $0.rawValue < $1.rawValue }
   }
 
-  private func fetchTotals() throws -> (sessions: Int, tokens: Int, duration: TimeInterval, userMessages: Int, assistantMessages: Int, toolInvocations: Int) {
+  private func fetchTotals(scope: OverviewAggregateScope?) throws -> (sessions: Int, tokens: Int, duration: TimeInterval, userMessages: Int, assistantMessages: Int, toolInvocations: Int) {
+    let predicate = predicate(for: scope)
+    let whereClause = predicate.clause.isEmpty ? "" : "WHERE \(predicate.clause)"
     let sql = """
     SELECT
       COUNT(*) AS c,
@@ -657,12 +720,14 @@ actor SessionIndexSQLiteStore {
       SUM(assistant_message_count) AS assistant_messages,
       SUM(tool_invocation_count) AS tool_invocations
     FROM sessions
+    \(whereClause)
     """
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
       throw SessionIndexSQLiteStoreError.stepFailed(errorMessage)
     }
     defer { sqlite3_finalize(stmt) }
+    _ = predicate.binder(stmt, 1)
     guard sqlite3_step(stmt) == SQLITE_ROW else {
       throw SessionIndexSQLiteStoreError.decodeFailed("Failed to read totals")
     }
@@ -675,7 +740,9 @@ actor SessionIndexSQLiteStore {
     return (sessions, tokens, duration, userMessages, assistantMessages, toolInvocations)
   }
 
-  private func fetchSourceAggregates() throws -> [OverviewSourceAggregate] {
+  private func fetchSourceAggregates(scope: OverviewAggregateScope?) throws -> [OverviewSourceAggregate] {
+    let predicate = predicate(for: scope)
+    let whereClause = predicate.clause.isEmpty ? "" : "WHERE \(predicate.clause)"
     let sql = """
     SELECT
       source,
@@ -695,6 +762,7 @@ actor SessionIndexSQLiteStore {
       SUM(assistant_message_count) AS assistant_messages,
       SUM(tool_invocation_count) AS tool_invocations
     FROM sessions
+    \(whereClause)
     GROUP BY source
     """
     var stmt: OpaquePointer?
@@ -702,6 +770,7 @@ actor SessionIndexSQLiteStore {
       throw SessionIndexSQLiteStoreError.stepFailed(errorMessage)
     }
     defer { sqlite3_finalize(stmt) }
+    _ = predicate.binder(stmt, 1)
     var results: [OverviewSourceAggregate] = []
     while sqlite3_step(stmt) == SQLITE_ROW {
       guard
@@ -729,10 +798,13 @@ actor SessionIndexSQLiteStore {
     return results
   }
 
-  private func fetchDailyAggregates() throws -> [OverviewDailyPoint] {
+  private func fetchDailyAggregates(scope: OverviewAggregateScope?) throws -> [OverviewDailyPoint] {
+    let predicate = predicate(for: scope)
+    let dateColumn = scope?.dateDimension == .updated ? "COALESCE(last_updated_at, started_at)" : "started_at"
+    let whereClause = predicate.clause.isEmpty ? "" : "WHERE \(predicate.clause)"
     let sql = """
     SELECT
-      strftime('%Y-%m-%d', started_at, 'unixepoch', 'localtime') AS day,
+      strftime('%Y-%m-%d', \(dateColumn), 'unixepoch', 'localtime') AS day,
       source,
       COUNT(*) AS c,
       SUM(COALESCE(tokens_total, 0)) AS tokens,
@@ -747,6 +819,7 @@ actor SessionIndexSQLiteStore {
         )
       ) AS duration
     FROM sessions
+    \(whereClause)
     GROUP BY day, source
     ORDER BY day ASC
     """
@@ -755,6 +828,7 @@ actor SessionIndexSQLiteStore {
       throw SessionIndexSQLiteStoreError.stepFailed(errorMessage)
     }
     defer { sqlite3_finalize(stmt) }
+    _ = predicate.binder(stmt, 1)
 
     var results: [OverviewDailyPoint] = []
     let df = DateFormatter()
@@ -795,5 +869,206 @@ actor SessionIndexSQLiteStore {
       throw SessionIndexSQLiteStoreError.decodeFailed("Failed to read session count")
     }
     return Int(sqlite3_column_int64(stmt, 0))
+  }
+}
+
+// MARK: - Cached summaries by source
+
+extension SessionIndexSQLiteStore {
+  /// Fetch cached summaries for given source kinds without touching the filesystem.
+  func fetchSummaries(
+    kinds: [SessionSource.Kind],
+    includeRemote: Bool,
+    dateColumn: String?,
+    dateRange: (Date, Date)?,
+    projectIds: Set<String>?
+  ) throws -> [SessionSummary] {
+    try openIfNeeded()
+    let sources = sourceStrings(for: kinds, includeRemote: includeRemote)
+    guard !sources.isEmpty else { return [] }
+    let placeholders = sources.map { _ in "?" }.joined(separator: ",")
+    var whereParts: [String] = ["source IN (\(placeholders))"]
+    if let dateColumn, dateRange != nil {
+      whereParts.append("\(dateColumn) >= ?")
+      whereParts.append("\(dateColumn) <= ?")
+    }
+    if let projectIds, !projectIds.isEmpty {
+      let projectPlaceholders = projectIds.map { _ in "?" }.joined(separator: ",")
+      whereParts.append("project IN (\(projectPlaceholders))")
+    }
+    let whereClause = whereParts.joined(separator: " AND ")
+    let sql = "SELECT payload FROM sessions WHERE \(whereClause)"
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+      throw SessionIndexSQLiteStoreError.stepFailed(errorMessage)
+    }
+    defer { sqlite3_finalize(stmt) }
+    var idx: Int32 = 1
+    for source in sources {
+      sqlite3_bind_text(stmt, idx, source, -1, SQLITE_TRANSIENT)
+      idx += 1
+    }
+    if let dateRange {
+      sqlite3_bind_double(stmt, idx, dateRange.0.timeIntervalSince1970)
+      idx += 1
+      sqlite3_bind_double(stmt, idx, dateRange.1.timeIntervalSince1970)
+      idx += 1
+    }
+    if let projectIds {
+      for pid in projectIds {
+        sqlite3_bind_text(stmt, idx, pid, -1, SQLITE_TRANSIENT)
+        idx += 1
+      }
+    }
+    var result: [SessionSummary] = []
+    let decoder = JSONDecoder()
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      guard let payload = columnData(stmt, index: 0) else { continue }
+      if let summary = try? decoder.decode(SessionSummary.self, from: payload) {
+        result.append(summary)
+      }
+    }
+    return result
+  }
+
+  /// Fetch cached records (payload + metadata) for given source kinds to build scoped caches.
+  func fetchRecords(
+    kinds: [SessionSource.Kind],
+    includeRemote: Bool,
+    dateColumn: String?,
+    dateRange: (Date, Date)?,
+    projectIds: Set<String>?
+  ) throws -> [SessionIndexRecord] {
+    try openIfNeeded()
+    let sources = sourceStrings(for: kinds, includeRemote: includeRemote)
+    guard !sources.isEmpty else { return [] }
+    let placeholders = sources.map { _ in "?" }.joined(separator: ",")
+    var whereParts: [String] = ["source IN (\(placeholders))"]
+    if let dateColumn, dateRange != nil {
+      whereParts.append("\(dateColumn) >= ?")
+      whereParts.append("\(dateColumn) <= ?")
+    }
+    if let projectIds, !projectIds.isEmpty {
+      let projectPlaceholders = projectIds.map { _ in "?" }.joined(separator: ",")
+      whereParts.append("project IN (\(projectPlaceholders))")
+    }
+    let whereClause = whereParts.joined(separator: " AND ")
+    let sql = """
+    SELECT payload, file_path, file_mtime, file_size, project, schema_version, parse_error, tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation
+    FROM sessions
+    WHERE \(whereClause)
+    """
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+      throw SessionIndexSQLiteStoreError.stepFailed(errorMessage)
+    }
+    defer { sqlite3_finalize(stmt) }
+    var idx: Int32 = 1
+    for source in sources {
+      sqlite3_bind_text(stmt, idx, source, -1, SQLITE_TRANSIENT)
+      idx += 1
+    }
+    if let dateRange {
+      sqlite3_bind_double(stmt, idx, dateRange.0.timeIntervalSince1970)
+      idx += 1
+      sqlite3_bind_double(stmt, idx, dateRange.1.timeIntervalSince1970)
+      idx += 1
+    }
+    if let projectIds {
+      for pid in projectIds {
+        sqlite3_bind_text(stmt, idx, pid, -1, SQLITE_TRANSIENT)
+        idx += 1
+      }
+    }
+
+    var records: [SessionIndexRecord] = []
+    let decoder = JSONDecoder()
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      guard let payload = columnData(stmt, index: 0) else { continue }
+      guard let summary = try? decoder.decode(SessionSummary.self, from: payload) else { continue }
+      let filePath = columnText(stmt, index: 1) ?? summary.fileURL.path
+      let fileMtime = columnDate(stmt, index: 2)
+      let fileSize = columnInt64(stmt, index: 3).flatMap { UInt64($0) }
+      let project = columnText(stmt, index: 4)
+      let schemaVersion = Int(sqlite3_column_int(stmt, 5))
+      let parseError = columnText(stmt, index: 6)
+      let tokenBreakdown = tokenBreakdownFromColumns(stmt, startIndex: 7)
+      records.append(
+        SessionIndexRecord(
+          summary: summary,
+          filePath: filePath,
+          fileModificationTime: fileMtime,
+          fileSize: fileSize,
+          project: project,
+          schemaVersion: schemaVersion,
+          parseError: parseError,
+          tokenBreakdown: tokenBreakdown
+        )
+      )
+    }
+    return records
+  }
+
+  /// Fetch file paths for a specific date without loading full payloads (optimized for single-day queries).
+  /// Returns [(filePath, lastUpdatedAt, fileModificationTime, fileSize)].
+  func fetchFilePathsForDate(
+    kinds: [SessionSource.Kind],
+    includeRemote: Bool,
+    dateColumn: String,
+    targetDate: Date
+  ) throws -> [(filePath: String, lastUpdatedAt: Date?, fileMtime: Date?, fileSize: UInt64?)] {
+    try openIfNeeded()
+    let sources = sourceStrings(for: kinds, includeRemote: includeRemote)
+    guard !sources.isEmpty else { return [] }
+    let placeholders = sources.map { _ in "?" }.joined(separator: ",")
+
+    // Use SQLite date() function to filter by calendar day in UTC
+    let sql = """
+    SELECT file_path, last_updated_at, file_mtime, file_size
+    FROM sessions
+    WHERE source IN (\(placeholders))
+      AND date(\(dateColumn), 'unixepoch') = date(?1, 'unixepoch')
+    """
+
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+      throw SessionIndexSQLiteStoreError.stepFailed(errorMessage)
+    }
+    defer { sqlite3_finalize(stmt) }
+
+    var idx: Int32 = 1
+    for source in sources {
+      sqlite3_bind_text(stmt, idx, source, -1, SQLITE_TRANSIENT)
+      idx += 1
+    }
+    sqlite3_bind_double(stmt, idx, targetDate.timeIntervalSince1970)
+
+    var result: [(String, Date?, Date?, UInt64?)] = []
+    while sqlite3_step(stmt) == SQLITE_ROW {
+      let filePath = columnText(stmt, index: 0) ?? ""
+      let lastUpdated = columnDate(stmt, index: 1)
+      let fileMtime = columnDate(stmt, index: 2)
+      let fileSize = columnInt64(stmt, index: 3).map { UInt64($0) }
+      result.append((filePath, lastUpdated, fileMtime, fileSize))
+    }
+    return result
+  }
+
+  private func sourceStrings(for kinds: [SessionSource.Kind], includeRemote: Bool) -> [String] {
+    var sources: [String] = []
+    for kind in kinds {
+      switch kind {
+      case .codex:
+        sources.append("codexLocal")
+        if includeRemote { sources.append("codexRemote") }
+      case .claude:
+        sources.append("claudeLocal")
+        if includeRemote { sources.append("claudeRemote") }
+      case .gemini:
+        sources.append("geminiLocal")
+        if includeRemote { sources.append("geminiRemote") }
+      }
+    }
+    return sources
   }
 }

@@ -18,6 +18,10 @@ actor RemoteSessionProvider {
     private var lastHostsRefresh: Date?
     private var mirrorStore: [String: RemoteMirrorOutcome] = [:]
     private var syncStates: [String: RemoteSyncState] = [:]
+    // Scope-based refresh debouncing: track active and recent refreshes
+    private var activeRefreshes: Set<String> = []  // Currently executing refresh keys
+    private var lastRefreshTimes: [String: Date] = [:]
+    private let recentCompletionWindow: TimeInterval = 0.1  // 100ms to filter rapid duplicates
 
     init(
         hostResolver: SSHConfigResolver = SSHConfigResolver(),
@@ -34,13 +38,43 @@ actor RemoteSessionProvider {
     func codexSessions(scope: SessionLoadScope, enabledHosts: Set<String>) async -> [SessionSummary] {
         let hosts = filteredHosts(enabledHosts)
         guard !hosts.isEmpty else { return [] }
+
+        let key = refreshKey(scope: scope, kind: .codex, hosts: enabledHosts)
+
+        // Skip if already executing or just completed
+        if shouldSkipRefresh(key: key) {
+            return []
+        }
+
+        activeRefreshes.insert(key)
+        defer {
+            activeRefreshes.remove(key)
+            lastRefreshTimes[key] = Date()
+        }
+
         return await fetchCodexSessions(scope: scope, hosts: hosts)
     }
 
     func claudeSessions(scope: SessionLoadScope, enabledHosts: Set<String>) async -> [SessionSummary] {
         let hosts = filteredHosts(enabledHosts)
         guard !hosts.isEmpty else { return [] }
-        return await fetchClaudeSessions(scope: scope, hosts: hosts)
+
+        let key = refreshKey(scope: scope, kind: .claude, hosts: enabledHosts)
+
+        // Skip if already executing or just completed
+        if shouldSkipRefresh(key: key) {
+            return []
+        }
+
+        activeRefreshes.insert(key)
+        defer {
+            activeRefreshes.remove(key)
+            lastRefreshTimes[key] = Date()
+        }
+
+        let sessions = await fetchClaudeSessions(scope: scope, hosts: hosts)
+        await cacheExternalSummaries(sessions)
+        return sessions
     }
 
     func collectCWDAggregates(kind: RemoteSessionKind, enabledHosts: Set<String>) async -> [String: Int] {
@@ -118,7 +152,11 @@ actor RemoteSessionProvider {
                 guard let outcome = mirrorOutcome(host: host, kind: .codex) else { continue }
                 let summaries = try await indexer.refreshSessions(
                     root: outcome.localRoot,
-                    scope: scope
+                    scope: scope,
+                    dateRange: nil,
+                    projectIds: nil,
+                    projectDirectories: nil,
+                    dateDimension: .updated
                 )
                 for summary in summaries {
                     guard let metadata = outcome.fileMap[summary.fileURL] else { continue }
@@ -323,5 +361,27 @@ actor RemoteSessionProvider {
             return number.uint64Value
         }
         return nil
+    }
+
+    private func cacheExternalSummaries(_ summaries: [SessionSummary]) async {
+        guard !summaries.isEmpty else { return }
+        await indexer.cacheExternalSummaries(summaries)
+    }
+
+    private func refreshKey(scope: SessionLoadScope, kind: RemoteSessionKind, hosts: Set<String>) -> String {
+        let scopePart = scopeKey(scope)
+        let hostsPart = hosts.sorted().joined(separator: ",")
+        return "\(kind.rawValue)|\(scopePart)|\(hostsPart)"
+    }
+
+    private func shouldSkipRefresh(key: String) -> Bool {
+        // Skip if already executing
+        if activeRefreshes.contains(key) {
+            return true
+        }
+
+        // Skip if just completed (< 100ms) to filter rapid duplicates
+        guard let lastTime = lastRefreshTimes[key] else { return false }
+        return Date().timeIntervalSince(lastTime) < recentCompletionWindow
     }
 }

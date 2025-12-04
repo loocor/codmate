@@ -183,33 +183,54 @@ struct AllOverviewView: View {
 
 private struct OverviewLoadingPlaceholder: View {
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      RoundedRectangle(cornerRadius: 12)
-        .fill(Color.secondary.opacity(0.1))
-        .frame(height: 160)
-        .overlay(
-          VStack(alignment: .leading, spacing: 8) {
-            HStack {
-              RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.2)).frame(width: 80, height: 10)
-              Spacer()
-            }
-            RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.2)).frame(width: 140, height: 10)
-            RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.15)).frame(height: 80)
-          }
-          .padding()
-        )
-      HStack(spacing: 12) {
-        ForEach(0..<4) { _ in
-          RoundedRectangle(cornerRadius: 12)
-            .fill(Color.secondary.opacity(0.08))
-            .frame(height: 110)
+    VStack(alignment: .center, spacing: 24) {
+      // Loading indicator with message
+      VStack(spacing: 12) {
+        ProgressView()
+          .scaleEffect(1.2)
+          .progressViewStyle(.circular)
+
+        VStack(spacing: 4) {
+          Text("Building Session Index")
+            .font(.headline)
+            .foregroundStyle(.primary)
+          Text("Scanning and caching session files for fast access…")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      RoundedRectangle(cornerRadius: 12)
-        .fill(Color.secondary.opacity(0.08))
-        .frame(height: 120)
+      .padding(.top, 40)
+
+      // Skeleton preview
+      VStack(alignment: .leading, spacing: 16) {
+        RoundedRectangle(cornerRadius: 12)
+          .fill(Color.secondary.opacity(0.1))
+          .frame(height: 160)
+          .overlay(
+            VStack(alignment: .leading, spacing: 8) {
+              HStack {
+                RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.2)).frame(width: 80, height: 10)
+                Spacer()
+              }
+              RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.2)).frame(width: 140, height: 10)
+              RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.15)).frame(height: 80)
+            }
+            .padding()
+          )
+        HStack(spacing: 12) {
+          ForEach(0..<4) { _ in
+            RoundedRectangle(cornerRadius: 12)
+              .fill(Color.secondary.opacity(0.08))
+              .frame(height: 110)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        RoundedRectangle(cornerRadius: 12)
+          .fill(Color.secondary.opacity(0.08))
+          .frame(height: 120)
+      }
+      .redacted(reason: .placeholder)
     }
-    .redacted(reason: .placeholder)
   }
 }

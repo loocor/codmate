@@ -65,8 +65,16 @@ final class AllOverviewViewModel: ObservableObject {
       let filteredSessions: [SessionSummary] = self.sessionListViewModel.sections.flatMap { $0.sessions }
       let usageSnapshots = self.sessionListViewModel.usageSnapshots
       let projectCount = self.sessionListViewModel.projects.count
-      let aggregate = await self.sessionListViewModel.fetchOverviewAggregate()
-      self.logger.log("overview snapshot refresh start sessions=\(filteredSessions.count, privacy: .public) aggregate=\(aggregate != nil, privacy: .public)")
+      let scope = self.sessionListViewModel.overviewAggregateScope()
+      let aggregate: OverviewAggregate?
+      if let scope {
+        aggregate = await self.sessionListViewModel.fetchOverviewAggregate(scope: scope)
+      } else if self.sessionListViewModel.canUseGlobalOverviewAggregate {
+        aggregate = await self.sessionListViewModel.fetchOverviewAggregate()
+      } else {
+        aggregate = nil
+      }
+      self.logger.log("overview snapshot refresh start sessions=\(filteredSessions.count, privacy: .public) scopeAggregate=\(scope != nil, privacy: .public) aggregateFetched=\(aggregate != nil, privacy: .public)")
       
       // Run computation in background
       let newSnapshot = await Self.computeSnapshot(

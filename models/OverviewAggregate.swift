@@ -35,3 +35,10 @@ struct SessionIndexCoverage: Sendable {
   let lastFullIndexAt: Date?
   let sources: [SessionSource.Kind]
 }
+
+struct OverviewAggregateScope: Sendable {
+  let dateDimension: DateDimension
+  let start: Date
+  let end: Date
+  let projectIds: Set<String>?
+}
