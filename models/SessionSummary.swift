@@ -35,6 +35,21 @@ struct SessionSummary: Identifiable, Hashable, Sendable, Codable {
     // Task association (optional - nil means standalone session)
     var taskId: UUID? = nil
 
+    public enum ParseLevel: String, Codable, Sendable, Comparable {
+        case metadata
+        case full
+        case enriched
+
+        public static func < (lhs: ParseLevel, rhs: ParseLevel) -> Bool {
+            switch (lhs, rhs) {
+            case (.metadata, .full), (.metadata, .enriched), (.full, .enriched): return true
+            default: return false
+            }
+        }
+    }
+
+    var parseLevel: ParseLevel? = nil
+
     var duration: TimeInterval {
         if let activeDuration { return activeDuration }
         guard let end = endedAt ?? lastUpdatedAt else { return 0 }
@@ -164,7 +179,7 @@ extension SessionSummary {
         if newSource == source, remotePath == self.remotePath { return self }
         let adjustedModel = (newSource.baseKind == source.baseKind) ? model : nil
         let adjustedApproval = (newSource.baseKind == source.baseKind) ? approvalPolicy : nil
-        return SessionSummary(
+        var s = SessionSummary(
             id: id,
             fileURL: fileURL,
             fileSizeBytes: fileSizeBytes,
@@ -192,6 +207,8 @@ extension SessionSummary {
             userComment: userComment,
             taskId: taskId
         )
+        s.parseLevel = parseLevel
+        return s
     }
 
     func withRemoteMetadata(source: SessionSource, remotePath: String) -> SessionSummary {
@@ -203,7 +220,7 @@ extension SessionSummary {
         assistantMessages: Int? = nil,
         toolInvocations: Int? = nil
     ) -> SessionSummary {
-        SessionSummary(
+        var s = SessionSummary(
             id: id,
             fileURL: fileURL,
             fileSizeBytes: fileSizeBytes,
@@ -231,6 +248,19 @@ extension SessionSummary {
             userComment: userComment,
             taskId: taskId
         )
+        s.parseLevel = parseLevel
+        return s
+    }
+    
+    func withParseLevel(_ level: ParseLevel?) -> SessionSummary {
+        var s = self
+        s.parseLevel = level
+        return s
+    }
+    
+    func withParseLevel(fromString levelString: String?) -> SessionSummary {
+        guard let levelString, let level = ParseLevel(rawValue: levelString) else { return self }
+        return withParseLevel(level)
     }
 }
 

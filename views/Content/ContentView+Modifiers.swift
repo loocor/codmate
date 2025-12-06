@@ -172,6 +172,7 @@ extension ContentView {
         if !restored.selectedIDs.isEmpty {
           selection = restored.selectedIDs
           selectionPrimaryId = restored.primaryId
+          viewModel.updateSelection(restored.selectedIDs)
         }
 
         // On initial launch, ensure workspace mode matches the current selection.
@@ -190,6 +191,8 @@ extension ContentView {
       .onChange(of: selection) { _, newSelection in
         // Save session selection whenever it changes
         viewModel.windowStateStore.saveSessionSelection(selectedIDs: newSelection, primaryId: selectionPrimaryId)
+        viewModel.updateSelection(newSelection)
+        viewModel.scheduleSelectedSessionsRefresh(sessionIds: newSelection)
       }
       .onChange(of: selectionPrimaryId) { _, newPrimaryId in
         // Save primary ID whenever it changes

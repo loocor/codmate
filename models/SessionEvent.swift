@@ -246,6 +246,7 @@ struct SessionSummaryBuilder {
     private(set) var lineCount: Int = 0
     private(set) var fileSizeBytes: UInt64?
     private(set) var source: SessionSource = .codexLocal
+    var parseLevel: SessionSummary.ParseLevel? = nil
 
     var hasEssentialMetadata: Bool {
         id != nil && startedAt != nil && cliVersion != nil && cwd != nil
@@ -363,7 +364,7 @@ struct SessionSummaryBuilder {
             return nil
         }
 
-        return SessionSummary(
+        var s = SessionSummary(
             id: id,
             fileURL: url,
             fileSizeBytes: fileSizeBytes,
@@ -388,6 +389,8 @@ struct SessionSummaryBuilder {
             source: source,
             remotePath: nil
         )
+        s.parseLevel = parseLevel
+        return s
     }
 }
 

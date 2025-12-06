@@ -37,6 +37,10 @@ actor SessionIndexer {
     decoder = FlexibleDecoders.iso8601Flexible()
   }
 
+  private func ensureCacheAvailable() async throws -> SessionIndexMeta {
+    return try await sqliteStore.fetchMeta()
+  }
+
   func refreshSessions(
     root: URL,
     scope: SessionLoadScope,
@@ -45,15 +49,17 @@ actor SessionIndexer {
     projectDirectories: [String]? = nil,
     dateDimension: DateDimension = .updated
   ) async throws -> [SessionSummary] {
+    let meta = try await ensureCacheAvailable()
+    let preferFullInitialParse = meta.sessionCount == 0
     // First, try cached meta fast path so repeated .all refreshes don't re-enumerate
-    if case .all = scope, let cached = await cachedAllSummariesFromMeta() {
+    if case .all = scope, let cached = try await cachedAllSummariesFromMeta() {
       return cached
     }
 
     guard !isRefreshing else {
       logger.debug("Refresh skipped: already in progress for scope=\(String(describing: scope), privacy: .public)")
       // When a refresh is already running, still try to surface cached data for ALL scope
-      if case .all = scope, let cached = await cachedAllSummariesFromMeta() {
+      if case .all = scope, let cached = try await cachedAllSummariesFromMeta() {
         return cached
       }
       return []
@@ -142,7 +148,8 @@ actor SessionIndexer {
     // Fast path: if all files have up-to-date summaries in cache/SQLite, return immediately
     var summaries: [SessionSummary] = []
     summaries.reserveCapacity(sessionFiles.count)
-    var pending: [(url: URL, modificationDate: Date?, fileSize: Int?)] = []
+    // URL, modificationDate, fileSize, previousParseLevel
+    var pending: [(url: URL, modificationDate: Date?, fileSize: Int?, previousParseLevel: String?)] = []
 
     // Layer 1.5: if all files are covered by cachedRecords with matching mtime/size, short-circuit.
     if !cachedRecords.isEmpty {
@@ -164,7 +171,7 @@ actor SessionIndexer {
         }
       }
       if allCovered {
-        let fastSummaries = Array(cachedRecords.values.map(\.summary))
+        let fastSummaries = Array(cachedRecords.values.map { $0.summary.withParseLevel(fromString: $0.parseLevel) })
         logger.info("SessionIndexer fast path: all files covered by scoped cache count=\(fastSummaries.count, privacy: .public)")
         if case .all = scope {
           try? await sqliteStore.setMeta(lastFullIndexAt: Date(), sessionCount: sessionFiles.count)
@@ -181,26 +188,34 @@ actor SessionIndexer {
       let mdate = values.contentModificationDate
       let fsize = values.fileSize
 
-      if let record = cachedRecords[url.path],
-         let m = record.fileModificationTime,
-         mdate == m,
-         (record.fileSize == nil || fsize == nil || record.fileSize == fsize.map { UInt64($0) })
-      {
-        let summary = record.summary
-        store(summary: summary, for: url as NSURL, modificationDate: mdate)
-        summaries.append(summary)
-        continue
+      if let record = cachedRecords[url.path] {
+         if let m = record.fileModificationTime,
+            mdate == m,
+            (record.fileSize == nil || fsize == nil || record.fileSize == fsize.map { UInt64($0) })
+         {
+           let summary = record.summary.withParseLevel(fromString: record.parseLevel)
+           store(summary: summary, for: url as NSURL, modificationDate: mdate)
+           summaries.append(summary)
+           continue
+         }
+         // File changed, but remember previous parse level
+         pending.append((url, mdate, fsize, record.parseLevel))
+         continue
       }
 
       if let cached = cachedSummary(for: url as NSURL, modificationDate: mdate) {
         if shouldRecomputeTokens(for: url.path, modificationDate: mdate, summary: cached) {
-          pending.append((url, mdate, fsize))
+          pending.append((url, mdate, fsize, cached.parseLevel?.rawValue))
         } else {
           summaries.append(cached)
         }
         continue
       }
       if cachedRecords.isEmpty {
+        // Try to get previous parse level from DB even if file changed or not in memory cache
+        let diskRecord = try? await sqliteStore.fetch(sessionId: url.deletingPathExtension().lastPathComponent)
+        let prevLevel = diskRecord?.parseLevel
+
         if
           let disk = try? await sqliteStore.fetch(
             path: url.path,
@@ -208,15 +223,18 @@ actor SessionIndexer {
             fileSize: fsize.flatMap { UInt64($0) })
         {
           if shouldRecomputeTokens(for: url.path, modificationDate: mdate, summary: disk) {
-            pending.append((url, mdate, fsize))
+            pending.append((url, mdate, fsize, prevLevel ?? disk.parseLevel?.rawValue))
           } else {
             store(summary: disk, for: url as NSURL, modificationDate: mdate)
             summaries.append(disk)
           }
           continue
         }
+        // Not in cache (or changed), but might have previous level
+        pending.append((url, mdate, fsize, prevLevel))
+        continue
       }
-      pending.append((url, mdate, fsize))
+      pending.append((url, mdate, fsize, nil))
     }
 
     // If everything hit cache, short-circuit
@@ -246,45 +264,59 @@ actor SessionIndexer {
 
       func addNextTasks(_ n: Int) {
         for _ in 0..<n {
-              guard let url = iterator.next() else { return }
+              guard let item = iterator.next() else { return }
           group.addTask { [weak self] in
             guard let self else { return .success(nil) }
             do {
-              let (url, modificationDate, fileSize) = url
+              let (url, modificationDate, fileSize, prevLevel) = item
 
               var builder = SessionSummaryBuilder()
               if let size = fileSize { builder.setFileSize(UInt64(size)) }
+              
+              // If previously full/enriched, force full parse to capture new content correctly
+              // Otherwise use fast parse for speed
+              let useFullParse = preferFullInitialParse || prevLevel == "full" || prevLevel == "enriched"
+              
               // Seed updatedAt by fs metadata to avoid full scan for recency
               if let lastUpdated = self.lastUpdatedTimestamp(
                 for: url, modificationDate: modificationDate)
               {
                 builder.seedLastUpdated(lastUpdated)
               }
-              guard
-                let summary = try await self.buildSummaryFast(
-                  for: url, builder: &builder)
-              else { return .success(nil) }
+              
+              let summary: SessionSummary?
+              if useFullParse {
+                 // Full parse logic
+                 summary = try await self.buildSummaryFull(for: url, builder: &builder)
+              } else {
+                 // Fast parse logic
+                 summary = try await self.buildSummaryFast(for: url, builder: &builder)
+              }
+              
+              guard let result = summary else { return .success(nil) }
+              
               // Track zero-token stability to avoid re-scans next time if still zero
               await self.updateZeroTokenStable(
-                path: url.path, modificationDate: modificationDate, tokens: summary.actualTotalTokens)
+                path: url.path, modificationDate: modificationDate, tokens: result.actualTotalTokens)
               // Persist to SQLite (best-effort)
               do {
                 try await self.sqliteStore.upsert(
-                  summary: summary,
+                  summary: result,
                   project: nil,
                   fileModificationTime: modificationDate,
                   fileSize: fileSize.flatMap { UInt64($0) },
                   tokenBreakdown: nil,
-                  parseError: nil)
+                  parseError: nil,
+                  parseLevel: result.parseLevel?.rawValue ?? "metadata")
               } catch {
                 self.logger.error(
                   "Failed to persist session summary: \(error.localizedDescription, privacy: .public) path=\(url.path, privacy: .public)"
                 )
               }
               await self.store(
-                summary: summary, for: url as NSURL,
+                summary: result, for: url as NSURL,
                 modificationDate: modificationDate)
-              return .success(summary)
+              return .success(result)
             } catch {
               return .failure(error)
             }
@@ -459,16 +491,15 @@ actor SessionIndexer {
   }
 
   /// Cached fast path: return all summaries from SQLite meta without touching the filesystem.
-  private func cachedAllSummariesFromMeta() async -> [SessionSummary]? {
-    guard let meta = try? await sqliteStore.fetchMeta(), meta.sessionCount > 0 else {
-      return nil
-    }
-    let records = (try? await sqliteStore.fetchAll()) ?? []
+  private func cachedAllSummariesFromMeta() async throws -> [SessionSummary]? {
+    let meta = try await sqliteStore.fetchMeta()
+    guard meta.sessionCount > 0 else { return nil }
+    let records = try await sqliteStore.fetchAll()
     if records.isEmpty {
       return nil
     }
     logger.info("SessionIndexer meta hit: sessions=\(records.count, privacy: .public)")
-    return records.map(\.summary)
+    return records.map { $0.summary.withParseLevel(fromString: $0.parseLevel) }
   }
 
   /// Fast tail scan to retrieve latest token_count for Codex/Gemini sessions.
@@ -942,6 +973,7 @@ actor SessionIndexer {
       builder.seedTotalTokens(tail)
     }
 
+    builder.parseLevel = .metadata
     if let result = builder.build(for: url) { return result }
     return try buildSummaryFull(for: url, builder: &builder)
   }
@@ -969,6 +1001,7 @@ actor SessionIndexer {
         lastError = error
       }
     }
+    builder.parseLevel = .full
     if let result = builder.build(for: url) { return result }
     if let error = lastError { throw error }
     return nil
@@ -984,7 +1017,7 @@ actor SessionIndexer {
 
     // Compute accurate active duration from grouped turns
     let active = computeActiveDuration(url: url)
-    let enriched = SessionSummary(
+    var enriched = SessionSummary(
       id: base.id,
       fileURL: base.fileURL,
       fileSizeBytes: base.fileSizeBytes,
@@ -1011,6 +1044,7 @@ actor SessionIndexer {
       userTitle: base.userTitle,
       userComment: base.userComment
     )
+    enriched.parseLevel = .enriched
 
     // Persist to in-memory and disk caches keyed by mtime
     store(summary: enriched, for: url as NSURL, modificationDate: values.contentModificationDate)
@@ -1021,7 +1055,8 @@ actor SessionIndexer {
         fileModificationTime: values.contentModificationDate,
         fileSize: values.fileSize.flatMap { UInt64($0) },
         tokenBreakdown: nil,
-        parseError: nil)
+        parseError: nil,
+        parseLevel: "enriched")  // Full parse + activeDuration computation
     } catch {
       logger.error(
         "Failed to persist enriched summary: \(error.localizedDescription, privacy: .public) path=\(url.path, privacy: .public)"
@@ -1198,8 +1233,8 @@ actor SessionIndexer {
   }
 
   /// Returns cached summaries when a full index already exists.
-  func cachedAllSummaries() async -> [SessionSummary]? {
-    return await cachedAllSummariesFromMeta()
+  func cachedAllSummaries() async throws -> [SessionSummary]? {
+    return try await cachedAllSummariesFromMeta()
   }
 }
 
@@ -1214,20 +1249,22 @@ extension SessionIndexer: SessionProvider {
     guard let root = context.sessionsRoot else {
       return SessionProviderResult(summaries: [], coverage: nil, cacheHit: true)
     }
+    _ = try await ensureCacheAvailable()
     switch context.cachePolicy {
     case .cacheOnly:
       // Try scoped cached summaries first
-      if let cached = try? await sqliteStore.fetchSummaries(
+      let cached = try await sqliteStore.fetchSummaries(
         kinds: [.codex],
         includeRemote: false,
         dateColumn: dateColumn(for: context.dateDimension),
         dateRange: context.dateRange,
         projectIds: context.projectIds
-      ), !cached.isEmpty {
+      )
+      if !cached.isEmpty {
         let coverage = await currentCoverage()
         return SessionProviderResult(summaries: cached, coverage: coverage, cacheHit: true)
       }
-      if context.scope == .all, let cached = await cachedAllSummaries() {
+      if context.scope == .all, let cached = try await cachedAllSummaries() {
         let coverage = await currentCoverage()
         return SessionProviderResult(
           summaries: cached,
@@ -1258,6 +1295,121 @@ extension SessionIndexer: SessionProvider {
     switch dimension {
     case .created: return "started_at"
     case .updated: return "COALESCE(last_updated_at, started_at)"
+    }
+  }
+
+  // MARK: - Single File Reindexing
+
+  /// Reindex specific files and update cache. Used for incremental refresh of selected sessions.
+  /// Returns updated SessionSummary objects for successfully reindexed files.
+  func reindexFiles(_ urls: [URL]) async throws -> [SessionSummary] {
+    guard !urls.isEmpty else { return [] }
+
+    logger.info("reindexFiles: processing \(urls.count, privacy: .public) files")
+    let startTime = Date()
+
+    var results: [SessionSummary] = []
+    var failedCount = 0
+
+    for url in urls {
+      do {
+        // Get file attributes for mtime and size
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let fileSize = values.fileSize.flatMap { UInt64($0) }
+        let mtime = values.contentModificationDate
+
+        // Build summary using full parsing
+        var builder = SessionSummaryBuilder()
+        if let size = fileSize {
+          builder.setFileSize(size)
+        }
+        if let tailDate = readTailTimestamp(url: url) {
+          builder.seedLastUpdated(tailDate)
+        }
+
+        guard let summary = try buildSummaryFull(for: url, builder: &builder) else {
+          logger.warning("reindexFiles: failed to build summary for \(url.path, privacy: .public)")
+          failedCount += 1
+          continue
+        }
+
+        // Update SQLite cache
+        do {
+          try await sqliteStore.upsert(
+            summary: summary,
+            project: nil,
+            fileModificationTime: mtime,
+            fileSize: fileSize,
+            tokenBreakdown: nil,
+            parseError: nil
+          )
+        } catch {
+          logger.error("reindexFiles: failed to update cache for \(summary.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+
+        // Update in-memory cache
+        if let mtime {
+          cache.setObject(CacheEntry(modificationDate: mtime, summary: summary), forKey: url as NSURL)
+        }
+
+        results.append(summary)
+
+        logger.debug("reindexFiles: successfully reindexed \(summary.id, privacy: .public) (\(summary.fileURL.lastPathComponent, privacy: .public))")
+      } catch {
+        logger.error("reindexFiles: error processing \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        failedCount += 1
+      }
+    }
+
+    let elapsed = Date().timeIntervalSince(startTime)
+    logger.info("reindexFiles: completed in \(elapsed, format: .fixed(precision: 3))s, success=\(results.count, privacy: .public), failed=\(failedCount, privacy: .public)")
+
+    return results
+  }
+
+  // MARK: - Timeline Preview Cache
+
+  /// Fetch cached timeline previews for a session
+  func fetchTimelinePreviews(
+    sessionId: String,
+    fileModificationTime: Date?,
+    fileSize: UInt64?
+  ) async throws -> [ConversationTurnPreview]? {
+    try await sqliteStore.fetchTimelinePreviews(
+      sessionId: sessionId,
+      fileModificationTime: fileModificationTime,
+      fileSize: fileSize
+    )
+  }
+
+  /// Update timeline preview cache for a session
+  func upsertTimelinePreviews(
+    _ previews: [ConversationTurnPreview],
+    sessionId: String,
+    fileModificationTime: Date,
+    fileSize: UInt64?
+  ) async throws {
+    try await sqliteStore.upsertTimelinePreviews(
+      previews,
+      sessionId: sessionId,
+      fileModificationTime: fileModificationTime,
+      fileSize: fileSize
+    )
+  }
+
+  /// Delete timeline preview cache for a session
+  func deleteTimelinePreviews(sessionId: String) async throws {
+    try await sqliteStore.deleteTimelinePreviews(sessionId: sessionId)
+  }
+
+  /// Fetch cached records for given session IDs (including mtime/size) without touching the filesystem.
+  func fetchRecords(sessionIds: Set<String>) async -> [SessionIndexRecord] {
+    guard !sessionIds.isEmpty else { return [] }
+    do {
+      return try await sqliteStore.fetchRecords(sessionIds: sessionIds)
+    } catch {
+      logger.error("fetchRecords(sessionIds:) failed: \(error.localizedDescription, privacy: .public)")
+      return []
     }
   }
 }

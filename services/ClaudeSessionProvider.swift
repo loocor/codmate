@@ -4,6 +4,10 @@ import Darwin
 #endif
 
 actor ClaudeSessionProvider {
+    enum SessionProviderCacheError: Error {
+        case cacheUnavailable
+    }
+
     private let parser = ClaudeSessionParser()
     private let fileManager: FileManager
     private let root: URL?
@@ -44,7 +48,9 @@ actor ClaudeSessionProvider {
         return FileManager.default.homeDirectoryForCurrentUser
     }
 
-    func sessions(scope: SessionLoadScope) -> [SessionSummary] {
+    func sessions(scope: SessionLoadScope) async throws -> [SessionSummary] {
+        guard cacheStore != nil else { throw SessionProviderCacheError.cacheUnavailable }
+        let preferFullInitialParse = ((try? await cacheStore?.fetchMeta().sessionCount) ?? 0) == 0
         guard let root else { return [] }
         guard let enumerator = fileManager.enumerator(
             at: root,
@@ -57,14 +63,21 @@ actor ClaudeSessionProvider {
         var bestById: [String: SessionSummary] = [:]
         for case let url as URL in enumerator {
             guard url.pathExtension.lowercased() == "jsonl" else { continue }
-            guard let values = try? url.resourceValues(
-                forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
-                  values.isRegularFile == true else { continue }
+            let values = try url.resourceValues(
+                forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+            guard values.isRegularFile == true else { continue }
             let fileSize = resolveFileSize(for: url, resourceValues: values)
             let mtime = values.contentModificationDate
-            let summary = cachedSummary(for: url, modificationDate: mtime, fileSize: fileSize)
-                ?? parser.parseSummary(at: url, fileSize: fileSize)
-                ?? parser.parse(at: url, fileSize: fileSize)?.summary
+            let summary: SessionSummary?
+            if preferFullInitialParse {
+                summary = try await cachedSummary(for: url, modificationDate: mtime, fileSize: fileSize)
+                    ?? parser.parse(at: url, fileSize: fileSize)?.summary
+                    ?? parser.parseSummary(at: url, fileSize: fileSize)
+            } else {
+                summary = try await cachedSummary(for: url, modificationDate: mtime, fileSize: fileSize)
+                    ?? parser.parseSummary(at: url, fileSize: fileSize)
+                    ?? parser.parse(at: url, fileSize: fileSize)?.summary
+            }
             guard let summary else { continue }
             guard matches(scope: scope, summary: summary) else { continue }
             cache(summary: summary, for: url, modificationDate: mtime, fileSize: fileSize)
@@ -85,7 +98,9 @@ actor ClaudeSessionProvider {
 
     /// Load only the sessions under a specific project directory (e.g. ~/.claude/projects/-Users-loocor-GitHub-CodMate)
     /// Directory should be the original project cwd; it will be encoded to Claude's folder name.
-    func sessions(inProjectDirectory directory: String) -> [SessionSummary] {
+    func sessions(inProjectDirectory directory: String) async throws -> [SessionSummary] {
+        guard cacheStore != nil else { throw SessionProviderCacheError.cacheUnavailable }
+        let preferFullInitialParse = ((try? await cacheStore?.fetchMeta().sessionCount) ?? 0) == 0
         guard let root else { return [] }
         let folder = encodeProjectFolder(from: directory)
         let projectURL = root.appendingPathComponent(folder, isDirectory: true)
@@ -98,20 +113,26 @@ actor ClaudeSessionProvider {
         var results: [SessionSummary] = []
         for case let url as URL in enumerator {
             guard url.pathExtension.lowercased() == "jsonl" else { continue }
-            guard let values = try? url.resourceValues(
-                forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
-                  values.isRegularFile == true else { continue }
+            let values = try url.resourceValues(
+                forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+            guard values.isRegularFile == true else { continue }
             let fileSize = resolveFileSize(for: url, resourceValues: values)
             let mtime = values.contentModificationDate
-            if let summary = cachedSummary(for: url, modificationDate: mtime, fileSize: fileSize)
-                ?? parser.parseSummary(at: url, fileSize: fileSize) {
+            let summary: SessionSummary?
+            if preferFullInitialParse {
+                summary = try await cachedSummary(for: url, modificationDate: mtime, fileSize: fileSize)
+                    ?? parser.parse(at: url, fileSize: fileSize)?.summary
+                    ?? parser.parseSummary(at: url, fileSize: fileSize)
+            } else {
+                summary = try await cachedSummary(for: url, modificationDate: mtime, fileSize: fileSize)
+                    ?? parser.parseSummary(at: url, fileSize: fileSize)
+                    ?? parser.parse(at: url, fileSize: fileSize)?.summary
+            }
+
+            if let summary {
                 cache(summary: summary, for: url, modificationDate: mtime, fileSize: fileSize)
                 persist(summary: summary, modificationDate: mtime, fileSize: fileSize)
                 results.append(summary)
-            } else if let parsed = parser.parse(at: url, fileSize: fileSize) {
-                cache(summary: parsed.summary, for: url, modificationDate: mtime, fileSize: fileSize)
-                persist(summary: parsed.summary, modificationDate: mtime, fileSize: fileSize)
-                results.append(parsed.summary)
             }
         }
         return results
@@ -145,7 +166,7 @@ actor ClaudeSessionProvider {
         return total
     }
 
-    func collectCWDCounts() -> [String: Int] {
+    func collectCWDCounts() async -> [String: Int] {
         guard let root else { return [:] }
         guard let enumerator = fileManager.enumerator(
             at: root,
@@ -154,21 +175,25 @@ actor ClaudeSessionProvider {
         else { return [:] }
 
         var counts: [String: Int] = [:]
-        for case let url as URL in enumerator {
-            guard url.pathExtension.lowercased() == "jsonl" else { continue }
-            guard let values = try? url.resourceValues(
-                forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
-                  values.isRegularFile == true else { continue }
-            let fileSize = resolveFileSize(for: url, resourceValues: values)
-            let mtime = values.contentModificationDate
-            if let summary = cachedSummary(for: url, modificationDate: mtime, fileSize: fileSize) {
-                counts[summary.cwd, default: 0] += 1
-                continue
+        do {
+            for case let url as URL in enumerator {
+                guard url.pathExtension.lowercased() == "jsonl" else { continue }
+                let values = try url.resourceValues(
+                    forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
+                guard values.isRegularFile == true else { continue }
+                let fileSize = resolveFileSize(for: url, resourceValues: values)
+                let mtime = values.contentModificationDate
+                if let summary = try await cachedSummary(for: url, modificationDate: mtime, fileSize: fileSize) {
+                    counts[summary.cwd, default: 0] += 1
+                    continue
+                }
+                if let parsed = parser.parse(at: url, fileSize: fileSize) {
+                    cache(summary: parsed.summary, for: url, modificationDate: mtime, fileSize: fileSize)
+                    counts[parsed.summary.cwd, default: 0] += 1
+                }
             }
-            if let parsed = parser.parse(at: url, fileSize: fileSize) {
-                cache(summary: parsed.summary, for: url, modificationDate: mtime, fileSize: fileSize)
-                counts[parsed.summary.cwd, default: 0] += 1
-            }
+        } catch {
+            return [:]
         }
         return counts
     }
@@ -253,11 +278,21 @@ actor ClaudeSessionProvider {
         return total
     }
 
-    private func cachedSummary(for url: URL, modificationDate: Date?, fileSize: UInt64?) -> SessionSummary? {
-        guard let entry = summaryCache[url.path] else { return nil }
-        guard entry.modificationDate == modificationDate, entry.fileSize == fileSize else { return nil }
-        canonicalURLById[entry.summary.id] = url
-        return entry.summary
+    private func cachedSummary(for url: URL, modificationDate: Date?, fileSize: UInt64?) async throws -> SessionSummary? {
+        if let entry = summaryCache[url.path],
+           entry.modificationDate == modificationDate,
+           entry.fileSize == fileSize {
+            canonicalURLById[entry.summary.id] = url
+            return entry.summary
+        }
+        guard let cacheStore, let modificationDate else { return nil }
+        guard let cached = try await cacheStore.fetch(
+            path: url.path,
+            modificationDate: modificationDate,
+            fileSize: fileSize
+        ) else { return nil }
+        cache(summary: cached, for: url, modificationDate: modificationDate, fileSize: fileSize)
+        return cached
     }
 
     private func cache(summary: SessionSummary, for url: URL, modificationDate: Date?, fileSize: UInt64?) {
@@ -392,19 +427,23 @@ extension ClaudeSessionProvider: SessionProvider {
             if let cacheStore {
                 let dateColumn = context.dateDimension == .updated ? "COALESCE(last_updated_at, started_at)" : "started_at"
                 let range = context.dateRange ?? Self.dateRange(for: context.scope)
-                if let cached = try? await cacheStore.fetchSummaries(
+                let cached = try await cacheStore.fetchSummaries(
                     kinds: [.claude],
                     includeRemote: false,
                     dateColumn: dateColumn,
                     dateRange: range,
                     projectIds: context.projectIds
-                ), !cached.isEmpty {
+                )
+                if !cached.isEmpty {
                     return SessionProviderResult(summaries: cached, coverage: nil, cacheHit: true)
                 }
             }
             return SessionProviderResult(summaries: [], coverage: nil, cacheHit: true)
         case .refresh:
-            let summaries = sessions(scope: context.scope)
+            guard let cacheStore else { throw SessionProviderCacheError.cacheUnavailable }
+            // Require cache availability; if missing/unopenable, surface error instead of falling back to parse.
+            _ = try await cacheStore.fetchMeta()
+            let summaries = try await sessions(scope: context.scope)
             return SessionProviderResult(summaries: summaries, coverage: nil, cacheHit: false)
         }
     }

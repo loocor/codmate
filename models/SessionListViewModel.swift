@@ -81,6 +81,23 @@ final class SessionListViewModel: ObservableObject {
         selectedDay: selectedDay, selectedDays: selectedDays, monthStart: sidebarMonthStart)
     }
   }
+  // Track current list selection for targeted refreshes
+  @Published var selectedSessionIDs: Set<SessionSummary.ID> = []
+  private var cacheUnavailableLastError: Date?
+  private let cacheUnavailableCooldown: TimeInterval = 5.0
+
+  private func markCacheUnavailableNow() {
+    cacheUnavailableLastError = Date()
+  }
+
+  private func clearCacheUnavailable() {
+    cacheUnavailableLastError = nil
+  }
+
+  private func shouldSkipForCacheUnavailable() -> Bool {
+    guard let last = cacheUnavailableLastError else { return false }
+    return Date().timeIntervalSince(last) < cacheUnavailableCooldown
+  }
 
   let preferences: SessionPreferencesStore
   private var sessionsRoot: URL { preferences.sessionsRoot }
@@ -131,6 +148,7 @@ final class SessionListViewModel: ObservableObject {
   private var coverageDebounceTasks: [String: Task<Void, Never>] = [:]  // Per-key debounce
   private var toolMetricsTask: Task<Void, Never>?
   private var pendingToolMetricsRefresh = false
+  private var selectedSessionsRefreshTask: Task<Void, Never>?
   struct SessionDayIndex: Equatable {
     let created: Date
     let updated: Date
@@ -153,6 +171,7 @@ final class SessionListViewModel: ObservableObject {
   private var directoryMonitor: DirectoryMonitor?
   private var claudeDirectoryMonitor: DirectoryMonitor?
   private var claudeProjectMonitor: DirectoryMonitor?
+  private var geminiDirectoryMonitor: DirectoryMonitor?
   private var directoryRefreshTask: Task<Void, Never>?
   private var enrichmentSnapshots: [String: Set<String>] = [:]
   private var suppressFilterNotifications = false
@@ -596,6 +615,7 @@ final class SessionListViewModel: ObservableObject {
 
     configureDirectoryMonitor()
     configureClaudeDirectoryMonitor()
+    configureGeminiDirectoryMonitor()
     Task { await loadProjects() }
     Task { await self.performInitialRemoteSyncIfNeeded() }
     // Observe agent completion notifications to surface in list
@@ -683,6 +703,11 @@ final class SessionListViewModel: ObservableObject {
     scheduledFilterRefresh = nil
     let token = UUID()
     activeRefreshToken = token
+    if shouldSkipForCacheUnavailable() {
+      diagLogger.log("refreshSessions skipped due to cache unavailable (cooldown) ts=\(self.ts(), format: .fixed(precision: 3))")
+      await MainActor.run { self.isLoading = false }
+      return
+    }
     let scope = currentScope()
     let scopeKeyValue = scopeKey(scope)
 
@@ -762,13 +787,16 @@ final class SessionListViewModel: ObservableObject {
       for s in newlyAppeared { self.handleAutoAssignIfMatches(s) }
     }
     registerActivityHeartbeat(previous: allSessions, current: sessions)
-    allSessions = sessions  // didSet will call invalidateCalendarCaches()
+    // Smart merge: only update if data actually changed to avoid unnecessary UI re-renders
+    smartMergeAllSessions(newSessions: sessions)
     persistProjectAssignmentsToCache(sessions)
     recomputeProjectCounts()
     rebuildCanonicalCwdCache()
     await computeCalendarCaches()
     scheduleFiltersUpdate()
-    startBackgroundEnrichment()
+    // TEMPORARILY DISABLED FOR PERFORMANCE TESTING
+    // Background enrichment causes continuous UI updates during scrolling
+    // startBackgroundEnrichment()
     currentMonthDimension = dateDimension
     currentMonthKey = monthKey(for: selectedDay, dimension: dateDimension)
     Task { await self.refreshGlobalCount() }
@@ -812,6 +840,146 @@ final class SessionListViewModel: ObservableObject {
     }
     refreshGeminiUsageStatus()
     schedulePathTreeRefresh()
+
+    // Ensure currently selected sessions are fully up-to-date with high-quality parsing.
+    // This fixes the issue where global refresh (fast parse) keeps selected item in 'metadata' state
+    // when user explicitly requests a refresh (Cmd+R).
+    if !selectedSessionIDs.isEmpty {
+      Task { await self.refreshSelectedSessions(sessionIds: self.selectedSessionIDs, force: force) }
+    }
+  }
+
+  // MARK: - Selected Sessions Incremental Refresh
+
+  /// Refresh only the selected sessions, avoiding full scope scan.
+  /// Returns true if any sessions were refreshed.
+  func refreshSelectedSessions(sessionIds: Set<String>, force: Bool = false) async -> Bool {
+    guard !sessionIds.isEmpty else { return false }
+    if shouldSkipForCacheUnavailable() {
+      diagLogger.log("refreshSelectedSessions skipped due to cache unavailable (cooldown) ts=\(self.ts(), format: .fixed(precision: 3))")
+      return false
+    }
+
+    diagLogger.log("refreshSelectedSessions: start sessionIds=\(sessionIds.count, privacy: .public) force=\(force, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+    let refreshBegan = Date()
+
+    // Pull cached file metadata (mtime/size) to avoid re-parsing unchanged files
+    let cachedRecords = await indexer.fetchRecords(sessionIds: sessionIds)
+    let cachedById = Dictionary(uniqueKeysWithValues: cachedRecords.map { ($0.summary.id, $0) })
+
+    // 1. Find the selected sessions in current allSessions
+    let selectedSessions = allSessions.filter { sessionIds.contains($0.id) }
+    guard !selectedSessions.isEmpty else {
+      diagLogger.log("refreshSelectedSessions: no sessions found in allSessions for given IDs")
+      return false
+    }
+
+    // 2. Check file mtime/size changes
+    var needsRefresh: [(id: String, url: URL)] = []
+    for session in selectedSessions {
+      let record = cachedById[session.id]
+      let fileURL = record.flatMap { URL(fileURLWithPath: $0.filePath) } ?? session.fileURL
+      guard let values = try? fileURL.resourceValues(
+        forKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]),
+        values.isRegularFile == true
+      else {
+        // Missing file or unreadable: refresh to reconcile state
+        needsRefresh.append((session.id, fileURL))
+        continue
+      }
+
+      if force {
+        needsRefresh.append((session.id, fileURL))
+        continue
+      }
+
+      var hasComparableMetric = false
+      var changed = false
+
+      if let cachedMtime = record?.fileModificationTime, let mtime = values.contentModificationDate {
+        hasComparableMetric = true
+        if mtime > cachedMtime.addingTimeInterval(0.001) {
+          changed = true
+        }
+      }
+
+      if let cachedSize = record?.fileSize, let fsize = values.fileSize.map({ UInt64($0) }) {
+        hasComparableMetric = true
+        if cachedSize != fsize {
+          changed = true
+        }
+      }
+
+      // If we had no cached metrics, err on the side of refreshing
+      if !hasComparableMetric || changed {
+        needsRefresh.append((session.id, fileURL))
+      }
+    }
+
+    guard !needsRefresh.isEmpty else {
+      diagLogger.log("refreshSelectedSessions: no changes detected, skipping refresh")
+      return false
+    }
+
+    diagLogger.log("refreshSelectedSessions: refreshing \(needsRefresh.count, privacy: .public) files")
+
+    // 3. Reindex only the changed files
+    let urlsToRefresh = needsRefresh.map { $0.url }
+    do {
+      let refreshedSummaries = try await indexer.reindexFiles(urlsToRefresh)
+
+      // 4. Update allSessions with refreshed data
+      var didChange = false
+      await MainActor.run {
+        var updatedSessions = allSessions
+        for refreshed in refreshedSummaries {
+          if let index = updatedSessions.firstIndex(where: { $0.id == refreshed.id }) {
+            // Preserve user metadata (title, comment, taskId)
+            var merged = refreshed
+            merged.userTitle = updatedSessions[index].userTitle
+            merged.userComment = updatedSessions[index].userComment
+            merged.taskId = updatedSessions[index].taskId
+            if updatedSessions[index] != merged {
+              updatedSessions[index] = merged
+              didChange = true
+            }
+          }
+        }
+        if didChange {
+          allSessions = updatedSessions
+        }
+      }
+
+      // 5. Re-apply filters to update UI if anything changed
+      if didChange {
+        scheduleFiltersUpdate()
+      }
+
+      let elapsed = Date().timeIntervalSince(refreshBegan)
+      diagLogger.log("refreshSelectedSessions: completed in \(elapsed, format: .fixed(precision: 3))s, refreshed=\(refreshedSummaries.count, privacy: .public)")
+
+      return true
+
+    } catch {
+      diagLogger.error("refreshSelectedSessions: failed with error: \(error.localizedDescription, privacy: .public)")
+      return false
+    }
+  }
+
+  /// Schedule a debounced refresh for selected sessions.
+  /// Call this method when selection changes to trigger incremental refresh.
+  func scheduleSelectedSessionsRefresh(sessionIds: Set<String>) {
+    guard !sessionIds.isEmpty else { return }
+
+    // Cancel any pending refresh
+    selectedSessionsRefreshTask?.cancel()
+
+    // Schedule new refresh with 100ms debounce
+    selectedSessionsRefreshTask = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+      guard let self, !Task.isCancelled else { return }
+      _ = await self.refreshSelectedSessions(sessionIds: sessionIds, force: false)
+    }
   }
 
   private func buildProviders(enabledRemoteHosts: Set<String>) -> [any SessionProvider] {
@@ -845,13 +1013,28 @@ final class SessionListViewModel: ObservableObject {
     _ providers: [any SessionProvider],
     context: SessionProviderContext
   ) async -> [SessionSummary] {
-    await withTaskGroup(of: ([SessionSummary], SessionIndexCoverage?, SessionSource.Kind).self) { group in
+    let logger = diagLogger
+    let isCacheUnavailableError: (Error) -> Bool = { error in
+      error is SessionIndexSQLiteStoreError
+        || error is ClaudeSessionProvider.SessionProviderCacheError
+        || error is GeminiSessionProvider.SessionProviderCacheError
+    }
+    return await withTaskGroup(of: ([SessionSummary], SessionIndexCoverage?, SessionSource.Kind).self) { group in
       for provider in providers {
-        group.addTask {
+        group.addTask { [self] in
           do {
             let result = try await provider.load(context: context)
+            let label = result.summaries.first?.source.baseKind.rawValue ?? provider.kind.rawValue
+            logger.log("provider load success kind=\(label, privacy: .public) count=\(result.summaries.count, privacy: .public) cacheHit=\(result.cacheHit, privacy: .public)")
+            if !result.summaries.isEmpty {
+              await MainActor.run { self.clearCacheUnavailable() }
+            }
             return (result.summaries, result.coverage, provider.kind)
           } catch {
+            if isCacheUnavailableError(error) {
+              await MainActor.run { self.markCacheUnavailableNow() }
+            }
+            logger.error("provider load failed kind=\(provider.kind.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             return ([], nil, provider.kind)
           }
         }
@@ -885,11 +1068,43 @@ final class SessionListViewModel: ObservableObject {
   }
 
   private func preferSession(lhs: SessionSummary, rhs: SessionSummary) -> SessionSummary {
+    // 1. Prefer higher parse level (Enriched > Full > Metadata)
+    if let lLevel = lhs.parseLevel, let rLevel = rhs.parseLevel {
+      if lLevel != rLevel {
+        return lLevel > rLevel ? lhs : rhs
+      }
+    }
+    // If one has explicit high quality level and other is unknown (nil), prefer explicit high quality
+    if let lLevel = lhs.parseLevel, lLevel > .metadata, rhs.parseLevel == nil {
+      return lhs
+    }
+    if let rLevel = rhs.parseLevel, rLevel > .metadata, lhs.parseLevel == nil {
+      return rhs
+    }
+
+    // CRITICAL FIX: Prefer sessions with higher counts (from full parse) over lower counts (from fast parse)
+    // When same file (matching size), always prefer the one with more complete data
     let lt = lhs.lastUpdatedAt ?? lhs.startedAt
     let rt = rhs.lastUpdatedAt ?? rhs.startedAt
-    if lt != rt { return lt > rt ? lhs : rhs }
     let ls = lhs.fileSizeBytes ?? 0
     let rs = rhs.fileSizeBytes ?? 0
+
+    // If file sizes match (same file), prefer the one with more complete data regardless of timestamp
+    // This handles the case where fast parse and full parse have slightly different timestamps
+    if ls > 0 && ls == rs {
+      let lhsTotal = lhs.userMessageCount + lhs.assistantMessageCount + lhs.toolInvocationCount
+      let rhsTotal = rhs.userMessageCount + rhs.assistantMessageCount + rhs.toolInvocationCount
+      if lhsTotal != rhsTotal {
+        return lhsTotal > rhsTotal ? lhs : rhs  // Prefer richer data (full parse)
+      }
+      // If counts are equal, also check lineCount as another indicator of completeness
+      if lhs.lineCount != rhs.lineCount {
+        return lhs.lineCount > rhs.lineCount ? lhs : rhs
+      }
+    }
+
+    // Original fallback logic
+    if lt != rt { return lt > rt ? lhs : rhs }
     if ls != rs { return ls > rs ? lhs : rhs }
     return lhs.id < rhs.id ? lhs : rhs
   }
@@ -1625,8 +1840,10 @@ final class SessionListViewModel: ObservableObject {
       if !result.newCanonicalEntries.isEmpty {
         self.canonicalCwdCache.merge(result.newCanonicalEntries) { _, new in new }
       }
-      // Use pre-computed sections from background task
-      self.sections = result.sections
+      // Use pre-computed sections from background task; avoid replacing when identical
+      if self.sections != result.sections {
+        self.sections = result.sections
+      }
       let elapsed = Date().timeIntervalSince(started)
       self.logApplyFiltersEnd(
         reason: snapshot.reasonDescription,
@@ -2107,6 +2324,10 @@ final class SessionListViewModel: ObservableObject {
     geminiProjectPathByHash = Self.computeGeminiProjectHashes(from: projects)
   }
 
+  func updateSelection(_ ids: Set<SessionSummary.ID>) {
+    selectedSessionIDs = ids
+  }
+
   nonisolated static func canonicalPath(_ path: String) -> String {
     let expanded = (path as NSString).expandingTildeInPath
     var standardized = URL(fileURLWithPath: expanded).standardizedFileURL.path
@@ -2265,6 +2486,32 @@ final class SessionListViewModel: ObservableObject {
     }
   }
 
+  private func configureGeminiDirectoryMonitor() {
+    geminiDirectoryMonitor?.cancel()
+    // Default Gemini tmp root: ~/.gemini/tmp
+    let home = SessionPreferencesStore.getRealUserHomeURL()
+    let tmpRoot =
+      home
+      .appendingPathComponent(".gemini", isDirectory: true)
+      .appendingPathComponent("tmp", isDirectory: true)
+    guard FileManager.default.fileExists(atPath: tmpRoot.path) else {
+      geminiDirectoryMonitor = nil
+      return
+    }
+    geminiDirectoryMonitor = DirectoryMonitor(url: tmpRoot) { [weak self] in
+      Task { @MainActor in
+        // Trigger incremental refresh for Gemini sessions
+        if let hint = self?.pendingIncrementalHint, Date() < (hint.expiresAt) {
+          await self?.refreshIncremental(using: hint)
+        } else {
+          // Fallback to general refresh
+          self?.quickPulse()
+          self?.scheduleDirectoryRefresh()
+        }
+      }
+    }
+  }
+
   private func scheduleDirectoryRefresh() {
     // Use file event aggregation to collect changes within 500-1000ms window
     lastFileEventAt = Date()
@@ -2299,13 +2546,101 @@ final class SessionListViewModel: ObservableObject {
       if let hint = self.pendingIncrementalHint, Date() < hint.expiresAt {
         await self.refreshIncremental(using: hint)
       } else {
-        self.enrichmentSnapshots.removeAll()
-        // Use scope-based debouncing for the refresh
-        self.scheduleFilterRefresh(force: true)
+        // First try a targeted refresh for the current selection; fall back to full refresh otherwise
+        if !(await self.refreshSelectedSessions(sessionIds: self.selectedSessionIDs, force: true)) {
+          self.enrichmentSnapshots.removeAll()
+          // Use scope-based debouncing for the refresh
+          self.scheduleFilterRefresh(force: true)
+        }
       }
 
       self.fileEventAggregationTask = nil
     }
+  }
+
+  /// Smart merge: only update allSessions if data actually changed
+  /// This prevents unnecessary UI re-renders when refreshing unchanged data
+  private func smartMergeAllSessions(newSessions: [SessionSummary]) {
+    // Quick check: if counts differ, definitely changed
+    guard allSessions.count == newSessions.count else {
+      allSessions = newSessions
+      return
+    }
+
+    // Build map of old sessions
+    let oldMap = Dictionary(uniqueKeysWithValues: allSessions.map { ($0.id, $0) })
+
+    // Build merged array, preserving unchanged session object references
+    var mergedSessions: [SessionSummary] = []
+    mergedSessions.reserveCapacity(newSessions.count)
+    var hasAnyChanges = false
+
+    for newSession in newSessions {
+      guard let oldSession = oldMap[newSession.id] else {
+        // New session appeared
+        mergedSessions.append(newSession)
+        hasAnyChanges = true
+        continue
+      }
+
+      // Parse Level Protection:
+      // If old session has better parse level than new session (e.g. Enriched vs Metadata),
+      // and file metadata (mtime/size) hasn't changed significantly, KEEP OLD SESSION.
+      if let oldLevel = oldSession.parseLevel, let newLevel = newSession.parseLevel, oldLevel > newLevel {
+         // Check if file is effectively unchanged to justify keeping old data
+         let lastUpdatedMatches = abs((newSession.lastUpdatedAt ?? Date.distantPast).timeIntervalSince((oldSession.lastUpdatedAt ?? Date.distantPast))) < 0.1
+         let fileSizeMatches = (newSession.fileSizeBytes ?? 0) == (oldSession.fileSizeBytes ?? 0)
+         
+         if lastUpdatedMatches && fileSizeMatches {
+             // Keep high-quality old session
+             mergedSessions.append(oldSession)
+             continue
+         }
+      }
+
+      // Check if this specific session actually changed by comparing key fields
+      // Use file metadata + critical timestamps to avoid false positives from parsing variations
+      let fileSizeMatches = oldSession.fileSizeBytes == newSession.fileSizeBytes
+      let startedAtMatches = oldSession.startedAt == newSession.startedAt
+      let lastUpdatedMatches = oldSession.lastUpdatedAt == newSession.lastUpdatedAt
+
+      // CRITICAL FIX: Fast parsing (buildSummaryFast) only reads first ~64 lines, causing:
+      // - Incomplete counts for tools, messages, etc.
+      // - UI flicker when refresh switches between fast parse (low counts) and full parse (correct counts)
+      // Solution: If file metadata unchanged but ANY count DECREASED, it's fast parse - keep old richer data
+      let fileUnchanged = fileSizeMatches && lastUpdatedMatches
+      let anyCountDecreased = (
+        newSession.userMessageCount < oldSession.userMessageCount ||
+        newSession.assistantMessageCount < oldSession.assistantMessageCount ||
+        newSession.toolInvocationCount < oldSession.toolInvocationCount
+      )
+
+      if fileUnchanged && anyCountDecreased {
+        // File hasn't changed but counts decreased - this is fast parse, keep old richer data
+        mergedSessions.append(oldSession)
+      } else if fileSizeMatches && startedAtMatches && lastUpdatedMatches &&
+         oldSession.userMessageCount == newSession.userMessageCount &&
+         oldSession.assistantMessageCount == newSession.assistantMessageCount &&
+         oldSession.toolInvocationCount == newSession.toolInvocationCount {
+        // All counts match and file unchanged - truly no change
+        mergedSessions.append(oldSession)
+      } else {
+        // Content actually changed - use new object
+        mergedSessions.append(newSession)
+        hasAnyChanges = true
+      }
+    }
+
+    // Check if IDs changed (sessions added/removed)
+    if Set(oldMap.keys) != Set(mergedSessions.map { $0.id }) {
+      hasAnyChanges = true
+    }
+
+    // Only update if there are actual changes
+    if hasAnyChanges {
+      allSessions = mergedSessions
+    }
+    // If no changes at all, keep the existing allSessions array reference completely unchanged
   }
 
   private func invalidateEnrichmentCache(for day: Date?) {
@@ -2583,13 +2918,21 @@ final class SessionListViewModel: ObservableObject {
   }
   
   func refreshIncrementalForGeminiToday() async {
-    let subset = await geminiProvider.sessions(scope: .day(dayOfToday()))
-    await MainActor.run { self.mergeAndApply(subset) }
+    do {
+      let subset = try await geminiProvider.sessions(scope: .day(dayOfToday()))
+      await MainActor.run { self.mergeAndApply(subset) }
+    } catch {
+      diagLogger.error("refreshIncrementalForGeminiToday failed: \(error.localizedDescription, privacy: .public)")
+    }
   }
 
   func refreshIncrementalForClaudeProject(directory: String) async {
-    let subset = await claudeProvider.sessions(inProjectDirectory: directory)
-    await MainActor.run { self.mergeAndApply(subset) }
+    do {
+      let subset = try await claudeProvider.sessions(inProjectDirectory: directory)
+      await MainActor.run { self.mergeAndApply(subset) }
+    } catch {
+      diagLogger.error("refreshIncrementalForClaudeProject failed: \(error.localizedDescription, privacy: .public)")
+    }
   }
 
   private func refreshIncremental(using hint: PendingIncrementalRefreshHint) async {
@@ -2658,15 +3001,20 @@ extension SessionListViewModel {
     // Fallback: enumerate cached summaries (or re-index) when no coverage/meta is available.
     diagLogger.log("refreshGlobalCount fallback enumerate summaries")
     let codexSummaries: [SessionSummary]
-    if let cached = await indexer.cachedAllSummaries() {
-      codexSummaries = cached
-    } else {
-      codexSummaries = (try? await indexer.refreshSessions(
-        root: preferences.sessionsRoot, scope: .all)) ?? []
+    do {
+      if let cached = try await indexer.cachedAllSummaries() {
+        codexSummaries = cached
+      } else {
+        codexSummaries = []
+      }
+    } catch {
+      diagLogger.error("refreshGlobalCount failed to read codex cache: \(error.localizedDescription, privacy: .public)")
+      await MainActor.run { self.globalSessionCount = 0 }
+      return
     }
 
-    let claudeSummaries = await claudeProvider.sessions(scope: .all)
-    let geminiSummaries = await geminiProvider.sessions(scope: .all)
+    let claudeSummaries = (try? await claudeProvider.sessions(scope: .all)) ?? []
+    let geminiSummaries = (try? await geminiProvider.sessions(scope: .all)) ?? []
 
     var idSet = Set<String>()
     for s in codexSummaries { idSet.insert(s.id) }
@@ -3142,6 +3490,56 @@ extension SessionListViewModel {
     }
     let loader = SessionTimelineLoader()
     return (try? loader.load(url: summary.fileURL)) ?? []
+  }
+
+  // MARK: - Timeline Previews
+
+  /// Load lightweight timeline previews from cache. Returns nil if cache is invalid or missing.
+  func loadTimelinePreviews(for summary: SessionSummary) async -> [ConversationTurnPreview]? {
+    // Get file attributes for mtime validation
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: summary.fileURL.path),
+          let mtime = attrs[.modificationDate] as? Date else {
+      return nil
+    }
+
+    let size = (attrs[.size] as? NSNumber)?.uint64Value
+
+    // Fetch from SQLite cache
+    let previews = try? await indexer.fetchTimelinePreviews(
+      sessionId: summary.id,
+      fileModificationTime: mtime,
+      fileSize: size
+    )
+
+    return previews
+  }
+
+  /// Update timeline preview cache for a session
+  func updateTimelinePreviews(for summary: SessionSummary, turns: [ConversationTurn]) async {
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: summary.fileURL.path),
+          let mtime = attrs[.modificationDate] as? Date else {
+      return
+    }
+
+    let size = (attrs[.size] as? NSNumber)?.uint64Value
+
+    // Convert turns to previews
+    let previews = turns.enumerated().map { index, turn in
+      ConversationTurnPreview(from: turn, sessionId: summary.id, index: index)
+    }
+
+    // Store in SQLite
+    do {
+      try await indexer.upsertTimelinePreviews(
+        previews,
+        sessionId: summary.id,
+        fileModificationTime: mtime,
+        fileSize: size
+      )
+      diagLogger.log("Timeline previews cached for session \(summary.id, privacy: .public): \(previews.count, privacy: .public) turns")
+    } catch {
+      diagLogger.error("Failed to cache timeline previews for \(summary.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+    }
   }
 
   func ripgrepDiagnostics() async -> SessionRipgrepStore.Diagnostics {

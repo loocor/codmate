@@ -2,6 +2,10 @@ import CryptoKit
 import Foundation
 
 actor GeminiSessionProvider {
+  enum SessionProviderCacheError: Error {
+    case cacheUnavailable
+  }
+
   private struct AggregatedSession {
     let summary: SessionSummary
     let rows: [SessionRow]
@@ -49,6 +53,31 @@ actor GeminiSessionProvider {
     let logMtime: Date?
   }
 
+  private func cachedSummaries(
+    forHash hash: String,
+    files: [ChatFileInfo],
+    signature: HashSignature
+  ) async throws -> [SessionSummary] {
+    guard let cacheStore else { throw SessionProviderCacheError.cacheUnavailable }
+    guard let latest = signature.latestChatMtime else { return [] }
+    var bestById: [String: SessionSummary] = [:]
+    for file in files {
+      guard let cached = try await cacheStore.fetch(
+        path: file.url.path,
+        modificationDate: latest,
+        fileSize: signature.chatsTotalSize
+      ) else { continue }
+      let summary = cached.overridingSource(.geminiLocal)
+      canonicalURLById[summary.id] = file.url
+      if let existing = bestById[summary.id] {
+        bestById[summary.id] = prefer(lhs: existing, rhs: summary)
+      } else {
+        bestById[summary.id] = summary
+      }
+    }
+    return Array(bestById.values)
+  }
+
   private func persist(summary: SessionSummary, modificationDate: Date?, fileSize: UInt64?) {
     guard let cacheStore else { return }
     Task.detached { [cacheStore] in
@@ -86,7 +115,9 @@ actor GeminiSessionProvider {
     self.fallbackLogFormatter.formatOptions = [.withInternetDateTime]
   }
 
-  func sessions(scope: SessionLoadScope, allowedProjectDirectories: [String]? = nil) async -> [SessionSummary] {
+  func sessions(scope: SessionLoadScope, allowedProjectDirectories: [String]? = nil) async throws -> [SessionSummary] {
+    guard cacheStore != nil else { throw SessionProviderCacheError.cacheUnavailable }
+    let preferFullInitialParse = ((try? await cacheStore?.fetchMeta().sessionCount) ?? 0) == 0
     guard let tmpRoot else { return [] }
     guard let hashes = try? fileManager.contentsOfDirectory(
       at: tmpRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
@@ -111,6 +142,20 @@ actor GeminiSessionProvider {
       else { continue }
       if let allowedHashes, !allowedHashes.contains(hash) { continue }
       let resolvedPath = await resolveProjectPath(forHash: hash)
+      if !preferFullInitialParse, let fileInfo = chatFilesAndSignature(forHash: hash, hashURL: hashURL) {
+        let cached = try await cachedSummaries(
+          forHash: hash,
+          files: fileInfo.files,
+          signature: fileInfo.signature
+        )
+        if !cached.isEmpty {
+          for summary in cached where matches(scope: scope, summary: summary) {
+            summaries.append(summary)
+          }
+          continue
+        }
+      }
+
       let aggregated = aggregatedSessions(
         forHash: hash,
         hashURL: hashURL,
@@ -568,6 +613,17 @@ actor GeminiSessionProvider {
     return SessionRow(timestamp: row.timestamp, kind: .eventMessage(updatedPayload))
   }
 
+  private func prefer(lhs: SessionSummary, rhs: SessionSummary) -> SessionSummary {
+    if lhs.id != rhs.id { return lhs }
+    let lt = lhs.lastUpdatedAt ?? lhs.startedAt
+    let rt = rhs.lastUpdatedAt ?? rhs.startedAt
+    if lt != rt { return lt > rt ? lhs : rhs }
+    let ls = lhs.fileSizeBytes ?? 0
+    let rs = rhs.fileSizeBytes ?? 0
+    if ls != rs { return ls > rs ? lhs : rhs }
+    return lhs.fileURL.lastPathComponent < rhs.fileURL.lastPathComponent ? lhs : rhs
+  }
+
   private func logEntriesBySession(forHash hash: String) -> [String: [GeminiLogEntry]] {
     if let cached = logCacheByHash[hash] { return cached }
     guard let tmpRoot else {
@@ -615,19 +671,21 @@ extension GeminiSessionProvider: SessionProvider {
       if let cacheStore {
         let dateColumn = context.dateDimension == .updated ? "COALESCE(last_updated_at, started_at)" : "started_at"
         let range = context.dateRange ?? Self.dateRange(for: context.scope)
-        if let cached = try? await cacheStore.fetchSummaries(
+        let cached = try await cacheStore.fetchSummaries(
           kinds: [.gemini],
           includeRemote: false,
           dateColumn: dateColumn,
           dateRange: range,
           projectIds: context.projectIds
-        ), !cached.isEmpty {
+        )
+        if !cached.isEmpty {
           return SessionProviderResult(summaries: cached, coverage: nil, cacheHit: true)
         }
       }
       return SessionProviderResult(summaries: [], coverage: nil, cacheHit: true)
     case .refresh:
-      let summaries = await sessions(
+      guard cacheStore != nil else { throw SessionProviderCacheError.cacheUnavailable }
+      let summaries = try await sessions(
         scope: context.scope,
         allowedProjectDirectories: context.projectDirectories
       )

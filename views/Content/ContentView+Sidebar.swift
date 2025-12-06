@@ -263,6 +263,7 @@ extension ContentView {
       ToolbarCircleButton(
         systemImage: "arrow.clockwise",
         isActive: viewModel.isEnriching,
+        showProgress: viewModel.isEnriching || viewModel.isLoading,
         help: "Refresh"
       ) {
         NotificationCenter.default.post(name: .codMateGlobalRefresh, object: nil)
@@ -350,20 +351,29 @@ private struct ToolbarCircleButton: View {
   let systemImage: String
   var isActive: Bool = false
   var activeColor: Color? = nil
+  var showProgress: Bool = false
   var help: String?
   var action: () -> Void
   @State private var hovering = false
 
   var body: some View {
     Button(action: action) {
-      Image(systemName: systemImage)
-        .font(.system(size: 16, weight: .medium))
-        .foregroundStyle(iconColor)
-        .frame(width: 14, height: 14)
-        .padding(8)
-        .background(
-          Circle()
-            .fill(backgroundColor)
+      ZStack {
+        if showProgress {
+          ProgressView()
+            .progressViewStyle(.circular)
+            .controlSize(.small)
+        } else {
+          Image(systemName: systemImage)
+            .font(.system(size: 16, weight: .medium))
+            .foregroundStyle(iconColor)
+        }
+      }
+      .frame(width: 14, height: 14)
+      .padding(8)
+      .background(
+        Circle()
+          .fill(backgroundColor)
       )
       .overlay(
         Circle()
@@ -388,7 +398,7 @@ private struct ToolbarCircleButton: View {
   }
 
   private var backgroundColor: Color {
-    if isActive {
+    if isActive || showProgress {
       return Color.primary.opacity(0.08)
     }
     return (hovering ? Color.primary.opacity(0.12) : Color(nsColor: .separatorColor).opacity(0.18))

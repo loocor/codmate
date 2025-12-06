@@ -26,6 +26,17 @@ struct SessionDetailView: View {
     @State private var environmentInfo: EnvironmentContextInfo?
     private let loader = SessionTimelineLoader()
 
+    // Three-stage loading support
+    @State private var previewTurns: [ConversationTurnPreview] = []
+    @State private var loadingStage: LoadingStage = .initial
+
+    enum LoadingStage {
+        case initial      // Not started
+        case preview      // Showing preview from cache
+        case loading      // Loading full data
+        case full         // Full data loaded
+    }
+
     var body: some View {
         GeometryReader { proxy in
             VStack(alignment: .leading, spacing: 16) {
@@ -316,20 +327,39 @@ struct SessionDetailView: View {
     private var conversationScrollView: some View {
         ScrollView {
             Group {
-                if loadingTimeline {
+                switch loadingStage {
+                case .initial, .loading:
                     ProgressView("Loading session content…")
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, 32)
-                } else if turns.isEmpty {
-                    ContentUnavailableView("No messages to display", systemImage: "text.bubble")
-                        .frame(maxWidth: .infinity, alignment: .center)
-                } else {
-                    ConversationTimelineView(
-                        turns: turns,
-                        expandedTurnIDs: $expandedTurnIDs,
-                        ascending: sortAscending,
-                        branding: summary.source.branding
-                    )
+
+                case .preview:
+                    // Show lightweight preview cards while loading full data
+                    if previewTurns.isEmpty {
+                        ProgressView("Loading preview…")
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.top, 32)
+                    } else {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(previewTurns) { preview in
+                                ConversationTurnPreviewCard(preview: preview, branding: summary.source.branding)
+                            }
+                        }
+                        .opacity(0.85)  // Visual hint that this is preview data
+                    }
+
+                case .full:
+                    if turns.isEmpty {
+                        ContentUnavailableView("No messages to display", systemImage: "text.bubble")
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    } else {
+                        ConversationTimelineView(
+                            turns: turns,
+                            expandedTurnIDs: $expandedTurnIDs,
+                            ascending: sortAscending,
+                            branding: summary.source.branding
+                        )
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -376,7 +406,18 @@ extension SessionDetailView {
 
     // MARK: - Loading helpers
     private func initialLoadAndMonitor() async {
+        // Stage 1: Try to load previews from cache (fast path)
+        // TEMPORARILY DISABLED FOR PERFORMANCE TESTING
+        // if let previews = await viewModel.loadTimelinePreviews(for: summary) {
+        //     await MainActor.run {
+        //         previewTurns = previews
+        //         loadingStage = .preview
+        //     }
+        // }
+
+        // Stage 2: Load full timeline in background
         await reloadConversation(resetUI: true)
+
         // Configure file monitor for live reload
         monitor?.cancel()
         monitor = DirectoryMonitor(url: summary.fileURL) { [fileURL = summary.fileURL] in
@@ -394,7 +435,9 @@ extension SessionDetailView {
     @MainActor
     private func reloadConversation(resetUI: Bool = false) async {
         loadingTimeline = true
+        loadingStage = .loading
         defer { loadingTimeline = false }
+
         let shouldLoadDirectlyFromFile = summary.source.baseKind == .codex && !summary.source.isRemote
         let loaded: [ConversationTurn]
         if shouldLoadDirectlyFromFile {
@@ -402,14 +445,26 @@ extension SessionDetailView {
         } else {
             loaded = await viewModel.timeline(for: summary)
         }
+
         allTurns = loaded
+        loadingStage = .full
+
         if resetUI {
             expandedTurnIDs = []
             environmentExpanded = false
             environmentInfo = nil
             environmentLoading = false
         }
+
         applyFilterAndSort()
+
+        // Stage 3: Update preview cache in background (async, non-blocking)
+        // TEMPORARILY DISABLED FOR PERFORMANCE TESTING
+        // if !loaded.isEmpty {
+        //     Task {
+        //         await viewModel.updateTimelinePreviews(for: summary, turns: loaded)
+        //     }
+        // }
     }
 
     @MainActor
@@ -606,6 +661,82 @@ private func sanitizedExportFileName(_ s: String, fallback: String, maxLength: I
         columnVisibility: $visibility
     )
     .frame(width: 600, height: 800)
+}
+
+// MARK: - Preview Card Component
+
+/// Lightweight preview card for conversation turns, shown during initial loading
+private struct ConversationTurnPreviewCard: View {
+    let preview: ConversationTurnPreview
+    let branding: SessionSourceBranding
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Header: timestamp and metadata badges
+            HStack(spacing: 8) {
+                Text(preview.timestamp, style: .time)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if preview.hasToolCalls {
+                    Label("Tools", systemImage: "hammer.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .labelStyle(.iconOnly)
+                }
+
+                if preview.hasThinking {
+                    Label("Thinking", systemImage: "brain")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .labelStyle(.iconOnly)
+                }
+
+                Text("\(preview.outputCount) output\(preview.outputCount == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                Spacer()
+            }
+
+            // User message preview
+            if let userPreview = preview.userPreview {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "person.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text(userPreview)
+                        .font(.callout)
+                        .lineLimit(2)
+                        .foregroundStyle(.primary)
+                }
+            }
+
+            // Assistant/output preview
+            if let outputsPreview = preview.outputsPreview {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: branding.symbolName)
+                        .font(.caption)
+                        .foregroundStyle(branding.iconColor)
+
+                    Text(outputsPreview)
+                        .font(.callout)
+                        .lineLimit(2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+        }
+    }
 }
 
 #Preview("Processing State") {
