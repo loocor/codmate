@@ -2331,14 +2331,22 @@ final class SessionListViewModel: ObservableObject {
   private func currentScope() -> SessionLoadScope {
     switch dateDimension {
     case .created:
-      // In Created mode, load the month currently being viewed in the calendar sidebar.
-      // This ensures calendar stats show correct counts for the visible month.
-      // Day filtering for the middle list happens in applyFilters().
+      // In Created mode, when a single day is selected, limit the scan
+      // scope to that specific day for better performance and more
+      // predictable behavior when users explicitly focus on "today".
+      if let day = selectedDay {
+        return .day(Calendar.current.startOfDay(for: day))
+      }
+      if selectedDays.count == 1, let only = selectedDays.first {
+        return .day(Calendar.current.startOfDay(for: only))
+      }
+      // Fallback: load the month currently being viewed in the calendar
+      // sidebar. Day filtering for the middle list still happens in
+      // applyFilters().
       return .month(sidebarMonthStart)
     case .updated:
-      // Updated dimension: load everything since updates can cross month boundaries.
-      // Files are organized by creation date on disk, so we need all files to compute
-      // updated-time stats correctly.
+      // Updated dimension: load everything since updates can cross month
+      // boundaries and files on disk are organized by creation date.
       return .all
     }
   }
@@ -2830,22 +2838,73 @@ final class SessionListViewModel: ObservableObject {
 
   private func mergeAndApply(_ subset: [SessionSummary]) {
     guard !subset.isEmpty else { return }
-    var map = Dictionary(uniqueKeysWithValues: allSessions.map { ($0.id, $0) })
-    let previousIDs = Set(allSessions.map { $0.id })
-    for var s in subset {
-      if let note = notesSnapshot[s.id] {
-        s.userTitle = note.title
-        s.userComment = note.comment
+    var updatedSessions = allSessions
+    var indexById = Dictionary(uniqueKeysWithValues: allSessions.enumerated().map { ($1.id, $0) })
+    var changed = false
+    var newSessions: [SessionSummary] = []
+
+    for var session in subset {
+      if let note = notesSnapshot[session.id] {
+        session.userTitle = note.title
+        session.userComment = note.comment
       }
-      map[s.id] = s
-      if !previousIDs.contains(s.id) { self.handleAutoAssignIfMatches(s) }
+      if let idx = indexById[session.id] {
+        if updatedSessions[idx] != session {
+          updatedSessions[idx] = session
+          changed = true
+        }
+      } else {
+        indexById[session.id] = updatedSessions.count
+        updatedSessions.append(session)
+        newSessions.append(session)
+        changed = true
+        handleAutoAssignIfMatches(session)
+      }
     }
-    allSessions = Array(map.values)
+
+    guard changed else { return }
+    allSessions = updatedSessions
     rebuildCanonicalCwdCache()
+
+    var viewNeedsUpdate = false
+    if !newSessions.isEmpty {
+      persistProjectAssignmentsToCache(newSessions)
+      _ = incrementProjectCounts(for: newSessions)
+      viewNeedsUpdate = true
+    }
+    if viewNeedsUpdate {
+      scheduleViewUpdate()
+    }
     scheduleApplyFilters()
     // Keep global total based on full scan (Codex + Claude [+ Remote]),
     // not on currently loaded subset. Recompute asynchronously.
     Task { await self.refreshGlobalCount() }
+  }
+
+  private func incrementProjectCounts(for newSessions: [SessionSummary]) -> Bool {
+    guard !newSessions.isEmpty else { return false }
+    var updated = projectCounts
+    var changed = false
+    let allowedSourcesByProject = projects.reduce(into: [String: Set<ProjectSessionSource>]()) {
+      $0[$1.id] = $1.sources
+    }
+
+    for session in newSessions {
+      if let projectId = projectId(for: session) {
+        let allowedSources = allowedSourcesByProject[projectId] ?? ProjectSessionSource.allSet
+        guard allowedSources.contains(session.source.projectSource) else { continue }
+        updated[projectId, default: 0] += 1
+        changed = true
+      } else {
+        updated[SessionListViewModel.otherProjectId, default: 0] += 1
+        changed = true
+      }
+    }
+
+    if changed {
+      projectCounts = updated
+    }
+    return changed
   }
 
   private func dayOfToday() -> Date { Calendar.current.startOfDay(for: Date()) }
@@ -2870,6 +2929,15 @@ final class SessionListViewModel: ObservableObject {
       await MainActor.run { self.mergeAndApply(subset) }
     } catch {
       diagLogger.error("refreshIncrementalForGeminiToday failed: \(error.localizedDescription, privacy: .public)")
+    }
+  }
+
+  func refreshIncrementalForClaudeToday() async {
+    do {
+      let subset = try await claudeProvider.sessions(scope: .day(dayOfToday()))
+      await MainActor.run { self.mergeAndApply(subset) }
+    } catch {
+      diagLogger.error("refreshIncrementalForClaudeToday failed: \(error.localizedDescription, privacy: .public)")
     }
   }
 

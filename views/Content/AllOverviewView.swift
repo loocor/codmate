@@ -55,15 +55,20 @@ struct AllOverviewView: View {
     VStack(alignment: .leading, spacing: 6) {
       Text("Workspace Overview")
         .font(.largeTitle.weight(.semibold))
-      Text("Updated \(snapshot.lastUpdated.formatted(date: .abbreviated, time: .shortened))")
+      Text(metadataLine)
         .font(.caption)
         .foregroundStyle(.secondary)
-      if let coverageText = coverageLine {
-        Text(coverageText)
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-      }
     }
+  }
+
+  private var metadataLine: String {
+    var parts: [String] = []
+    let updated = "Updated \(snapshot.lastUpdated.formatted(date: .abbreviated, time: .shortened))"
+    parts.append(updated)
+    if let coverage = coverageLine {
+      parts.append(coverage)
+    }
+    return parts.joined(separator: " • ")
   }
 
   private var coverageLine: String? {

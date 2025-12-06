@@ -233,13 +233,13 @@ struct ProjectsListView: View {
   private func makeOtherProjectRow(countsDisplay: [String: (visible: Int, total: Int)]) -> some View {
     let otherId = SessionListViewModel.otherProjectId
     let otherProject = Project(
-      id: otherId, name: "Other", directory: nil, trustLevel: nil, overview: nil,
+      id: otherId, name: "Others", directory: nil, trustLevel: nil, overview: nil,
       instructions: nil, profileId: nil, profile: nil, parentId: nil,
       sources: ProjectSessionSource.allSet)
     
     return ProjectRow(
       project: otherProject,
-      displayName: "Other",
+      displayName: "Others",
       visible: countsDisplay[otherId]?.visible ?? 0,
       total: countsDisplay[otherId]?.total ?? 0,
       onNewSession: {},

@@ -215,7 +215,8 @@ final class AllOverviewViewModel: ObservableObject {
         date: $0.day,
         source: $0.kind,
         sessionCount: $0.sessionCount,
-        duration: $0.totalDuration
+        duration: $0.totalDuration,
+        totalTokens: $0.totalTokens
       )
     }
     return ActivityChartData(points: points.sorted { $0.date < $1.date }, unit: .day)

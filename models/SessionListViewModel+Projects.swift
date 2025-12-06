@@ -32,6 +32,24 @@ extension SessionListViewModel {
     func setSelectedProject(_ id: String?) {
         if let id {
             selectedProjectIDs = Set([id])
+
+            // Special behavior for the synthetic Others bucket:
+            // when there is no active date filter yet, clicking
+            // Others focuses on "today" without changing the
+            // Created/Last Updated picker. Independently, we fire
+            // a targeted incremental refresh for today across
+            // Claude and Gemini so newly created/updated sessions
+            // appear under Others quickly.
+            if id == Self.otherProjectId {
+                if selectedDay == nil, selectedDays.isEmpty {
+                    setSelectedDay(Date())
+                }
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.refreshIncrementalForClaudeToday()
+                    await self.refreshIncrementalForGeminiToday()
+                }
+            }
         } else {
             selectedProjectIDs.removeAll()
         }

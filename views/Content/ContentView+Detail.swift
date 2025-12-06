@@ -172,8 +172,23 @@ extension ContentView {
   }
 
   func focusSessionFromOverview(_ summary: SessionSummary) {
-    let explicitProjectId = viewModel.projectIdForSession(summary.id)
-    focusOnSession(summary, explicitProjectId: explicitProjectId, searchTerm: nil, filterConversation: false)
+    let sessionProjectId = viewModel.projectIdForSession(summary.id)
+    if sessionProjectId == nil {
+      focusOnSession(
+        summary,
+        explicitProjectId: SessionListViewModel.otherProjectId,
+        searchTerm: nil,
+        filterConversation: false
+      )
+      viewModel.setSelectedDay(nil)
+    } else {
+      focusOnSession(
+        summary,
+        explicitProjectId: sessionProjectId,
+        searchTerm: nil,
+        filterConversation: false
+      )
+    }
   }
 
   func focusTodayFromOverview() {

@@ -6,6 +6,7 @@ struct ActivityChartDataPoint: Identifiable, Equatable {
     let source: SessionSource.Kind
     let sessionCount: Int
     let duration: TimeInterval
+    let totalTokens: Int
 }
 
 enum ActivityChartUnit: Equatable {
@@ -38,7 +39,7 @@ extension Array where Element == SessionSummary {
         let unit: ActivityChartUnit = (isSameDay || range < 86400) ? .hour : .day
         
         // Grouping
-        var groups: [Date: [SessionSource.Kind: (count: Int, duration: TimeInterval)]] = [:]
+        var groups: [Date: [SessionSource.Kind: (count: Int, duration: TimeInterval, tokens: Int)]] = [:]
         
         for session in self {
             let date = session.startedAt
@@ -52,9 +53,10 @@ extension Array where Element == SessionSummary {
             }
             
             let kind = session.source.baseKind
-            var current = groups[truncatedDate, default: [:]][kind, default: (0, 0)]
+            var current = groups[truncatedDate, default: [:]][kind, default: (0, 0, 0)]
             current.count += 1
             current.duration += session.duration
+            current.tokens += session.actualTotalTokens
             
             groups[truncatedDate, default: [:]][kind] = current
         }
@@ -66,7 +68,8 @@ extension Array where Element == SessionSummary {
                     date: date,
                     source: kind,
                     sessionCount: stats.count,
-                    duration: stats.duration
+                    duration: stats.duration,
+                    totalTokens: stats.tokens
                 ))
             }
         }
