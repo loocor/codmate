@@ -75,8 +75,13 @@ actor MCPServersStore {
     // - Preserves all other existing configuration
     // - Creates backup before writing
     // - Uses atomic write to prevent partial corruption
-    func exportEnabledForClaudeConfig() throws {
-        let list = load().filter { $0.enabled }
+    func exportEnabledForClaudeConfig(servers: [MCPServer]? = nil) throws {
+        let list: [MCPServer]
+        if let servers {
+            list = servers.enabledServers(for: .claude)
+        } else {
+            list = load().enabledServers(for: .claude)
+        }
         let realHome = SessionPreferencesStore.getRealUserHomeURL()
         // User settings file under ~/.claude/settings.json (preferred)
         let claudeDir = realHome.appendingPathComponent(".claude", isDirectory: true)

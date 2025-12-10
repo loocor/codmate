@@ -186,6 +186,33 @@ struct MCPServersSettingsPane: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            HStack(spacing: 6) {
+                                MCPServerTargetToggle(
+                                    provider: .codex,
+                                    isOn: Binding(
+                                        get: { vm.isServerEnabled(s, for: .codex) },
+                                        set: { value in Task { await vm.setServerTargetEnabled(s, target: .codex, enabled: value) } }
+                                    ),
+                                    disabled: !s.enabled
+                                )
+                                MCPServerTargetToggle(
+                                    provider: .claude,
+                                    isOn: Binding(
+                                        get: { vm.isServerEnabled(s, for: .claude) },
+                                        set: { value in Task { await vm.setServerTargetEnabled(s, target: .claude, enabled: value) } }
+                                    ),
+                                    disabled: !s.enabled
+                                )
+                                MCPServerTargetToggle(
+                                    provider: .gemini,
+                                    isOn: Binding(
+                                        get: { vm.isServerEnabled(s, for: .gemini) },
+                                        set: { value in Task { await vm.setServerTargetEnabled(s, target: .gemini, enabled: value) } }
+                                    ),
+                                    disabled: !s.enabled
+                                )
+                            }
+                            .padding(.trailing, 8)
                             Button {
                                 editorIsEditingExisting = true
                                 vm.startEditForm(from: s)
@@ -674,6 +701,21 @@ private struct MCPServerEditorSheet: View {
                         .frame(height: 80)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
+            }
+            GridRow {
+                Text("Targets").font(.subheadline).fontWeight(.medium)
+                HStack(spacing: 12) {
+                    Toggle("Codex", isOn: $vm.formTargetsCodex)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                    Toggle("Claude Code", isOn: $vm.formTargetsClaude)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                    Toggle("Gemini", isOn: $vm.formTargetsGemini)
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
             // Enabled is controlled in list view only
         }

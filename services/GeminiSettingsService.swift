@@ -81,7 +81,7 @@ actor GeminiSettingsService {
 
   func applyMCPServers(_ servers: [MCPServer]) throws {
     var object = loadJSONObject()
-    let enabled = servers.filter { $0.enabled }
+    let enabled = servers.enabledServers(for: .gemini)
     
     if enabled.isEmpty {
       object.removeValue(forKey: "mcpServers")

@@ -37,6 +37,9 @@ final class MCPServersViewModel: ObservableObject {
     @Published var formHeadersJSONText: String = "{}"   // JSON object
     @Published var formHeadersUseJSON: Bool = false
     @Published var formEnabled: Bool = true
+    @Published var formTargetsCodex: Bool = true
+    @Published var formTargetsClaude: Bool = true
+    @Published var formTargetsGemini: Bool = true
 
     private let store = MCPServersStore()
     private let tester = MCPQuickTestService()
@@ -87,6 +90,9 @@ final class MCPServersViewModel: ObservableObject {
         formHeadersJSONText = "{}"
         formHeadersUseJSON = false
         formEnabled = true
+        formTargetsCodex = true
+        formTargetsClaude = true
+        formTargetsGemini = true
         testMessage = nil
     }
 
@@ -108,6 +114,10 @@ final class MCPServersViewModel: ObservableObject {
         formHeadersJSONText = (try? Self.jsonString(server.headers ?? [:])) ?? "{}"
         formHeadersUseJSON = false
         formEnabled = server.enabled
+        let targets = server.targets ?? MCPServerTargets()
+        formTargetsCodex = targets.codex
+        formTargetsClaude = targets.claude
+        formTargetsGemini = targets.gemini
         testMessage = nil
     }
 
@@ -187,7 +197,12 @@ final class MCPServersViewModel: ObservableObject {
             headers: headers,
             meta: nil,
             enabled: formEnabled,
-            capabilities: servers.first(where: { $0.name == originalName ?? formName })?.capabilities ?? []
+            capabilities: servers.first(where: { $0.name == originalName ?? formName })?.capabilities ?? [],
+            targets: MCPServerTargets(
+                codex: formTargetsCodex,
+                claude: formTargetsClaude,
+                gemini: formTargetsGemini
+            )
         )
     }
 
@@ -347,7 +362,8 @@ final class MCPServersViewModel: ObservableObject {
                     headers: d.headers,
                     meta: d.meta,
                     enabled: true,
-                    capabilities: []
+                    capabilities: [],
+                    targets: MCPServerTargets()
                 )
                 incoming.append(srv)
             }
@@ -408,6 +424,33 @@ final class MCPServersViewModel: ObservableObject {
         }
     }
 
+    func isServerEnabled(_ server: MCPServer, for target: MCPServerTarget) -> Bool {
+        server.isEnabled(for: target)
+    }
+
+    func setServerTargetEnabled(_ server: MCPServer, target: MCPServerTarget, enabled: Bool) async {
+        do {
+            if SecurityScopedBookmarks.shared.isSandboxed {
+                let home = SessionPreferencesStore.getRealUserHomeURL()
+                let codmate = home.appendingPathComponent(".codmate", isDirectory: true)
+                let codex = home.appendingPathComponent(".codex", isDirectory: true)
+                _ = AuthorizationHub.shared.ensureDirectoryAccessOrPromptSync(directory: codmate, purpose: .generalAccess)
+                _ = AuthorizationHub.shared.ensureDirectoryAccessOrPromptSync(directory: codex, purpose: .generalAccess)
+                _ = AuthorizationHub.shared.ensureDirectoryAccessOrPromptSync(directory: home, purpose: .generalAccess)
+            }
+            var updated = server.withTargets { targets in
+                targets.setEnabled(enabled, for: target)
+            }
+            // Preserve existing capabilities/enabled flag
+            updated.enabled = server.enabled
+            try await store.upsert(updated)
+            await loadServers()
+            await applyEnabledServersToAllProviders()
+        } catch {
+            errorMessage = "Failed to update: \(error.localizedDescription)"
+        }
+    }
+
     // Stub for capability discovery via MCP Swift SDK (to be integrated)
     func refreshCapabilities(for server: MCPServer) async {
         // TODO: Integrate MCP Swift SDK handshake and tools discovery
@@ -418,14 +461,14 @@ final class MCPServersViewModel: ObservableObject {
 
     private func applyEnabledServersToAllProviders() async {
         let list = await store.list()
-        
+
         // 1. Codex
         let codex = CodexConfigService()
         try? await codex.applyMCPServers(list)
-        
+
         // 2. Claude Code (User settings export)
-        try? await store.exportEnabledForClaudeConfig()
-        
+        try? await store.exportEnabledForClaudeConfig(servers: list)
+
         // 3. Gemini CLI
         let gemini = GeminiSettingsService()
         try? await gemini.applyMCPServers(list)

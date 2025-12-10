@@ -287,7 +287,7 @@ actor CodexConfigService {
             text.removeLast()
         }
         // Build new region with enabled servers only
-        let enabled = servers.filter { $0.enabled }
+        let enabled = servers.enabledServers(for: .codex)
         guard !enabled.isEmpty else {
             try writeConfig(text)
             return
