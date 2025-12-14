@@ -443,13 +443,11 @@ struct ContentView: View {
           pb.setString(cmd + "\n", forType: .string)
           viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: cmd)
         case .warp:
-          let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(
+          guard viewModel.copyNewSessionCommandsRespectingProject(
             session: anchor,
+            destinationApp: .warp,
             initialPrompt: prompt
-          )
-          let pb = NSPasteboard.general
-          pb.clearContents()
-          pb.setString(cmd + "\n", forType: .string)
+          ) else { return }
           viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
         case .terminal:
           viewModel.openNewSessionRespectingProject(session: anchor, initialPrompt: prompt)
@@ -540,13 +538,11 @@ struct ContentView: View {
             viewModel.openPreferredTerminalViaScheme(
               app: .iterm2, directory: dir, command: cmd)
           case .warp:
-            let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(
+            guard viewModel.copyNewSessionCommandsRespectingProject(
               session: anchor,
+              destinationApp: .warp,
               initialPrompt: prompt
-            )
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(cmd + "\n", forType: .string)
+            ) else { return }
             viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
           case .terminal:
             viewModel.openNewSessionRespectingProject(session: anchor, initialPrompt: prompt)
@@ -902,8 +898,8 @@ struct ContentView: View {
 
   func openPreferredExternal(for session: SessionSummary, using source: SessionSource? = nil) {
     let target = source.map { session.overridingSource($0) } ?? session
-    viewModel.copyResumeCommandsRespectingProject(session: target)
     let app = viewModel.preferences.defaultResumeExternalApp
+    viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: app)
     let dir = workingDirectory(for: target)
     switch app {
     case .iterm2:
@@ -913,8 +909,8 @@ struct ContentView: View {
       viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
     case .terminal:
       if !viewModel.openInTerminal(session: target) {
-        viewModel.copyResumeCommandsRespectingProject(session: target)
-      _ = viewModel.openAppleTerminal(at: dir)
+        viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: app)
+        _ = viewModel.openAppleTerminal(at: dir)
         Task { await SystemNotifier.shared.notify(title: "CodMate", body: "Command copied. Paste it in the opened terminal.") }
       }
     case .none:
@@ -944,7 +940,7 @@ struct ContentView: View {
       viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
     case .terminal:
       #if APPSTORE
-        viewModel.copyNewSessionCommandsRespectingProject(session: session)
+        viewModel.copyNewSessionCommandsRespectingProject(session: session, destinationApp: .terminal)
         _ = viewModel.openAppleTerminal(at: dir)
       #else
         viewModel.openNewSessionRespectingProject(session: session)
@@ -960,7 +956,8 @@ struct ContentView: View {
 
   func startNewSession(for session: SessionSummary, using source: SessionSource? = nil) {
     let target = source.map { session.overridingSource($0) } ?? session
-    viewModel.copyNewSessionCommandsRespectingProject(session: target)
+    let app = viewModel.preferences.defaultResumeExternalApp
+    viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: app)
     openPreferredExternalForNew(session: target)
   }
 
@@ -988,7 +985,7 @@ struct ContentView: View {
       viewModel.recordIntentForDetailNew(anchor: target)
       #if APPSTORE
         if !viewModel.openNewSession(session: target) {
-        viewModel.copyNewSessionCommandsRespectingProject(session: target)
+        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .terminal)
         _ = viewModel.openAppleTerminal(at: workingDirectory(for: target))
         Task {
           await SystemNotifier.shared.notify(
@@ -998,7 +995,7 @@ struct ContentView: View {
         }
       #else
         if !viewModel.openNewSession(session: target) {
-        viewModel.copyNewSessionCommandsRespectingProject(session: target)
+        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .terminal)
         _ = viewModel.openAppleTerminal(at: workingDirectory(for: target))
         Task {
           await SystemNotifier.shared.notify(
@@ -1014,7 +1011,8 @@ struct ContentView: View {
         app: .iterm2, directory: workingDirectory(for: target), command: cmd)
     case .warp:
       viewModel.recordIntentForDetailNew(anchor: target)
-      viewModel.copyNewSessionCommandsRespectingProject(session: target)
+      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .warp)
+      else { return }
       viewModel.openPreferredTerminalViaScheme(
         app: .warp, directory: workingDirectory(for: target))
       Task {
@@ -1044,7 +1042,7 @@ struct ContentView: View {
     switch style {
     case .terminal:
       if !viewModel.openInTerminal(session: target) {
-        viewModel.copyResumeCommandsRespectingProject(session: target)
+        viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: .terminal)
         _ = viewModel.openAppleTerminal(at: workingDirectory(for: target))
         Task {
           await SystemNotifier.shared.notify(
@@ -1057,7 +1055,7 @@ struct ContentView: View {
       viewModel.openPreferredTerminalViaScheme(
         app: .iterm2, directory: workingDirectory(for: target), command: cmd)
     case .warp:
-      viewModel.copyResumeCommandsRespectingProject(session: target)
+      viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: .warp)
       viewModel.openPreferredTerminalViaScheme(
         app: .warp, directory: workingDirectory(for: target))
       Task {

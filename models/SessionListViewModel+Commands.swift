@@ -30,13 +30,17 @@ extension SessionListViewModel {
         )
     }
 
-    func copyResumeCommandsRespectingProject(session: SessionSummary) {
+    func copyResumeCommandsRespectingProject(
+        session: SessionSummary,
+        destinationApp: TerminalApp? = nil
+    ) {
         if session.source != .codexLocal {
             actions.copyResumeCommands(
                 session: session,
                 executableURL: preferredExecutableURL(for: session.source),
                 options: preferences.resumeOptions,
-                simplifiedForExternal: true
+                simplifiedForExternal: true,
+                destinationApp: destinationApp
             )
             return
         }
@@ -47,12 +51,15 @@ extension SessionListViewModel {
             actions.copyResumeUsingProjectProfileCommands(
                 session: session, project: p,
                 executableURL: preferredExecutableURL(for: .codexLocal),
-                options: preferences.resumeOptions)
+                options: preferences.resumeOptions,
+                destinationApp: destinationApp)
         } else {
             actions.copyResumeCommands(
                 session: session,
                 executableURL: preferredExecutableURL(for: .codexLocal),
-                options: preferences.resumeOptions, simplifiedForExternal: true)
+                options: preferences.resumeOptions,
+                simplifiedForExternal: true,
+                destinationApp: destinationApp)
         }
     }
 
@@ -145,12 +152,22 @@ extension SessionListViewModel {
         actions.buildNewProjectCLIInvocation(project: project, options: preferences.resumeOptions)
     }
 
-    func copyNewProjectCommands(project: Project) {
+    @discardableResult
+    func copyNewProjectCommands(project: Project, destinationApp: TerminalApp? = nil) -> Bool {
+        var warpHint: String? = nil
+        if destinationApp == .warp {
+            let base = warpTitleForProject(project)
+            guard let resolved = resolveWarpTitleInput(defaultValue: base) else { return false }
+            warpHint = resolved
+        }
         actions.copyNewProjectCommands(
             project: project,
             executableURL: preferredExecutableURL(for: .codexLocal),
-            options: preferences.resumeOptions
+            options: preferences.resumeOptions,
+            destinationApp: destinationApp,
+            titleHint: warpHint
         )
+        return true
     }
 
     /// Unified Project "New Session" entry. Respects embedded/external preference
@@ -181,19 +198,15 @@ extension SessionListViewModel {
             return
         }
 
-        // External terminal path: copy command and open preferred terminal.
-        actions.copyNewProjectCommands(
-            project: project,
-            executableURL: preferredExecutableURL(for: .codexLocal),
-            options: preferences.resumeOptions
-        )
-
         // Resolve preferred external terminal and open at the project directory
         let app = preferences.defaultResumeExternalApp
         let dir: String = {
             let d = (project.directory ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return d.isEmpty ? NSHomeDirectory() : d
         }()
+
+        // External terminal path: copy command and open preferred terminal.
+        guard copyNewProjectCommands(project: project, destinationApp: app) else { return }
 
         switch app {
         case .iterm2:
@@ -255,40 +268,144 @@ extension SessionListViewModel {
             initialPrompt: initialPrompt)
     }
 
-    func copyNewSessionCommandsRespectingProject(session: SessionSummary) {
+    @discardableResult
+    func copyNewSessionCommandsRespectingProject(
+        session: SessionSummary,
+        destinationApp: TerminalApp? = nil
+    ) -> Bool {
+        let project = projectIdForSession(session.id).flatMap { pid in
+            projects.first(where: { $0.id == pid })
+        }
+        var warpHint: String? = nil
+        if destinationApp == .warp {
+            let base = warpNewSessionTitleHint(for: session, project: project)
+            guard let resolved = resolveWarpTitleInput(defaultValue: base) else { return false }
+            warpHint = resolved
+        }
+
         if session.source == .codexLocal,
-            let pid = projectIdForSession(session.id),
-            let p = projects.first(where: { $0.id == pid }),
-            p.profile != nil || (p.profileId?.isEmpty == false)
+            let project,
+            project.profile != nil || (project.profileId?.isEmpty == false)
         {
             actions.copyNewSessionUsingProjectProfileCommands(
-                session: session, project: p, executableURL: preferredExecutableURL(for: session.source),
-                options: preferences.resumeOptions)
+                session: session, project: project, executableURL: preferredExecutableURL(for: session.source),
+                options: preferences.resumeOptions,
+                destinationApp: destinationApp,
+                titleHint: warpHint)
         } else {
             actions.copyNewSessionCommands(
                 session: session,
                 executableURL: preferredExecutableURL(for: session.source),
-                options: preferences.resumeOptions)
+                options: preferences.resumeOptions,
+                destinationApp: destinationApp,
+                titleHint: warpHint)
         }
+        return true
     }
 
-    func copyNewSessionCommandsRespectingProject(session: SessionSummary, initialPrompt: String) {
+    @discardableResult
+    func copyNewSessionCommandsRespectingProject(
+        session: SessionSummary,
+        destinationApp: TerminalApp? = nil,
+        initialPrompt: String
+    ) -> Bool {
+        let project = projectIdForSession(session.id).flatMap { pid in
+            projects.first(where: { $0.id == pid })
+        }
+        var warpHint: String? = nil
+        if destinationApp == .warp {
+            let base = warpNewSessionTitleHint(for: session, project: project)
+            guard let resolved = resolveWarpTitleInput(defaultValue: base) else { return false }
+            warpHint = resolved
+        }
+
         if session.source == .codexLocal,
-            let pid = projectIdForSession(session.id),
-            let p = projects.first(where: { $0.id == pid }),
-            p.profile != nil || (p.profileId?.isEmpty == false)
+            let project,
+            project.profile != nil || (project.profileId?.isEmpty == false)
         {
             actions.copyNewSessionUsingProjectProfileCommands(
-                session: session, project: p, executableURL: preferredExecutableURL(for: session.source),
-                options: preferences.resumeOptions, initialPrompt: initialPrompt)
+                session: session, project: project, executableURL: preferredExecutableURL(for: session.source),
+                options: preferences.resumeOptions,
+                destinationApp: destinationApp,
+                initialPrompt: initialPrompt,
+                titleHint: warpHint)
         } else {
             let cmd = actions.buildNewSessionCLIInvocation(
                 session: session, options: preferences.resumeOptions, initialPrompt: initialPrompt)
             let pb = NSPasteboard.general
             pb.clearContents()
-            pb.setString(cmd + "\n", forType: .string)
+            if destinationApp == .warp, let title = warpHint {
+                let lines = ["#\(title)", cmd]
+                pb.setString(lines.joined(separator: "\n") + "\n", forType: .string)
+            } else {
+                pb.setString(cmd + "\n", forType: .string)
+            }
         }
+        return true
     }
+
+    private func warpSanitizedTitle(from raw: String?) -> String? {
+        guard var s = raw else { return nil }
+        s = s.replacingOccurrences(of: "\r", with: " ")
+        s = s.replacingOccurrences(of: "\n", with: " ")
+        s = s.replacingOccurrences(of: "\t", with: " ")
+        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        if s.count > 80 { s = String(s.prefix(80)) }
+        let collapsed = s.split(whereSeparator: { $0.isWhitespace }).joined(separator: "-")
+        return collapsed.isEmpty ? nil : collapsed
+    }
+
+    private func warpScopeCandidate(for session: SessionSummary, project: Project?) -> String? {
+        if let name = project?.name.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        if let title = session.userTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !title.isEmpty
+        {
+            return title
+        }
+        let cwd =
+            FileManager.default.fileExists(atPath: session.cwd)
+            ? session.cwd : session.fileURL.deletingLastPathComponent().path
+        let name = URL(fileURLWithPath: cwd).lastPathComponent
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? session.displayName : trimmed
+    }
+
+    private func taskTitle(for session: SessionSummary) -> String? {
+        guard let tid = session.taskId else { return nil }
+        return workspaceVM?.tasks.first(where: { $0.id == tid })?.effectiveTitle
+    }
+
+    private func warpNewSessionTitleHint(for session: SessionSummary, project: Project?) -> String {
+        let scope = warpScopeCandidate(for: session, project: project)
+        let task = taskTitle(for: session)
+        var extras: [String] = []
+        if session.isRemote, let host = session.remoteHost {
+            extras.append(host)
+        }
+        return WarpTitleBuilder.newSessionLabel(scope: scope, task: task, extras: extras)
+    }
+
+    private func warpTitleForProject(_ project: Project) -> String {
+        WarpTitleBuilder.newSessionLabel(scope: project.name, task: nil)
+    }
+
+    private func resolveWarpTitleInput(defaultValue: String) -> String? {
+        if preferences.promptForWarpTitle {
+            guard let userInput = WarpTitlePrompt.requestCustomTitle(defaultValue: defaultValue) else {
+                return nil
+            }
+            let trimmed = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                return defaultValue
+            }
+            return warpSanitizedTitle(from: trimmed) ?? defaultValue
+        }
+        return defaultValue
+    }
+
 
     func openNewSessionRespectingProject(session: SessionSummary) {
         if session.source == .codexLocal,

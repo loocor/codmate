@@ -780,14 +780,15 @@ private struct ProjectTreeNodeView: View {
     switch style {
     case .terminal:
       if !vm.openNewSession(session: target) {
-        vm.copyNewSessionCommandsRespectingProject(session: target)
+        vm.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .terminal)
         _ = vm.openAppleTerminal(at: target.cwd)
       }
     case .iterm:
       let cmd = vm.buildNewSessionCLIInvocationRespectingProject(session: target)
       vm.openPreferredTerminalViaScheme(app: .iterm2, directory: target.cwd, command: cmd)
     case .warp:
-      vm.copyNewSessionCommandsRespectingProject(session: target)
+      guard vm.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .warp)
+      else { return }
       vm.openPreferredTerminalViaScheme(app: .warp, directory: target.cwd)
     }
   }

@@ -538,9 +538,7 @@ extension SessionListColumnView {
     case .iterm2:
       viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: command)
     case .warp:
-      let pb = NSPasteboard.general
-      pb.clearContents()
-      pb.setString(command + "\n", forType: .string)
+      guard viewModel.copyNewProjectCommands(project: project, destinationApp: .warp) else { return }
       viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
     case .terminal:
       let pb = NSPasteboard.general
@@ -658,7 +656,7 @@ extension SessionListColumnView {
     switch style {
     case .terminal:
       if !viewModel.openNewSession(session: target) {
-        viewModel.copyNewSessionCommandsRespectingProject(session: target)
+        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .terminal)
         _ = viewModel.openAppleTerminal(at: workingDirectory(for: target))
       }
     case .iterm:
@@ -669,7 +667,8 @@ extension SessionListColumnView {
         command: cmd
       )
     case .warp:
-      viewModel.copyNewSessionCommandsRespectingProject(session: target)
+      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .warp)
+      else { return }
       viewModel.openPreferredTerminalViaScheme(
         app: .warp,
         directory: workingDirectory(for: target)

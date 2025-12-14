@@ -66,6 +66,7 @@ final class SessionPreferencesStore: ObservableObject {
     static let terminalFontName = "terminal.fontName"
     static let terminalFontSize = "terminal.fontSize"
     static let terminalCursorStyle = "terminal.cursorStyle"
+    static let warpPromptEnabled = "codmate.warp.promptTitle"
   }
 
   init(
@@ -249,6 +250,8 @@ final class SessionPreferencesStore: ObservableObject {
     // Remote hosts
     let storedHosts = defaults.array(forKey: Keys.enabledRemoteHosts) as? [String] ?? []
     self.enabledRemoteHosts = Set(storedHosts)
+
+    self.promptForWarpTitle = defaults.object(forKey: Keys.warpPromptEnabled) as? Bool ?? false
     
     // Now that all properties are initialized, ensure directories exist
     ensureDirectoryExists(sessionsRoot)
@@ -358,6 +361,9 @@ final class SessionPreferencesStore: ObservableObject {
   }
   @Published var defaultResumeExternalApp: TerminalApp {
     didSet { defaults.set(defaultResumeExternalApp.rawValue, forKey: Keys.resumeExternalApp) }
+  }
+  @Published var promptForWarpTitle: Bool {
+    didSet { defaults.set(promptForWarpTitle, forKey: Keys.warpPromptEnabled) }
   }
 
   @Published var defaultResumeSandboxMode: SandboxMode {

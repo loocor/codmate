@@ -661,16 +661,121 @@ extension SessionActions {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    // MARK: - Warp-optimized clipboard commands
+    //
+    // Warp appears to derive a new tab title from the first pasted "command" line.
+    // When our external clipboard text starts with `cd ...`, the tab title becomes `cd`.
+    // For Warp flows we prepend a harmless comment line and omit `cd` entirely because
+    // we already open Warp at the target directory via URL scheme.
+    private func warpTitleCommentLine(_ title: String?) -> String? {
+        guard var s = title else { return nil }
+        s = s.replacingOccurrences(of: "\r", with: " ")
+        s = s.replacingOccurrences(of: "\n", with: " ")
+        s = s.replacingOccurrences(of: "\t", with: " ")
+        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        if s.count > 80 { s = String(s.prefix(80)) }
+        let collapsed = s.split(whereSeparator: { $0.isWhitespace }).joined(separator: "-")
+        guard !collapsed.isEmpty else { return nil }
+        return "#" + collapsed
+    }
+
+    private func warpScope(from session: SessionSummary) -> String? {
+        if let title = session.userTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !title.isEmpty
+        {
+            return title
+        }
+        let cwd =
+            FileManager.default.fileExists(atPath: session.cwd)
+            ? session.cwd : session.fileURL.deletingLastPathComponent().path
+        let dirName = URL(fileURLWithPath: cwd).lastPathComponent
+        if !dirName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return dirName
+        }
+        return session.displayName
+    }
+
+    func buildWarpResumeCommands(
+        session: SessionSummary, executableURL: URL, options: ResumeOptions
+    ) -> String {
+        if session.isRemote, let host = session.remoteHost {
+            let sshContext = resolvedSSHContext(for: host)
+            let remote = buildRemoteResumeShellCommand(session: session, options: options)
+            let cmd = sshInvocation(host: host, remoteCommand: remote, resolvedArguments: sshContext)
+            let lines = [warpTitleCommentLine(session.effectiveTitle), cmd].compactMap { $0 }
+            return lines.joined(separator: "\n") + "\n"
+        }
+        _ = executableURL
+        let execPath = executableName(for: session.source.baseKind)
+        let resume = buildResumeCLIInvocation(session: session, executablePath: execPath, options: options)
+        var lines: [String] = []
+        if let title = warpTitleCommentLine(session.effectiveTitle) { lines.append(title) }
+        if session.source.baseKind == .gemini {
+            lines.append(contentsOf: embeddedExportLines(for: session.source))
+            let envLines = geminiEnvironmentExportLines(
+                environment: geminiRuntimeConfiguration(options: options).environment)
+            lines.append(contentsOf: envLines)
+        }
+        lines.append(resume)
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    func buildWarpNewSessionCommands(
+        session: SessionSummary, executableURL: URL, options: ResumeOptions, titleHint: String? = nil
+    ) -> String {
+        if session.isRemote, let host = session.remoteHost {
+            let sshContext = resolvedSSHContext(for: host)
+            let remote = buildRemoteNewShellCommand(
+                session: session,
+                options: options,
+                initialPrompt: nil
+            )
+            let cmd = sshInvocation(host: host, remoteCommand: remote, resolvedArguments: sshContext)
+            let extras = [host]
+            let base = titleHint ?? WarpTitleBuilder.newSessionLabel(
+                scope: warpScope(from: session),
+                task: nil,
+                extras: extras
+            )
+            let title = warpTitleCommentLine(base)
+            let lines = [title, cmd].compactMap { $0 }
+            return lines.joined(separator: "\n") + "\n"
+        }
+        _ = executableURL
+        let base = titleHint ?? WarpTitleBuilder.newSessionLabel(
+            scope: warpScope(from: session),
+            task: nil
+        )
+        let newCommand = buildNewSessionCLIInvocation(session: session, options: options)
+        var lines: [String] = []
+        if let title = warpTitleCommentLine(base) { lines.append(title) }
+        if session.source.baseKind == .gemini {
+            lines.append(contentsOf: embeddedExportLines(for: session.source))
+            let envLines = geminiEnvironmentExportLines(
+                environment: geminiRuntimeConfiguration(options: options).environment)
+            lines.append(contentsOf: envLines)
+        }
+        lines.append(newCommand)
+        return lines.joined(separator: "\n") + "\n"
+    }
+
     func copyResumeCommands(
         session: SessionSummary, executableURL: URL, options: ResumeOptions,
-        simplifiedForExternal: Bool = true
+        simplifiedForExternal: Bool = true,
+        destinationApp: TerminalApp? = nil
     ) {
-        let commands =
-            simplifiedForExternal
-            ? buildExternalResumeCommands(
-                session: session, executableURL: executableURL, options: options)
-            : buildResumeCommandLines(
-                session: session, executableURL: executableURL, options: options)
+        let commands: String
+        if simplifiedForExternal, destinationApp == .warp {
+            commands = buildWarpResumeCommands(session: session, executableURL: executableURL, options: options)
+        } else {
+            commands =
+                simplifiedForExternal
+                ? buildExternalResumeCommands(
+                    session: session, executableURL: executableURL, options: options)
+                : buildResumeCommandLines(
+                    session: session, executableURL: executableURL, options: options)
+        }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(commands, forType: .string)
@@ -678,15 +783,23 @@ extension SessionActions {
 
     func copyNewSessionCommands(
         session: SessionSummary, executableURL: URL, options: ResumeOptions,
-        simplifiedForExternal: Bool = true
+        simplifiedForExternal: Bool = true,
+        destinationApp: TerminalApp? = nil,
+        titleHint: String? = nil
     ) {
         _ = executableURL
-        let commands =
-            simplifiedForExternal
-            ? buildExternalNewSessionCommands(
-                session: session, executableURL: executableURL, options: options)
-            : buildNewSessionCommandLines(
-                session: session, executableURL: executableURL, options: options)
+        let commands: String
+        if simplifiedForExternal, destinationApp == .warp {
+            commands = buildWarpNewSessionCommands(
+                session: session, executableURL: executableURL, options: options, titleHint: titleHint)
+        } else {
+            commands =
+                simplifiedForExternal
+                ? buildExternalNewSessionCommands(
+                    session: session, executableURL: executableURL, options: options)
+                : buildNewSessionCommandLines(
+                    session: session, executableURL: executableURL, options: options)
+        }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(commands, forType: .string)
@@ -830,14 +943,28 @@ extension SessionActions {
 
     func copyNewProjectCommands(
         project: Project, executableURL: URL, options: ResumeOptions,
-        simplifiedForExternal: Bool = true
+        simplifiedForExternal: Bool = true,
+        destinationApp: TerminalApp? = nil,
+        titleHint: String? = nil
     ) {
-        let commands =
-            simplifiedForExternal
-            ? buildExternalNewProjectCommands(
-                project: project, executableURL: executableURL, options: options)
-            : buildNewProjectCommandLines(
-                project: project, executableURL: executableURL, options: options)
+        let commands: String
+        if simplifiedForExternal, destinationApp == .warp {
+            let base = titleHint ?? WarpTitleBuilder.newSessionLabel(
+                scope: project.name,
+                task: nil
+            )
+            let title = warpTitleCommentLine(base)
+            let cmd = buildNewProjectCLIInvocation(project: project, options: options)
+            let lines = [title, cmd].compactMap { $0 }
+            commands = lines.joined(separator: "\n") + "\n"
+        } else {
+            commands =
+                simplifiedForExternal
+                ? buildExternalNewProjectCommands(
+                    project: project, executableURL: executableURL, options: options)
+                : buildNewProjectCommandLines(
+                    project: project, executableURL: executableURL, options: options)
+        }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(commands, forType: .string)
@@ -1049,16 +1176,57 @@ extension SessionActions {
 
     func copyNewSessionUsingProjectProfileCommands(
         session: SessionSummary, project: Project, executableURL: URL, options: ResumeOptions,
-        simplifiedForExternal: Bool = true, initialPrompt: String? = nil
+        simplifiedForExternal: Bool = true,
+        destinationApp: TerminalApp? = nil,
+        initialPrompt: String? = nil,
+        titleHint: String? = nil
     ) {
-        let commands =
-            simplifiedForExternal
-            ? buildExternalNewSessionUsingProjectProfileCommands(
-                session: session, project: project, executableURL: executableURL, options: options,
-                initialPrompt: initialPrompt)
-            : buildNewSessionUsingProjectProfileCommandLines(
-                session: session, project: project, executableURL: executableURL, options: options,
-                initialPrompt: initialPrompt)
+        let commands: String
+        if simplifiedForExternal, destinationApp == .warp {
+            let invocation = buildNewSessionUsingProjectProfileCLIInvocation(
+                session: session, project: project, options: options, initialPrompt: initialPrompt)
+            let extraHost = session.isRemote ? session.remoteHost : nil
+            let base = titleHint ?? WarpTitleBuilder.newSessionLabel(
+                scope: project.name,
+                task: nil,
+                extras: extraHost.flatMap { [$0] } ?? []
+            )
+            let title = warpTitleCommentLine(base)
+            if session.isRemote, let host = session.remoteHost {
+                let sshContext = resolvedSSHContext(for: host)
+                var exportLines: [String] = [
+                    "export LANG=zh_CN.UTF-8",
+                    "export LC_ALL=zh_CN.UTF-8",
+                    "export LC_CTYPE=zh_CN.UTF-8",
+                    "export TERM=xterm-256color",
+                ]
+                if let env = project.profile?.env {
+                    for (k, v) in env {
+                        let key = k.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !key.isEmpty else { continue }
+                        exportLines.append("export \(key)=\(shellSingleQuoted(v))")
+                    }
+                }
+                let remote = buildRemoteShellCommand(
+                    session: session,
+                    exports: exportLines,
+                    invocation: invocation
+                )
+                let ssh = sshInvocation(host: host, remoteCommand: remote, resolvedArguments: sshContext)
+                commands = [title, ssh].compactMap { $0 }.joined(separator: "\n") + "\n"
+            } else {
+                commands = [title, invocation].compactMap { $0 }.joined(separator: "\n") + "\n"
+            }
+        } else {
+            commands =
+                simplifiedForExternal
+                ? buildExternalNewSessionUsingProjectProfileCommands(
+                    session: session, project: project, executableURL: executableURL, options: options,
+                    initialPrompt: initialPrompt)
+                : buildNewSessionUsingProjectProfileCommandLines(
+                    session: session, project: project, executableURL: executableURL, options: options,
+                    initialPrompt: initialPrompt)
+        }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(commands, forType: .string)
@@ -1255,14 +1423,47 @@ extension SessionActions {
 
     func copyResumeUsingProjectProfileCommands(
         session: SessionSummary, project: Project, executableURL: URL, options: ResumeOptions,
-        simplifiedForExternal: Bool = true
+        simplifiedForExternal: Bool = true,
+        destinationApp: TerminalApp? = nil
     ) {
-        let commands =
-            simplifiedForExternal
-            ? buildExternalResumeUsingProjectProfileCommands(
-                session: session, project: project, executableURL: executableURL, options: options)
-            : buildResumeUsingProjectProfileCommandLines(
-                session: session, project: project, executableURL: executableURL, options: options)
+        let commands: String
+        if simplifiedForExternal, destinationApp == .warp {
+            let invocation = buildResumeUsingProjectProfileCLIInvocation(
+                session: session, project: project, options: options)
+            let title = warpTitleCommentLine(session.effectiveTitle)
+            if session.isRemote, let host = session.remoteHost {
+                let sshContext = resolvedSSHContext(for: host)
+                var exportLines: [String] = [
+                    "export LANG=zh_CN.UTF-8",
+                    "export LC_ALL=zh_CN.UTF-8",
+                    "export LC_CTYPE=zh_CN.UTF-8",
+                    "export TERM=xterm-256color",
+                ]
+                if let env = project.profile?.env {
+                    for (k, v) in env {
+                        let key = k.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !key.isEmpty else { continue }
+                        exportLines.append("export \(key)=\(shellSingleQuoted(v))")
+                    }
+                }
+                let remote = buildRemoteShellCommand(
+                    session: session,
+                    exports: exportLines,
+                    invocation: invocation
+                )
+                let ssh = sshInvocation(host: host, remoteCommand: remote, resolvedArguments: sshContext)
+                commands = [title, ssh].compactMap { $0 }.joined(separator: "\n") + "\n"
+            } else {
+                commands = [title, invocation].compactMap { $0 }.joined(separator: "\n") + "\n"
+            }
+        } else {
+            commands =
+                simplifiedForExternal
+                ? buildExternalResumeUsingProjectProfileCommands(
+                    session: session, project: project, executableURL: executableURL, options: options)
+                : buildResumeUsingProjectProfileCommandLines(
+                    session: session, project: project, executableURL: executableURL, options: options)
+        }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(commands, forType: .string)

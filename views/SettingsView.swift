@@ -506,6 +506,23 @@ struct SettingsView: View {
                 .gridColumnAlignment(.trailing)
                 .gridCellAnchor(.trailing)
               }
+
+              gridDivider
+
+              GridRow {
+                VStack(alignment: .leading, spacing: 0) {
+                  Text("Prompt for Warp tab title")
+                    .font(.subheadline).fontWeight(.medium)
+                  Text("Show an input dialog before copying Warp commands")
+                    .font(.caption).foregroundColor(.secondary)
+                }
+                Toggle("", isOn: $preferences.promptForWarpTitle)
+                  .labelsHidden()
+                  .toggleStyle(.switch)
+                  .controlSize(.small)
+                  .frame(maxWidth: .infinity, alignment: .trailing)
+                  .gridColumnAlignment(.trailing)
+              }
             }
           }
         }
@@ -649,6 +666,23 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .gridColumnAlignment(.trailing)
                 .gridCellAnchor(.trailing)
+              }
+
+              gridDivider
+
+              GridRow {
+                VStack(alignment: .leading, spacing: 0) {
+                  Text("Prompt for Warp tab title")
+                    .font(.subheadline).fontWeight(.medium)
+                  Text("Show an input dialog before copying Warp commands")
+                    .font(.caption).foregroundColor(.secondary)
+                }
+                Toggle("", isOn: $preferences.promptForWarpTitle)
+                  .labelsHidden()
+                  .toggleStyle(.switch)
+                  .controlSize(.small)
+                  .frame(maxWidth: .infinity, alignment: .trailing)
+                  .gridColumnAlignment(.trailing)
               }
             }
           }

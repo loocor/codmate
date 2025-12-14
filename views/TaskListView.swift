@@ -878,14 +878,15 @@ struct TaskListView: View {
     switch style {
     case .terminal:
       if !viewModel.openNewSession(session: target) {
-        viewModel.copyNewSessionCommandsRespectingProject(session: target)
+        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .terminal)
         _ = viewModel.openAppleTerminal(at: target.cwd)
       }
     case .iterm:
       let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
       viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: target.cwd, command: cmd)
     case .warp:
-      viewModel.copyNewSessionCommandsRespectingProject(session: target)
+      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .warp)
+      else { return }
       viewModel.openPreferredTerminalViaScheme(app: .warp, directory: target.cwd)
     }
   }

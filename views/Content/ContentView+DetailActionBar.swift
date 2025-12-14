@@ -364,9 +364,9 @@ private extension ContentView {
             (project.directory?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
               $0.isEmpty ? nil : $0
             } ?? NSHomeDirectory()
-          let pb = NSPasteboard.general
-          pb.clearContents()
-          pb.setString(simpleProjectNewCommands(project: project) + "\n", forType: .string)
+          guard viewModel.copyNewProjectCommands(project: project, destinationApp: .warp) else {
+            return
+          }
           viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
           Task {
             await SystemNotifier.shared.notify(
@@ -436,9 +436,7 @@ private extension ContentView {
       let cmd = viewModel.buildNewProjectCLIInvocation(project: project)
       viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: cmd)
     case .warp:
-      let pb = NSPasteboard.general
-      pb.clearContents()
-      pb.setString(simpleProjectNewCommands(project: project) + "\n", forType: .string)
+      guard viewModel.copyNewProjectCommands(project: project, destinationApp: .warp) else { return }
       viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
     case .terminal:
       let pb = NSPasteboard.general
