@@ -97,20 +97,22 @@ extension CodexUsageStatus {
         return remainingPercent / 100.0
     }
 
-    func asProviderSnapshot() -> UsageProviderSnapshot {
+    func asProviderSnapshot(titleBadge: String? = nil) -> UsageProviderSnapshot {
         var metrics: [UsageMetricSnapshot] = []
 
-        metrics.append(
-            UsageMetricSnapshot(
-                kind: .context,
-                label: "Context",
-                usageText: contextUsageText,
-                percentText: contextPercentText,
-                progress: contextProgress,
-                resetDate: nil,
-                fallbackWindowMinutes: nil
+        if contextUsedTokens != nil || contextLimitTokens != nil {
+            metrics.append(
+                UsageMetricSnapshot(
+                    kind: .context,
+                    label: "Context",
+                    usageText: contextUsageText,
+                    percentText: contextPercentText,
+                    progress: contextProgress,
+                    resetDate: nil,
+                    fallbackWindowMinutes: nil
+                )
             )
-        )
+        }
 
         metrics.append(
             UsageMetricSnapshot(
@@ -139,6 +141,7 @@ extension CodexUsageStatus {
         return UsageProviderSnapshot(
             provider: .codex,
             title: UsageProviderKind.codex.displayName,
+            titleBadge: titleBadge,
             availability: .ready,
             metrics: metrics,
             updatedAt: updatedAt,
@@ -158,6 +161,28 @@ extension CodexUsageStatus {
             secondaryWindowUsedPercent: snapshot.secondaryPercent,
             secondaryWindowMinutes: snapshot.secondaryWindowMinutes,
             secondaryResetAt: snapshot.secondaryResetAt
+        )
+    }
+
+    func overridingRateLimits(
+        updatedAt: Date? = nil,
+        primaryUsedPercent: Double?,
+        primaryWindowMinutes: Int?,
+        primaryResetAt: Date?,
+        secondaryUsedPercent: Double?,
+        secondaryWindowMinutes: Int?,
+        secondaryResetAt: Date?
+    ) -> CodexUsageStatus {
+        CodexUsageStatus(
+            updatedAt: updatedAt ?? self.updatedAt,
+            contextUsedTokens: contextUsedTokens,
+            contextLimitTokens: contextLimitTokens,
+            primaryWindowUsedPercent: primaryUsedPercent ?? primaryWindowUsedPercent,
+            primaryWindowMinutes: primaryWindowMinutes ?? self.primaryWindowMinutes,
+            primaryResetAt: primaryResetAt ?? self.primaryResetAt,
+            secondaryWindowUsedPercent: secondaryUsedPercent ?? secondaryWindowUsedPercent,
+            secondaryWindowMinutes: secondaryWindowMinutes ?? self.secondaryWindowMinutes,
+            secondaryResetAt: secondaryResetAt ?? self.secondaryResetAt
         )
     }
 

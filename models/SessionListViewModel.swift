@@ -302,6 +302,7 @@ final class SessionListViewModel: ObservableObject {
   let geminiProvider: GeminiSessionProvider
   private let claudeUsageClient = ClaudeUsageAPIClient()
   private let geminiUsageClient = GeminiUsageAPIClient()
+  private let codexAppServerProbe = CodexAppServerProbeService()
   private let providersRegistry = ProvidersRegistryService()
   let remoteProvider: RemoteSessionProvider
   let sqliteStore: SessionIndexSQLiteStore
@@ -3156,26 +3157,59 @@ extension SessionListViewModel {
         }
         return
       }
-      guard !candidates.isEmpty else {
-        await MainActor.run { self.codexUsageStatus = nil }
-        return
-      }
-      let ripgrepSnapshot = await self.ripgrepStore.latestTokenUsage(in: candidates)
-      let snapshot: TokenUsageSnapshot?
-      if let ripgrepSnapshot {
-        snapshot = ripgrepSnapshot
-      } else {
-        snapshot = await Task.detached(priority: .utility) {
+
+      async let rpcSnapshot = self.codexAppServerProbe.fetchIfStaleOrNil(maxAge: 90)
+      async let tokenSnapshot: TokenUsageSnapshot? = {
+        guard !candidates.isEmpty else { return nil }
+        if let ripgrepSnapshot = await self.ripgrepStore.latestTokenUsage(in: candidates) {
+          return ripgrepSnapshot
+        }
+        return await Task.detached(priority: .utility) {
           Self.fallbackTokenUsage(from: candidates)
         }.value
-      }
+      }()
+
+      let rpc = await rpcSnapshot
+      let snapshot = await tokenSnapshot
 
       guard !Task.isCancelled else { return }
       await MainActor.run {
-        let codexStatus = snapshot.map { CodexUsageStatus(snapshot: $0) }
+        let badge = Self.codexPlanBadge(from: rpc?.planType)
+
+        var codexStatus: CodexUsageStatus?
+        if let snapshot {
+          codexStatus = CodexUsageStatus(snapshot: snapshot)
+        } else if let rpc {
+          // Allow showing Codex quotas even when no recent session logs exist.
+          codexStatus = CodexUsageStatus(
+            updatedAt: rpc.fetchedAt,
+            contextUsedTokens: nil,
+            contextLimitTokens: nil,
+            primaryWindowUsedPercent: rpc.primaryUsedPercent,
+            primaryWindowMinutes: rpc.primaryWindowMinutes,
+            primaryResetAt: rpc.primaryResetAt,
+            secondaryWindowUsedPercent: rpc.secondaryUsedPercent,
+            secondaryWindowMinutes: rpc.secondaryWindowMinutes,
+            secondaryResetAt: rpc.secondaryResetAt
+          )
+        }
+
+        if let rpc, let existing = codexStatus {
+          let mergedUpdatedAt = max(existing.updatedAt, rpc.fetchedAt)
+          codexStatus = existing.overridingRateLimits(
+            updatedAt: mergedUpdatedAt,
+            primaryUsedPercent: rpc.primaryUsedPercent,
+            primaryWindowMinutes: rpc.primaryWindowMinutes,
+            primaryResetAt: rpc.primaryResetAt,
+            secondaryUsedPercent: rpc.secondaryUsedPercent,
+            secondaryWindowMinutes: rpc.secondaryWindowMinutes,
+            secondaryResetAt: rpc.secondaryResetAt
+          )
+        }
+
         self.codexUsageStatus = codexStatus
         if let codex = codexStatus {
-          self.setUsageSnapshot(.codex, codex.asProviderSnapshot())
+          self.setUsageSnapshot(.codex, codex.asProviderSnapshot(titleBadge: badge))
         } else {
           self.setUsageSnapshot(
             .codex,
@@ -3185,13 +3219,27 @@ extension SessionListViewModel {
               availability: .empty,
               metrics: [],
               updatedAt: nil,
-              statusMessage: "No Codex sessions found yet.",
-              origin: .builtin
+              statusMessage: "No Codex usage data available yet.",
+              origin: .builtin,
+              action: .refresh
             )
           )
         }
       }
     }
+  }
+
+  private static func codexPlanBadge(from rawPlanType: String?) -> String? {
+    guard let raw = rawPlanType?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+      return nil
+    }
+    let plan = raw.lowercased()
+    if plan.contains("free") || plan.contains("unknown") { return nil }
+    if plan.contains("plus") { return "Plus" }
+    if plan.contains("pro") { return "Pro" }
+    if plan.contains("team") { return "Team" }
+    if plan.contains("enterprise") { return "Ent" }
+    return raw.prefix(1).uppercased() + raw.dropFirst()
   }
 
   nonisolated private static func fallbackTokenUsage(from sessions: [SessionSummary])

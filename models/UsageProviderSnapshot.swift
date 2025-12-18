@@ -54,6 +54,8 @@ struct UsageProviderSnapshot: Identifiable, Equatable {
   let id = UUID()
   let provider: UsageProviderKind
   let title: String
+  /// Optional short badge shown as a superscript next to the provider title (e.g., "Pro", "Plus").
+  let titleBadge: String?
   let availability: Availability
   let metrics: [UsageMetricSnapshot]
   let updatedAt: Date?
@@ -65,6 +67,7 @@ struct UsageProviderSnapshot: Identifiable, Equatable {
   init(
     provider: UsageProviderKind,
     title: String,
+    titleBadge: String? = nil,
     availability: Availability,
     metrics: [UsageMetricSnapshot],
     updatedAt: Date?,
@@ -75,6 +78,7 @@ struct UsageProviderSnapshot: Identifiable, Equatable {
   ) {
     self.provider = provider
     self.title = title
+    self.titleBadge = titleBadge
     self.availability = availability
     self.metrics = metrics
     self.updatedAt = updatedAt
@@ -125,6 +129,7 @@ struct UsageProviderSnapshot: Identifiable, Equatable {
     UsageProviderSnapshot(
       provider: provider,
       title: provider.displayName,
+      titleBadge: nil,
       availability: .comingSoon,
       metrics: [],
       updatedAt: nil,

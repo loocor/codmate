@@ -248,8 +248,12 @@ private struct UsageStatusPopover: View {
         VStack(alignment: .leading, spacing: 8) {
           HStack(spacing: 6) {
             providerIcon(for: provider)
-            Text(provider.displayName)
-              .font(.subheadline.weight(.semibold))
+            if let snapshot = snapshots[provider] {
+              UsageProviderTitleView(title: snapshot.title, badge: snapshot.titleBadge)
+            } else {
+              Text(provider.displayName)
+                .font(.subheadline.weight(.semibold))
+            }
             Spacer()
           }
 
@@ -327,6 +331,28 @@ private struct UsageStatusPopover: View {
     case .claude: return Color(nsColor: .systemPurple)
     case .gemini: return Color(nsColor: .systemTeal)
     }
+  }
+}
+
+private struct UsageProviderTitleView: View {
+  var title: String
+  var badge: String?
+
+  var body: some View {
+    ZStack(alignment: .topTrailing) {
+      Text(title)
+        .font(.subheadline.weight(.semibold))
+        .padding(.trailing, badge == nil ? 0 : 14)
+
+      if let badge, !badge.isEmpty {
+        Text(badge)
+          .font(.system(size: 9, weight: .semibold, design: .rounded))
+          .foregroundStyle(.secondary)
+          .baselineOffset(7)
+          .offset(x: 2, y: -1)
+      }
+    }
+    .fixedSize(horizontal: true, vertical: false)
   }
 }
 
