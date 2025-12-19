@@ -865,11 +865,23 @@ struct TaskListView: View {
     else { return }
     if profile.usesWarpCommands {
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        }
+      }
       return
     }
     if profile.isTerminal {
       if !viewModel.openNewSession(session: target) {
         _ = viewModel.openAppleTerminal(at: dir)
+        if viewModel.shouldCopyCommandsToClipboard {
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+          }
+        }
       }
       return
     }
@@ -883,13 +895,20 @@ struct TaskListView: View {
       return
     }
 
-    let cmd = profile.supportsCommandResolved
+    let cmd =
+      profile.supportsCommandResolved
       ? viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
       : nil
     if !profile.supportsCommandResolved {
       // Clipboard already populated when copy preference is enabled.
     }
     viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
+    if !profile.supportsCommandResolved, viewModel.shouldCopyCommandsToClipboard {
+      Task {
+        await SystemNotifier.shared.notify(
+          title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+      }
+    }
   }
 
   private func latestAnchor(for project: Project) -> SessionSummary? {

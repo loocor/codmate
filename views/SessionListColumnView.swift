@@ -232,16 +232,16 @@ struct SessionListColumnView: View {
 
   @ViewBuilder
   private func sessionRow(for session: SessionSummary) -> some View {
-                EquatableSessionListRow(
-                  summary: session,
-                  isRunning: isRunning?(session) ?? false,
-                  isSelected: selectionContains(session.id),
-                  isUpdating: isUpdating?(session) ?? false,
-                  awaitingFollowup: isAwaitingFollowup?(session) ?? false,
-                  inProject: viewModel.projectIdForSession(session.id) != nil,
-                  projectTip: projectTip(for: session),
-                  inTaskContainer: false
-                )
+    EquatableSessionListRow(
+      summary: session,
+      isRunning: isRunning?(session) ?? false,
+      isSelected: selectionContains(session.id),
+      isUpdating: isUpdating?(session) ?? false,
+      awaitingFollowup: isAwaitingFollowup?(session) ?? false,
+      inProject: viewModel.projectIdForSession(session.id) != nil,
+      projectTip: projectTip(for: session),
+      inTaskContainer: false
+    )
     .tag(session.id)
     .contentShape(Rectangle())
     .onTapGesture(count: 2) {
@@ -367,23 +367,23 @@ struct SessionListColumnView: View {
       // Quick search with optional Task collapse controls in Tasks mode
       HStack(spacing: 8) {
         HStack(spacing: 6) {
-        Image(systemName: "magnifyingglass")
-          .foregroundStyle(.secondary)
-          .padding(.leading, 4)
-        TextField("Search title or comment", text: $viewModel.quickSearchText)
-          .textFieldStyle(.plain)
-          .focused($quickSearchFocused)
-          .onSubmit {
-            viewModel.immediateApplyQuickSearch(viewModel.quickSearchText)
+          Image(systemName: "magnifyingglass")
+            .foregroundStyle(.secondary)
+            .padding(.leading, 4)
+          TextField("Search title or comment", text: $viewModel.quickSearchText)
+            .textFieldStyle(.plain)
+            .focused($quickSearchFocused)
+            .onSubmit {
+              viewModel.immediateApplyQuickSearch(viewModel.quickSearchText)
+            }
+          if !viewModel.quickSearchText.isEmpty {
+            Button {
+              viewModel.quickSearchText = ""
+            } label: {
+              Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
           }
-        if !viewModel.quickSearchText.isEmpty {
-          Button {
-            viewModel.quickSearchText = ""
-          } label: {
-            Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
-          }
-          .buttonStyle(.plain)
-        }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 6)
@@ -425,12 +425,12 @@ struct SessionListColumnView: View {
   }
 }
 
-private extension SessionListColumnView {
-  var shouldShowTaskCollapseControls: Bool {
+extension SessionListColumnView {
+  fileprivate var shouldShowTaskCollapseControls: Bool {
     viewModel.projectWorkspaceMode == .tasks && viewModel.workspaceVM != nil
   }
 
-  func postTaskCollapseNotification(_ name: Notification.Name) {
+  fileprivate func postTaskCollapseNotification(_ name: Notification.Name) {
     var info: [AnyHashable: Any]? = nil
     if let projectId = viewModel.selectedProjectIDs.first { info = ["projectId": projectId] }
     NotificationCenter.default.post(name: name, object: nil, userInfo: info)
@@ -528,9 +528,11 @@ extension SessionListColumnView {
   // Build external Terminal flow exactly like newSession(project:) external branch,
   // but force external when App Sandbox blocks embedded terminals.
   private func startExternalNewForProject(_ project: Project) {
-    guard let profile = ExternalTerminalProfileStore.shared.resolvePreferredProfile(
-      id: viewModel.preferences.defaultResumeExternalAppId
-    ) else { return }
+    guard
+      let profile = ExternalTerminalProfileStore.shared.resolvePreferredProfile(
+        id: viewModel.preferences.defaultResumeExternalAppId
+      )
+    else { return }
     let dir: String = {
       let d = (project.directory ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
       return d.isEmpty ? NSHomeDirectory() : d
@@ -667,11 +669,23 @@ extension SessionListColumnView {
     else { return }
     if profile.usesWarpCommands {
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        }
+      }
       return
     }
     if profile.isTerminal {
       if !viewModel.openNewSession(session: target) {
         _ = viewModel.openAppleTerminal(at: dir)
+        if viewModel.shouldCopyCommandsToClipboard {
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+          }
+        }
       }
       return
     }
@@ -685,7 +699,8 @@ extension SessionListColumnView {
       return
     }
 
-    let cmd = profile.supportsCommandResolved
+    let cmd =
+      profile.supportsCommandResolved
       ? viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
       : nil
     if !profile.supportsCommandResolved {
@@ -696,6 +711,12 @@ extension SessionListColumnView {
       directory: dir,
       command: cmd
     )
+    if !profile.supportsCommandResolved, viewModel.shouldCopyCommandsToClipboard {
+      Task {
+        await SystemNotifier.shared.notify(
+          title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+      }
+    }
   }
 
   private func copyAbsolutePath(_ session: SessionSummary) {

@@ -14,7 +14,7 @@ struct ProjectsListView: View {
   var body: some View {
     let countsDisplay = viewModel.projectCountsDisplay()
     let tree = buildProjectTree(viewModel.projects)
-    
+
     let selectionBinding: Binding<Set<String>> = Binding(
       get: { viewModel.selectedProjectIDs },
       set: { viewModel.setSelectedProjects($0) }
@@ -32,7 +32,7 @@ struct ProjectsListView: View {
       expandedBinding: expandedBinding
     )
   }
-  
+
   private func makeListView(
     tree: [ProjectTreeNode],
     countsDisplay: [String: (visible: Int, total: Int)],
@@ -57,7 +57,7 @@ struct ProjectsListView: View {
     .padding(.horizontal, -10)
     .environment(\.defaultMinListRowHeight, 16)
     .environment(\.controlSize, .small)
-    .contextMenu { 
+    .contextMenu {
       Button("New Project…") {
         newParentProject = nil
         showNewProject = true
@@ -182,7 +182,7 @@ struct ProjectsListView: View {
     }
     return p.id
   }
-  
+
   private func makeProjectTreeNodeView(
     node: ProjectTreeNode,
     countsDisplay: [String: (visible: Int, total: Int)],
@@ -236,13 +236,14 @@ struct ProjectsListView: View {
       }
     )
   }
-  
+
   private func autoAssignOthersForCurrentDay() async {
     let descriptors = currentDayDescriptors()
 
     let projectDirs: [(id: String, path: String)] = viewModel.projects.compactMap { project in
       guard let raw = project.directory?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !raw.isEmpty else { return nil }
+        !raw.isEmpty
+      else { return nil }
       let normalized = URL(fileURLWithPath: raw).standardizedFileURL.path
       let slash = normalized.hasSuffix("/") ? normalized : normalized + "/"
       return (project.id, slash)
@@ -261,18 +262,19 @@ struct ProjectsListView: View {
     var assignments: [String: [String]] = [:]
     for session in candidates {
       let rawPath = session.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
-      let cwd = rawPath.isEmpty
+      let cwd =
+        rawPath.isEmpty
         ? session.fileURL.deletingLastPathComponent().path
         : rawPath
       let normalized = URL(fileURLWithPath: cwd).standardizedFileURL.path
       let sessionPath = normalized.hasSuffix("/") ? normalized : normalized + "/"
-      
-      let matchingProjects = projectDirs.filter { candidate in 
-        sessionPath.hasPrefix(candidate.path) 
+
+      let matchingProjects = projectDirs.filter { candidate in
+        sessionPath.hasPrefix(candidate.path)
       }
-      
-      if let best = matchingProjects.max(by: { lhs, rhs in 
-        lhs.path.count < rhs.path.count 
+
+      if let best = matchingProjects.max(by: { lhs, rhs in
+        lhs.path.count < rhs.path.count
       }) {
         assignments[best.id, default: []].append(session.id)
       }
@@ -309,13 +311,14 @@ struct ProjectsListView: View {
     return descriptors
   }
 
-  private func makeOtherProjectRow(countsDisplay: [String: (visible: Int, total: Int)]) -> some View {
+  private func makeOtherProjectRow(countsDisplay: [String: (visible: Int, total: Int)]) -> some View
+  {
     let otherId = SessionListViewModel.otherProjectId
     let otherProject = Project(
       id: otherId, name: "Others", directory: nil, trustLevel: nil, overview: nil,
       instructions: nil, profileId: nil, profile: nil, parentId: nil,
       sources: ProjectSessionSource.allSet)
-    
+
     return ProjectRow(
       project: otherProject,
       displayName: "Others",
@@ -670,7 +673,8 @@ private struct ProjectTreeNodeView: View {
 
     let projectDirs: [(id: String, path: String)] = vm.projects.compactMap { project in
       guard let raw = project.directory?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !raw.isEmpty else { return nil }
+        !raw.isEmpty
+      else { return nil }
       let normalized = URL(fileURLWithPath: raw).standardizedFileURL.path
       let slash = normalized.hasSuffix("/") ? normalized : normalized + "/"
       return (project.id, slash)
@@ -689,18 +693,19 @@ private struct ProjectTreeNodeView: View {
     var assignments: [String: [String]] = [:]
     for session in candidates {
       let rawPath = session.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
-      let cwd = rawPath.isEmpty
+      let cwd =
+        rawPath.isEmpty
         ? session.fileURL.deletingLastPathComponent().path
         : rawPath
       let normalized = URL(fileURLWithPath: cwd).standardizedFileURL.path
       let sessionPath = normalized.hasSuffix("/") ? normalized : normalized + "/"
-      
-      let matchingProjects = projectDirs.filter { candidate in 
-        sessionPath.hasPrefix(candidate.path) 
+
+      let matchingProjects = projectDirs.filter { candidate in
+        sessionPath.hasPrefix(candidate.path)
       }
-      
-      if let best = matchingProjects.max(by: { lhs, rhs in 
-        lhs.path.count < rhs.path.count 
+
+      if let best = matchingProjects.max(by: { lhs, rhs in
+        lhs.path.count < rhs.path.count
       }) {
         assignments[best.id, default: []].append(session.id)
       }
@@ -754,11 +759,23 @@ private struct ProjectTreeNodeView: View {
     else { return }
     if profile.usesWarpCommands {
       vm.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+      if vm.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        }
+      }
       return
     }
     if profile.isTerminal {
       if !vm.openNewSession(session: target) {
         _ = vm.openAppleTerminal(at: dir)
+        if vm.shouldCopyCommandsToClipboard {
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+          }
+        }
       }
       return
     }
@@ -772,13 +789,20 @@ private struct ProjectTreeNodeView: View {
       return
     }
 
-    let cmd = profile.supportsCommandResolved
+    let cmd =
+      profile.supportsCommandResolved
       ? vm.buildNewSessionCLIInvocationRespectingProject(session: target)
       : nil
     if !profile.supportsCommandResolved {
       // Clipboard already populated when copy preference is enabled.
     }
     vm.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
+    if !profile.supportsCommandResolved, vm.shouldCopyCommandsToClipboard {
+      Task {
+        await SystemNotifier.shared.notify(
+          title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+      }
+    }
   }
 }
 
@@ -1165,7 +1189,7 @@ struct ProjectEditorSheet: View {
         directory: dirOpt,
         trustLevel: trust,
         overview: ov,
-        instructions: old.instructions, // Preserve existing instructions
+        instructions: old.instructions,  // Preserve existing instructions
         profileId: finalProfileId,
         profile: projProfile,
         parentId: parentProjectId,
