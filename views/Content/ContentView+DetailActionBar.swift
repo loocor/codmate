@@ -511,9 +511,6 @@ private extension ContentView {
       guard viewModel.copyNewProjectCommandsIfEnabled(project: project, destinationApp: profile) else {
         return
       }
-      if profile.isNone {
-        return
-      }
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
     } else if profile.isTerminal {
       if viewModel.shouldCopyCommandsToClipboard {

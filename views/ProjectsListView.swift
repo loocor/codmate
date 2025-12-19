@@ -750,24 +750,19 @@ private struct ProjectTreeNodeView: View {
     let vm = self.viewModel
     vm.recordIntentForDetailNew(anchor: target)
     let dir = target.cwd
+    guard vm.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
+    else { return }
     if profile.usesWarpCommands {
-      guard vm.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
-      else { return }
-      if profile.isNone {
-        return
-      }
       vm.openPreferredTerminalViaScheme(profile: profile, directory: dir)
       return
     }
     if profile.isTerminal {
       if !vm.openNewSession(session: target) {
-        _ = vm.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
         _ = vm.openAppleTerminal(at: dir)
       }
       return
     }
     if profile.isNone {
-      _ = vm.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
       if vm.shouldCopyCommandsToClipboard {
         Task {
           await SystemNotifier.shared.notify(
@@ -781,7 +776,7 @@ private struct ProjectTreeNodeView: View {
       ? vm.buildNewSessionCLIInvocationRespectingProject(session: target)
       : nil
     if !profile.supportsCommandResolved {
-      _ = vm.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
+      // Clipboard already populated when copy preference is enabled.
     }
     vm.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
   }

@@ -821,6 +821,7 @@ struct ContentView: View {
       return
     }
     let dir = workingDirectory(for: target)
+    var didNotify = false
     if profile.isNone {
       if viewModel.shouldCopyCommandsToClipboard {
         Task {
@@ -842,6 +843,7 @@ struct ContentView: View {
               title: "CodMate",
               body: "Command copied. Paste it in the opened terminal.")
           }
+          didNotify = true
         }
       }
     } else {
@@ -850,7 +852,7 @@ struct ContentView: View {
         : nil
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
     }
-    if viewModel.shouldCopyCommandsToClipboard {
+    if viewModel.shouldCopyCommandsToClipboard, didNotify == false {
       Task {
         await SystemNotifier.shared.notify(
           title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
@@ -932,18 +934,19 @@ struct ContentView: View {
     viewModel.recordIntentForDetailNew(anchor: target)
     let dir = workingDirectory(for: target)
 
-    if profile.usesWarpCommands {
-      guard viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
-      else { return }
-      if profile.isNone {
-        if viewModel.shouldCopyCommandsToClipboard {
-          Task {
-            await SystemNotifier.shared.notify(
-              title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
-          }
+    guard viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
+    else { return }
+    if profile.isNone {
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
         }
-        return
       }
+      return
+    }
+
+    if profile.usesWarpCommands {
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
       if viewModel.shouldCopyCommandsToClipboard {
         Task {
@@ -975,16 +978,6 @@ struct ContentView: View {
       return
     }
 
-    if profile.isNone {
-      _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
-      if viewModel.shouldCopyCommandsToClipboard {
-        Task {
-          await SystemNotifier.shared.notify(
-            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
-        }
-      }
-      return
-    }
     if !profile.supportsCommandResolved {
       _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
     }
@@ -1009,18 +1002,19 @@ struct ContentView: View {
     let target = source == session.source ? session : session.overridingSource(source)
     let dir = workingDirectory(for: target)
 
-    if profile.usesWarpCommands {
-      guard viewModel.copyResumeCommandsIfEnabled(session: target, destinationApp: profile)
-      else { return }
-      if profile.isNone {
-        if viewModel.shouldCopyCommandsToClipboard {
-          Task {
-            await SystemNotifier.shared.notify(
-              title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
-          }
+    guard viewModel.copyResumeCommandsIfEnabled(session: target, destinationApp: profile)
+    else { return }
+    if profile.isNone {
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
         }
-        return
       }
+      return
+    }
+
+    if profile.usesWarpCommands {
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
       if viewModel.shouldCopyCommandsToClipboard {
         Task {
@@ -1047,16 +1041,6 @@ struct ContentView: View {
       return
     }
 
-    if profile.isNone {
-      _ = viewModel.copyResumeCommandsIfEnabled(session: target, destinationApp: profile)
-      if viewModel.shouldCopyCommandsToClipboard {
-        Task {
-          await SystemNotifier.shared.notify(
-            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
-        }
-      }
-      return
-    }
     if !profile.supportsCommandResolved {
       _ = viewModel.copyResumeCommandsIfEnabled(session: target, destinationApp: profile)
     }

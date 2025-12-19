@@ -861,24 +861,19 @@ struct TaskListView: View {
     let target = anchor.overridingSource(source)
     viewModel.recordIntentForDetailNew(anchor: target)
     let dir = target.cwd
+    guard viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
+    else { return }
     if profile.usesWarpCommands {
-      guard viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
-      else { return }
-      if profile.isNone {
-        return
-      }
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
       return
     }
     if profile.isTerminal {
       if !viewModel.openNewSession(session: target) {
-        _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
         _ = viewModel.openAppleTerminal(at: dir)
       }
       return
     }
     if profile.isNone {
-      _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
       if viewModel.shouldCopyCommandsToClipboard {
         Task {
           await SystemNotifier.shared.notify(
@@ -892,7 +887,7 @@ struct TaskListView: View {
       ? viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
       : nil
     if !profile.supportsCommandResolved {
-      _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
+      // Clipboard already populated when copy preference is enabled.
     }
     viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
   }
