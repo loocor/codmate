@@ -452,9 +452,9 @@ struct SettingsView: View {
 
               GridRow {
                 VStack(alignment: .leading, spacing: 0) {
-                  Text("Copy resume commands to clipboard")
+                  Text("Copy new or resume commands to clipboard")
                     .font(.subheadline).fontWeight(.medium)
-                  Text("Automatically copy the resume command when resuming")
+                  Text("Automatically copy new or resume commands when starting sessions")
                     .font(.caption).foregroundColor(.secondary)
                 }
                 Toggle("", isOn: $preferences.defaultResumeCopyToClipboard)
@@ -464,6 +464,8 @@ struct SettingsView: View {
                   .frame(maxWidth: .infinity, alignment: .trailing)
                   .gridColumnAlignment(.trailing)
               }
+
+              gridDivider
 
               GridRow {
                 VStack(alignment: .leading, spacing: 0) {
@@ -608,9 +610,9 @@ struct SettingsView: View {
 
               GridRow {
                 VStack(alignment: .leading, spacing: 0) {
-                  Text("Copy resume commands to clipboard")
+                  Text("Copy new or resume commands to clipboard")
                     .font(.subheadline).fontWeight(.medium)
-                  Text("Automatically copy the resume command when resuming")
+                  Text("Automatically copy new or resume commands when starting sessions")
                     .font(.caption).foregroundColor(.secondary)
                 }
                 Toggle("", isOn: $preferences.defaultResumeCopyToClipboard)
@@ -620,6 +622,8 @@ struct SettingsView: View {
                   .frame(maxWidth: .infinity, alignment: .trailing)
                   .gridColumnAlignment(.trailing)
               }
+
+              gridDivider
 
               GridRow {
                 VStack(alignment: .leading, spacing: 0) {

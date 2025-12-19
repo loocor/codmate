@@ -37,6 +37,10 @@ extension SessionListViewModel {
         )
     }
 
+    var shouldCopyCommandsToClipboard: Bool {
+        preferences.defaultResumeCopyToClipboard
+    }
+
     func copyResumeCommands(session: SessionSummary) {
         let cwd = resolvedWorkingDirectory(for: session)
         actions.copyResumeCommands(
@@ -107,6 +111,15 @@ extension SessionListViewModel {
                 workingDirectory: cwd)
         }
         return true
+    }
+
+    @discardableResult
+    func copyResumeCommandsIfEnabled(
+        session: SessionSummary,
+        destinationApp: ExternalTerminalProfile? = nil
+    ) -> Bool {
+        guard preferences.defaultResumeCopyToClipboard else { return true }
+        return copyResumeCommandsRespectingProject(session: session, destinationApp: destinationApp)
     }
 
     func openInTerminal(session: SessionSummary) -> Bool {
@@ -362,6 +375,23 @@ extension SessionListViewModel {
     }
 
     @discardableResult
+    func copyNewSessionCommandsIfEnabled(
+        session: SessionSummary,
+        destinationApp: ExternalTerminalProfile? = nil,
+        initialPrompt: String? = nil
+    ) -> Bool {
+        guard preferences.defaultResumeCopyToClipboard else { return true }
+        if let initialPrompt {
+            return copyNewSessionCommandsRespectingProject(
+                session: session,
+                destinationApp: destinationApp,
+                initialPrompt: initialPrompt
+            )
+        }
+        return copyNewSessionCommandsRespectingProject(session: session, destinationApp: destinationApp)
+    }
+
+    @discardableResult
     func copyNewSessionCommandsRespectingProject(
         session: SessionSummary,
         destinationApp: ExternalTerminalProfile? = nil,
@@ -403,6 +433,15 @@ extension SessionListViewModel {
             }
         }
         return true
+    }
+
+    @discardableResult
+    func copyNewProjectCommandsIfEnabled(
+        project: Project,
+        destinationApp: ExternalTerminalProfile? = nil
+    ) -> Bool {
+        guard preferences.defaultResumeCopyToClipboard else { return true }
+        return copyNewProjectCommands(project: project, destinationApp: destinationApp)
     }
 
     private func warpSanitizedTitle(from raw: String?) -> String? {

@@ -537,16 +537,27 @@ extension SessionListColumnView {
     }()
     let command = buildProjectCommand(project: project, directory: dir)
     if profile.usesWarpCommands {
-      guard viewModel.copyNewProjectCommands(project: project, destinationApp: profile) else { return }
+      guard viewModel.copyNewProjectCommandsIfEnabled(project: project, destinationApp: profile)
+      else { return }
+      if profile.isNone {
+        return
+      }
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
     } else {
-      if !profile.supportsCommandResolved {
+      if profile.isNone {
+        _ = viewModel.copyNewProjectCommandsIfEnabled(project: project, destinationApp: profile)
+        if viewModel.shouldCopyCommandsToClipboard {
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+          }
+        }
+        return
+      }
+      if !profile.supportsCommandResolved, viewModel.shouldCopyCommandsToClipboard {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(command + "\n", forType: .string)
-      }
-      if profile.isNone {
-        return
       }
       if profile.isTerminal {
         _ = viewModel.openAppleTerminal(at: dir)
@@ -555,9 +566,11 @@ extension SessionListColumnView {
         viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
       }
     }
-    Task {
-      await SystemNotifier.shared.notify(
-        title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+    if viewModel.shouldCopyCommandsToClipboard {
+      Task {
+        await SystemNotifier.shared.notify(
+          title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+      }
     }
     // Hint + targeted refresh aligns with viewModel.newSession external path
     viewModel.setIncrementalHintForCodexToday()
@@ -654,25 +667,37 @@ extension SessionListColumnView {
     viewModel.recordIntentForDetailNew(anchor: target)
     let dir = workingDirectory(for: target)
     if profile.usesWarpCommands {
-      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+      guard viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
       else { return }
+      if profile.isNone {
+        return
+      }
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
       return
     }
     if profile.isTerminal {
       if !viewModel.openNewSession(session: target) {
-        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+        _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
         _ = viewModel.openAppleTerminal(at: dir)
       }
       return
     }
-    guard !profile.isNone else { return }
+    if profile.isNone {
+      _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        }
+      }
+      return
+    }
 
     let cmd = profile.supportsCommandResolved
       ? viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
       : nil
     if !profile.supportsCommandResolved {
-      viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+      _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
     }
     viewModel.openPreferredTerminalViaScheme(
       profile: profile,

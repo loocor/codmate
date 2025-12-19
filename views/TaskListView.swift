@@ -862,25 +862,37 @@ struct TaskListView: View {
     viewModel.recordIntentForDetailNew(anchor: target)
     let dir = target.cwd
     if profile.usesWarpCommands {
-      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+      guard viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
       else { return }
+      if profile.isNone {
+        return
+      }
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
       return
     }
     if profile.isTerminal {
       if !viewModel.openNewSession(session: target) {
-        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+        _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
         _ = viewModel.openAppleTerminal(at: dir)
       }
       return
     }
-    guard !profile.isNone else { return }
+    if profile.isNone {
+      _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        }
+      }
+      return
+    }
 
     let cmd = profile.supportsCommandResolved
       ? viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
       : nil
     if !profile.supportsCommandResolved {
-      viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+      _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
     }
     viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
   }

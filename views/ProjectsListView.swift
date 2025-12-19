@@ -751,25 +751,37 @@ private struct ProjectTreeNodeView: View {
     vm.recordIntentForDetailNew(anchor: target)
     let dir = target.cwd
     if profile.usesWarpCommands {
-      guard vm.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+      guard vm.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
       else { return }
+      if profile.isNone {
+        return
+      }
       vm.openPreferredTerminalViaScheme(profile: profile, directory: dir)
       return
     }
     if profile.isTerminal {
       if !vm.openNewSession(session: target) {
-        vm.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+        _ = vm.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
         _ = vm.openAppleTerminal(at: dir)
       }
       return
     }
-    guard !profile.isNone else { return }
+    if profile.isNone {
+      _ = vm.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
+      if vm.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        }
+      }
+      return
+    }
 
     let cmd = profile.supportsCommandResolved
       ? vm.buildNewSessionCLIInvocationRespectingProject(session: target)
       : nil
     if !profile.supportsCommandResolved {
-      vm.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+      _ = vm.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
     }
     vm.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
   }

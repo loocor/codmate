@@ -817,20 +817,32 @@ struct ContentView: View {
   func openPreferredExternal(for session: SessionSummary, using source: SessionSource? = nil) {
     let target = source.map { session.overridingSource($0) } ?? session
     guard let profile = preferredExternalTerminalProfile() else { return }
-    guard viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: profile) else {
+    guard viewModel.copyResumeCommandsIfEnabled(session: target, destinationApp: profile) else {
       return
     }
     let dir = workingDirectory(for: target)
     if profile.isNone {
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        }
+      }
       return
     }
     if profile.usesWarpCommands {
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
     } else if profile.isTerminal {
       if !viewModel.openInTerminal(session: target) {
-        viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: profile)
+        _ = viewModel.copyResumeCommandsIfEnabled(session: target, destinationApp: profile)
         _ = viewModel.openAppleTerminal(at: dir)
-        Task { await SystemNotifier.shared.notify(title: "CodMate", body: "Command copied. Paste it in the opened terminal.") }
+        if viewModel.shouldCopyCommandsToClipboard {
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate",
+              body: "Command copied. Paste it in the opened terminal.")
+          }
+        }
       }
     } else {
       let cmd = profile.supportsCommandResolved
@@ -838,33 +850,37 @@ struct ContentView: View {
         : nil
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
     }
-    Task {
-      await SystemNotifier.shared.notify(
-        title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+    if viewModel.shouldCopyCommandsToClipboard {
+      Task {
+        await SystemNotifier.shared.notify(
+          title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+      }
     }
   }
 
   func openPreferredExternalForNew(session: SessionSummary, initialPrompt: String? = nil) {
+    guard let profile = preferredExternalTerminalProfile() else { return }
     // Record pending intent for auto-assign before launching
     viewModel.recordIntentForDetailNew(anchor: session)
-    guard let profile = preferredExternalTerminalProfile() else { return }
     let dir = workingDirectory(for: session)
     // Event hint for targeted incremental refresh on FS change
     applyIncrementalHint(for: session.source, directory: dir)
     // Also proactively refresh the targeted subset for faster UI update
     scheduleIncrementalRefresh(for: session.source, directory: dir)
 
-    if let prompt = initialPrompt {
-      guard viewModel.copyNewSessionCommandsRespectingProject(
-        session: session,
-        destinationApp: profile,
-        initialPrompt: prompt
-      ) else { return }
-    } else {
-      viewModel.copyNewSessionCommandsRespectingProject(session: session, destinationApp: profile)
-    }
+    guard viewModel.copyNewSessionCommandsIfEnabled(
+      session: session,
+      destinationApp: profile,
+      initialPrompt: initialPrompt
+    ) else { return }
 
     if profile.isNone {
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        }
+      }
       return
     }
 
@@ -894,9 +910,11 @@ struct ContentView: View {
       }()
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
     }
-    Task {
-      await SystemNotifier.shared.notify(
-        title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+    if viewModel.shouldCopyCommandsToClipboard {
+      Task {
+        await SystemNotifier.shared.notify(
+          title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+      }
     }
   }
 
@@ -914,48 +932,67 @@ struct ContentView: View {
     viewModel.recordIntentForDetailNew(anchor: target)
     let dir = workingDirectory(for: target)
 
-    if profile.isNone {
-      return
-    }
-
     if profile.usesWarpCommands {
-      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+      guard viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
       else { return }
+      if profile.isNone {
+        if viewModel.shouldCopyCommandsToClipboard {
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+          }
+        }
+        return
+      }
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
-      Task {
-        await SystemNotifier.shared.notify(
-          title: "CodMate",
-          body: "Command copied. Paste it in the opened terminal.")
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate",
+            body: "Command copied. Paste it in the opened terminal.")
+        }
       }
       return
     }
 
     if profile.isTerminal {
       #if APPSTORE
-        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+        _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
         _ = viewModel.openAppleTerminal(at: dir)
       #else
         if !viewModel.openNewSession(session: target) {
-          viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+          _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
           _ = viewModel.openAppleTerminal(at: dir)
-          Task {
-            await SystemNotifier.shared.notify(
-              title: "CodMate",
-              body: "Command copied. Paste it in the opened terminal.")
+          if viewModel.shouldCopyCommandsToClipboard {
+            Task {
+              await SystemNotifier.shared.notify(
+                title: "CodMate",
+                body: "Command copied. Paste it in the opened terminal.")
+            }
           }
         }
       #endif
       return
     }
 
+    if profile.isNone {
+      _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        }
+      }
+      return
+    }
     if !profile.supportsCommandResolved {
-      viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+      _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
     }
     let cmd = profile.supportsCommandResolved
       ? viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
       : nil
     viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
-    if !profile.supportsCommandResolved {
+    if !profile.supportsCommandResolved, viewModel.shouldCopyCommandsToClipboard {
       Task {
         await SystemNotifier.shared.notify(
           title: "CodMate",
@@ -972,26 +1009,20 @@ struct ContentView: View {
     let target = source == session.source ? session : session.overridingSource(source)
     let dir = workingDirectory(for: target)
 
-    if profile.isNone {
-      return
-    }
-
     if profile.usesWarpCommands {
-      guard viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: profile)
+      guard viewModel.copyResumeCommandsIfEnabled(session: target, destinationApp: profile)
       else { return }
-      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
-      Task {
-        await SystemNotifier.shared.notify(
-          title: "CodMate",
-          body: "Command copied. Paste it in the opened terminal.")
+      if profile.isNone {
+        if viewModel.shouldCopyCommandsToClipboard {
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+          }
+        }
+        return
       }
-      return
-    }
-
-    if profile.isTerminal {
-      if !viewModel.openInTerminal(session: target) {
-        viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: profile)
-        _ = viewModel.openAppleTerminal(at: dir)
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+      if viewModel.shouldCopyCommandsToClipboard {
         Task {
           await SystemNotifier.shared.notify(
             title: "CodMate",
@@ -1001,14 +1032,39 @@ struct ContentView: View {
       return
     }
 
+    if profile.isTerminal {
+      if !viewModel.openInTerminal(session: target) {
+        _ = viewModel.copyResumeCommandsIfEnabled(session: target, destinationApp: profile)
+        _ = viewModel.openAppleTerminal(at: dir)
+        if viewModel.shouldCopyCommandsToClipboard {
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate",
+              body: "Command copied. Paste it in the opened terminal.")
+          }
+        }
+      }
+      return
+    }
+
+    if profile.isNone {
+      _ = viewModel.copyResumeCommandsIfEnabled(session: target, destinationApp: profile)
+      if viewModel.shouldCopyCommandsToClipboard {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        }
+      }
+      return
+    }
     if !profile.supportsCommandResolved {
-      viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: profile)
+      _ = viewModel.copyResumeCommandsIfEnabled(session: target, destinationApp: profile)
     }
     let cmd = profile.supportsCommandResolved
       ? viewModel.buildResumeCLIInvocationRespectingProject(session: target)
       : nil
     viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
-    if !profile.supportsCommandResolved {
+    if !profile.supportsCommandResolved, viewModel.shouldCopyCommandsToClipboard {
       Task {
         await SystemNotifier.shared.notify(
           title: "CodMate",
