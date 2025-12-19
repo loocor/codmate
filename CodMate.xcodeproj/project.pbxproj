@@ -873,7 +873,7 @@
 					"$(inherited)",
 					"@executable_path",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.5;
 				PRODUCT_BUNDLE_IDENTIFIER = ai.umate.codmate.notifybridge;
 				PRODUCT_NAME = "codmate-notify";
 				SDKROOT = macosx;
@@ -897,7 +897,7 @@
 					"$(inherited)",
 					"@executable_path",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.5;
 				PRODUCT_BUNDLE_IDENTIFIER = ai.umate.codmate.notifybridge;
 				PRODUCT_NAME = "codmate-notify";
 				SDKROOT = macosx;
@@ -921,7 +921,7 @@
 					"$(inherited)",
 					"@executable_path",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.5;
 				PRODUCT_BUNDLE_IDENTIFIER = ai.umate.codmate.notifybridge;
 				PRODUCT_NAME = "codmate-notify";
 				SDKROOT = macosx;
@@ -945,7 +945,7 @@
 					"$(inherited)",
 					"@executable_path",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.5;
 				PRODUCT_BUNDLE_IDENTIFIER = ai.umate.codmate.notifybridge;
 				PRODUCT_NAME = "codmate-notify";
 				SDKROOT = macosx;
@@ -969,7 +969,7 @@
 					"$(inherited)",
 					"@executable_path",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.5;
 				PRODUCT_BUNDLE_IDENTIFIER = ai.umate.codmate.notifybridge;
 				PRODUCT_NAME = "codmate-notify";
 				SDKROOT = macosx;
@@ -993,7 +993,7 @@
 					"$(inherited)",
 					"@executable_path",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.5;
 				PRODUCT_BUNDLE_IDENTIFIER = ai.umate.codmate.notifybridge;
 				PRODUCT_NAME = "codmate-notify";
 				SDKROOT = macosx;
