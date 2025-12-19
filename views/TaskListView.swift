@@ -808,26 +808,9 @@ struct TaskListView: View {
 
     func launchItems(for source: SessionSource) -> [SplitMenuItem] {
       let key = sourceKey(source)
-      return [
-        SplitMenuItem(
-          id: "\(key)-terminal",
-          kind: .action(title: "Terminal", run: {
-            onNewSession(with: anchor, using: source, style: .terminal)
-          })
-        ),
-        SplitMenuItem(
-          id: "\(key)-iterm2",
-          kind: .action(title: "iTerm2", run: {
-            onNewSession(with: anchor, using: source, style: .iterm)
-          })
-        ),
-        SplitMenuItem(
-          id: "\(key)-warp",
-          kind: .action(title: "Warp", run: {
-            onNewSession(with: anchor, using: source, style: .warp)
-          })
-        )
-      ]
+      return externalTerminalMenuItems(idPrefix: key) { profile in
+        onNewSession(with: anchor, using: source, profile: profile)
+      }
     }
 
     func remoteSource(for base: ProjectSessionSource, host: String) -> SessionSource {
@@ -870,25 +853,36 @@ struct TaskListView: View {
     return menuItems
   }
 
-  private enum NewLaunchStyle { case terminal, iterm, warp }
-
-  private func onNewSession(with anchor: SessionSummary, using source: SessionSource, style: NewLaunchStyle) {
+  private func onNewSession(
+    with anchor: SessionSummary,
+    using source: SessionSource,
+    profile: ExternalTerminalProfile
+  ) {
     let target = anchor.overridingSource(source)
     viewModel.recordIntentForDetailNew(anchor: target)
-    switch style {
-    case .terminal:
-      if !viewModel.openNewSession(session: target) {
-        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .terminal)
-        _ = viewModel.openAppleTerminal(at: target.cwd)
-      }
-    case .iterm:
-      let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
-      viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: target.cwd, command: cmd)
-    case .warp:
-      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .warp)
+    let dir = target.cwd
+    if profile.usesWarpCommands {
+      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
       else { return }
-      viewModel.openPreferredTerminalViaScheme(app: .warp, directory: target.cwd)
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+      return
     }
+    if profile.isTerminal {
+      if !viewModel.openNewSession(session: target) {
+        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+        _ = viewModel.openAppleTerminal(at: dir)
+      }
+      return
+    }
+    guard !profile.isNone else { return }
+
+    let cmd = profile.supportsCommandResolved
+      ? viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
+      : nil
+    if !profile.supportsCommandResolved {
+      viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+    }
+    viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
   }
 
   private func latestAnchor(for project: Project) -> SessionSummary? {

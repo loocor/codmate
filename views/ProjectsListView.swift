@@ -617,26 +617,9 @@ private struct ProjectTreeNodeView: View {
 
     func launchItems(for source: SessionSource) -> [SplitMenuItem] {
       let key = sourceKey(source)
-      return [
-        SplitMenuItem(
-          id: "\(key)-terminal",
-          kind: .action(title: "Terminal", run: {
-            launchNewSession(for: anchor, using: source, style: .terminal)
-          })
-        ),
-        SplitMenuItem(
-          id: "\(key)-iterm2",
-          kind: .action(title: "iTerm2", run: {
-            launchNewSession(for: anchor, using: source, style: .iterm)
-          })
-        ),
-        SplitMenuItem(
-          id: "\(key)-warp",
-          kind: .action(title: "Warp", run: {
-            launchNewSession(for: anchor, using: source, style: .warp)
-          })
-        )
-      ]
+      return externalTerminalMenuItems(idPrefix: key) { profile in
+        launchNewSession(for: anchor, using: source, profile: profile)
+      }
     }
 
     func remoteSource(for base: ProjectSessionSource, host: String) -> SessionSource {
@@ -758,30 +741,37 @@ private struct ProjectTreeNodeView: View {
     return descriptors
   }
 
-  private enum NewLaunchStyle { case terminal, iterm, warp }
-
   private func launchNewSession(
     for session: SessionSummary,
     using source: SessionSource,
-    style: NewLaunchStyle
+    profile: ExternalTerminalProfile
   ) {
     let target = session.overridingSource(source)
     let vm = self.viewModel
     vm.recordIntentForDetailNew(anchor: target)
-    switch style {
-    case .terminal:
-      if !vm.openNewSession(session: target) {
-        vm.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .terminal)
-        _ = vm.openAppleTerminal(at: target.cwd)
-      }
-    case .iterm:
-      let cmd = vm.buildNewSessionCLIInvocationRespectingProject(session: target)
-      vm.openPreferredTerminalViaScheme(app: .iterm2, directory: target.cwd, command: cmd)
-    case .warp:
-      guard vm.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .warp)
+    let dir = target.cwd
+    if profile.usesWarpCommands {
+      guard vm.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
       else { return }
-      vm.openPreferredTerminalViaScheme(app: .warp, directory: target.cwd)
+      vm.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+      return
     }
+    if profile.isTerminal {
+      if !vm.openNewSession(session: target) {
+        vm.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+        _ = vm.openAppleTerminal(at: dir)
+      }
+      return
+    }
+    guard !profile.isNone else { return }
+
+    let cmd = profile.supportsCommandResolved
+      ? vm.buildNewSessionCLIInvocationRespectingProject(session: target)
+      : nil
+    if !profile.supportsCommandResolved {
+      vm.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+    }
+    vm.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
   }
 }
 

@@ -416,58 +416,7 @@ struct ContentView: View {
 
       #if APPSTORE
         // App Store 版本不支持嵌入式终端，直接使用外部终端流程。
-        let dir: String = {
-          if FileManager.default.fileExists(atPath: anchor.cwd) {
-            return anchor.cwd
-          } else {
-            return anchor.fileURL.deletingLastPathComponent().path
-          }
-        }()
-
-        // External terminals rely on the existing auto-assign intent mechanism.
-        viewModel.recordIntentForDetailNew(anchor: anchor)
-
-        // Hint + targeted refresh so new session appears quickly in lists
-        applyIncrementalHint(for: anchor.source, directory: dir)
-        scheduleIncrementalRefresh(for: anchor.source, directory: dir)
-
-        let app = viewModel.preferences.defaultResumeExternalApp
-        switch app {
-        case .iterm2:
-          let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(
-            session: anchor,
-            initialPrompt: prompt
-          )
-          let pb = NSPasteboard.general
-          pb.clearContents()
-          pb.setString(cmd + "\n", forType: .string)
-          viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: cmd)
-        case .warp:
-          guard viewModel.copyNewSessionCommandsRespectingProject(
-            session: anchor,
-            destinationApp: .warp,
-            initialPrompt: prompt
-          ) else { return }
-          viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
-        case .terminal:
-          viewModel.openNewSessionRespectingProject(session: anchor, initialPrompt: prompt)
-          let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(
-            session: anchor,
-            initialPrompt: prompt
-          )
-          let pb = NSPasteboard.general
-          pb.clearContents()
-          pb.setString(cmd + "\n", forType: .string)
-        case .none:
-          _ = viewModel.openAppleTerminal(at: dir)
-          let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(
-            session: anchor,
-            initialPrompt: prompt
-          )
-          let pb = NSPasteboard.general
-          pb.clearContents()
-          pb.setString(cmd + "\n", forType: .string)
-        }
+        openPreferredExternalForNew(session: anchor, initialPrompt: prompt)
       #else
         if viewModel.preferences.defaultResumeUseEmbeddedTerminal {
           // 在内置终端中运行新的会话，并把 Task 上下文作为初始提示注入。
@@ -510,59 +459,7 @@ struct ContentView: View {
           columnVisibility = .detailOnly
         } else {
           // 回退到现有的外部终端逻辑
-          let dir: String = {
-            if FileManager.default.fileExists(atPath: anchor.cwd) {
-              return anchor.cwd
-            } else {
-              return anchor.fileURL.deletingLastPathComponent().path
-            }
-          }()
-
-          // External terminals rely on the auto-assign intent mechanism (project only).
-          viewModel.recordIntentForDetailNew(anchor: anchor)
-
-          // Hint + targeted refresh so new session appears quickly in lists
-          applyIncrementalHint(for: anchor.source, directory: dir)
-          scheduleIncrementalRefresh(for: anchor.source, directory: dir)
-
-          let app = viewModel.preferences.defaultResumeExternalApp
-          switch app {
-          case .iterm2:
-            let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(
-              session: anchor,
-              initialPrompt: prompt
-            )
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(cmd + "\n", forType: .string)
-            viewModel.openPreferredTerminalViaScheme(
-              app: .iterm2, directory: dir, command: cmd)
-          case .warp:
-            guard viewModel.copyNewSessionCommandsRespectingProject(
-              session: anchor,
-              destinationApp: .warp,
-              initialPrompt: prompt
-            ) else { return }
-            viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
-          case .terminal:
-            viewModel.openNewSessionRespectingProject(session: anchor, initialPrompt: prompt)
-            let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(
-              session: anchor,
-              initialPrompt: prompt
-            )
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(cmd + "\n", forType: .string)
-          case .none:
-            _ = viewModel.openAppleTerminal(at: dir)
-            let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(
-              session: anchor,
-              initialPrompt: prompt
-            )
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(cmd + "\n", forType: .string)
-          }
+          openPreferredExternalForNew(session: anchor, initialPrompt: prompt)
         }
       #endif
 
@@ -575,6 +472,12 @@ struct ContentView: View {
 
   func workingDirectory(for session: SessionSummary) -> String {
     viewModel.resolvedWorkingDirectory(for: session)
+  }
+
+  func preferredExternalTerminalProfile() -> ExternalTerminalProfile? {
+    ExternalTerminalProfileStore.shared.resolvePreferredProfile(
+      id: viewModel.preferences.defaultResumeExternalAppId
+    )
   }
 
   func projectDirectory(for session: SessionSummary) -> String? {
@@ -913,25 +816,27 @@ struct ContentView: View {
 
   func openPreferredExternal(for session: SessionSummary, using source: SessionSource? = nil) {
     let target = source.map { session.overridingSource($0) } ?? session
-    let app = viewModel.preferences.defaultResumeExternalApp
-    guard viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: app) else {
+    guard let profile = preferredExternalTerminalProfile() else { return }
+    guard viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: profile) else {
       return
     }
     let dir = workingDirectory(for: target)
-    switch app {
-    case .iterm2:
-      let cmd = viewModel.buildResumeCLIInvocationRespectingProject(session: target)
-      viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: cmd)
-    case .warp:
-      viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
-    case .terminal:
+    if profile.isNone {
+      return
+    }
+    if profile.usesWarpCommands {
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+    } else if profile.isTerminal {
       if !viewModel.openInTerminal(session: target) {
-        viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: app)
+        viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: profile)
         _ = viewModel.openAppleTerminal(at: dir)
         Task { await SystemNotifier.shared.notify(title: "CodMate", body: "Command copied. Paste it in the opened terminal.") }
       }
-    case .none:
-      break
+    } else {
+      let cmd = profile.supportsCommandResolved
+        ? viewModel.buildResumeCLIInvocationRespectingProject(session: target)
+        : nil
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
     }
     Task {
       await SystemNotifier.shared.notify(
@@ -939,31 +844,55 @@ struct ContentView: View {
     }
   }
 
-  func openPreferredExternalForNew(session: SessionSummary) {
+  func openPreferredExternalForNew(session: SessionSummary, initialPrompt: String? = nil) {
     // Record pending intent for auto-assign before launching
     viewModel.recordIntentForDetailNew(anchor: session)
-    let app = viewModel.preferences.defaultResumeExternalApp
+    guard let profile = preferredExternalTerminalProfile() else { return }
     let dir = workingDirectory(for: session)
     // Event hint for targeted incremental refresh on FS change
     applyIncrementalHint(for: session.source, directory: dir)
     // Also proactively refresh the targeted subset for faster UI update
     scheduleIncrementalRefresh(for: session.source, directory: dir)
-    switch app {
-    case .iterm2:
-      let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(session: session)
-      viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: cmd)
-    case .warp:
+
+    if let prompt = initialPrompt {
+      guard viewModel.copyNewSessionCommandsRespectingProject(
+        session: session,
+        destinationApp: profile,
+        initialPrompt: prompt
+      ) else { return }
+    } else {
+      viewModel.copyNewSessionCommandsRespectingProject(session: session, destinationApp: profile)
+    }
+
+    if profile.isNone {
+      return
+    }
+
+    if profile.usesWarpCommands {
       // Warp scheme cannot run a command; open path only and rely on clipboard
-      viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
-    case .terminal:
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+    } else if profile.isTerminal {
       #if APPSTORE
-        viewModel.copyNewSessionCommandsRespectingProject(session: session, destinationApp: .terminal)
         _ = viewModel.openAppleTerminal(at: dir)
       #else
-        viewModel.openNewSessionRespectingProject(session: session)
+        if let prompt = initialPrompt {
+          viewModel.openNewSessionRespectingProject(session: session, initialPrompt: prompt)
+        } else {
+          viewModel.openNewSessionRespectingProject(session: session)
+        }
       #endif
-    case .none:
-      break
+    } else {
+      let cmd: String? = {
+        guard profile.supportsCommandResolved else { return nil }
+        if let prompt = initialPrompt {
+          return viewModel.buildNewSessionCLIInvocationRespectingProject(
+            session: session,
+            initialPrompt: prompt
+          )
+        }
+        return viewModel.buildNewSessionCLIInvocationRespectingProject(session: session)
+      }()
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
     }
     Task {
       await SystemNotifier.shared.notify(
@@ -973,116 +902,118 @@ struct ContentView: View {
 
   func startNewSession(for session: SessionSummary, using source: SessionSource? = nil) {
     let target = source.map { session.overridingSource($0) } ?? session
-    let app = viewModel.preferences.defaultResumeExternalApp
-    viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: app)
     openPreferredExternalForNew(session: target)
   }
 
-  enum NewLaunchStyle {
-    case preferred
-    case terminal
-    case iterm
-    case warp
-    case embedded
-  }
-
   func launchNewSession(
-    for session: SessionSummary, using source: SessionSource, style: NewLaunchStyle
+    for session: SessionSummary,
+    using source: SessionSource,
+    profile: ExternalTerminalProfile
   ) {
     let target = source == session.source ? session : session.overridingSource(source)
-    switch style {
-    case .preferred:
-      if viewModel.preferences.defaultResumeUseEmbeddedTerminal {
-        viewModel.recordIntentForDetailNew(anchor: target)
-        startEmbeddedNew(for: target)
-      } else {
-        startNewSession(for: target)
-      }
-    case .terminal:
-      viewModel.recordIntentForDetailNew(anchor: target)
-      #if APPSTORE
-        if !viewModel.openNewSession(session: target) {
-        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .terminal)
-        _ = viewModel.openAppleTerminal(at: workingDirectory(for: target))
-        Task {
-          await SystemNotifier.shared.notify(
-            title: "CodMate",
-            body: "Command copied. Paste it in the opened terminal.")
-          }
-        }
-      #else
-        if !viewModel.openNewSession(session: target) {
-        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .terminal)
-        _ = viewModel.openAppleTerminal(at: workingDirectory(for: target))
-        Task {
-          await SystemNotifier.shared.notify(
-            title: "CodMate",
-            body: "Command copied. Paste it in the opened terminal.")
-          }
-        }
-      #endif
-    case .iterm:
-      viewModel.recordIntentForDetailNew(anchor: target)
-      let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
-      viewModel.openPreferredTerminalViaScheme(
-        app: .iterm2, directory: workingDirectory(for: target), command: cmd)
-    case .warp:
-      viewModel.recordIntentForDetailNew(anchor: target)
-      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .warp)
+    viewModel.recordIntentForDetailNew(anchor: target)
+    let dir = workingDirectory(for: target)
+
+    if profile.isNone {
+      return
+    }
+
+    if profile.usesWarpCommands {
+      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
       else { return }
-      viewModel.openPreferredTerminalViaScheme(
-        app: .warp, directory: workingDirectory(for: target))
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
       Task {
         await SystemNotifier.shared.notify(
           title: "CodMate",
           body: "Command copied. Paste it in the opened terminal.")
       }
-    case .embedded:
-      viewModel.recordIntentForDetailNew(anchor: target)
-      startEmbeddedNew(for: target)
+      return
     }
-  }
 
-  enum ResumeLaunchStyle {
-    case terminal
-    case iterm
-    case warp
-    case embedded
+    if profile.isTerminal {
+      #if APPSTORE
+        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+        _ = viewModel.openAppleTerminal(at: dir)
+      #else
+        if !viewModel.openNewSession(session: target) {
+          viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+          _ = viewModel.openAppleTerminal(at: dir)
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate",
+              body: "Command copied. Paste it in the opened terminal.")
+          }
+        }
+      #endif
+      return
+    }
+
+    if !profile.supportsCommandResolved {
+      viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+    }
+    let cmd = profile.supportsCommandResolved
+      ? viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
+      : nil
+    viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
+    if !profile.supportsCommandResolved {
+      Task {
+        await SystemNotifier.shared.notify(
+          title: "CodMate",
+          body: "Command copied. Paste it in the opened terminal.")
+      }
+    }
   }
 
   func launchResume(
     for session: SessionSummary,
     using source: SessionSource,
-    style: ResumeLaunchStyle
+    profile: ExternalTerminalProfile
   ) {
     let target = source == session.source ? session : session.overridingSource(source)
-    switch style {
-    case .terminal:
+    let dir = workingDirectory(for: target)
+
+    if profile.isNone {
+      return
+    }
+
+    if profile.usesWarpCommands {
+      guard viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: profile)
+      else { return }
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+      Task {
+        await SystemNotifier.shared.notify(
+          title: "CodMate",
+          body: "Command copied. Paste it in the opened terminal.")
+      }
+      return
+    }
+
+    if profile.isTerminal {
       if !viewModel.openInTerminal(session: target) {
-        viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: .terminal)
-        _ = viewModel.openAppleTerminal(at: workingDirectory(for: target))
+        viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: profile)
+        _ = viewModel.openAppleTerminal(at: dir)
         Task {
           await SystemNotifier.shared.notify(
             title: "CodMate",
             body: "Command copied. Paste it in the opened terminal.")
         }
       }
-    case .iterm:
-      let cmd = viewModel.buildResumeCLIInvocationRespectingProject(session: target)
-      viewModel.openPreferredTerminalViaScheme(
-        app: .iterm2, directory: workingDirectory(for: target), command: cmd)
-    case .warp:
-      guard viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: .warp)
-      else { return }
-      viewModel.openPreferredTerminalViaScheme(
-        app: .warp, directory: workingDirectory(for: target))
+      return
+    }
+
+    if !profile.supportsCommandResolved {
+      viewModel.copyResumeCommandsRespectingProject(session: target, destinationApp: profile)
+    }
+    let cmd = profile.supportsCommandResolved
+      ? viewModel.buildResumeCLIInvocationRespectingProject(session: target)
+      : nil
+    viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
+    if !profile.supportsCommandResolved {
       Task {
         await SystemNotifier.shared.notify(
           title: "CodMate",
           body: "Command copied. Paste it in the opened terminal.")
       }
-    case .embedded:
-      startEmbedded(for: target)
     }
   }
 

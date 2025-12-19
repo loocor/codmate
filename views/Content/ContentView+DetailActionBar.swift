@@ -73,21 +73,21 @@ extension ContentView {
               let requestedOrder: [ProjectSessionSource] = [.claude, .codex, .gemini]
               let enabledRemoteHosts = viewModel.preferences.enabledRemoteHosts.sorted()
 
+              func sourceKey(_ source: SessionSource) -> String {
+                switch source {
+                case .codexLocal: return "codex-local"
+                case .codexRemote(let host): return "codex-\(host)"
+                case .claudeLocal: return "claude-local"
+                case .claudeRemote(let host): return "claude-\(host)"
+                case .geminiLocal: return "gemini-local"
+                case .geminiRemote(let host): return "gemini-\(host)"
+                }
+              }
+
               func launchItems(for source: SessionSource) -> [SplitMenuItem] {
-                [
-                  .init(
-                    kind: .action(title: "Terminal") {
-                      launchNewSession(for: focused, using: source, style: .terminal)
-                    }),
-                  .init(
-                    kind: .action(title: "iTerm2") {
-                      launchNewSession(for: focused, using: source, style: .iterm)
-                    }),
-                  .init(
-                    kind: .action(title: "Warp") {
-                      launchNewSession(for: focused, using: source, style: .warp)
-                    })
-                ]
+                externalTerminalMenuItems(idPrefix: sourceKey(source)) { profile in
+                  launchNewSession(for: focused, using: source, profile: profile)
+                }
               }
 
               func remoteSource(for base: ProjectSessionSource, host: String) -> SessionSource {
@@ -127,7 +127,6 @@ extension ContentView {
 
         // Resume split control: hidden in Terminal tab
         if selectedDetailTab != .terminal {
-          let defaultApp = viewModel.preferences.defaultResumeExternalApp
           let embeddedPreferred =
             viewModel.preferences.defaultResumeUseEmbeddedTerminal && !AppSandbox.isEnabled
           SplitPrimaryMenuButton(
@@ -142,32 +141,22 @@ extension ContentView {
             },
             items: {
               var items: [SplitMenuItem] = []
-              let baseApps: [TerminalApp] = [.terminal, .iterm2, .warp]
-              let apps = embeddedPreferred ? baseApps : baseApps.filter { $0 != defaultApp }
-              for app in apps {
-                switch app {
-                case .terminal:
-                  items.append(
-                    .init(
-                      kind: .action(title: "Terminal") {
-                        launchResume(for: focused, using: focused.source, style: .terminal)
-                      }))
-                case .iterm2:
-                  items.append(
-                    .init(
-                      kind: .action(title: "iTerm2") {
-                        launchResume(for: focused, using: focused.source, style: .iterm)
-                      }))
-                case .warp:
-                  items.append(
-                    .init(
-                      kind: .action(title: "Warp") {
-                        launchResume(for: focused, using: focused.source, style: .warp)
-                      }))
-                default:
-                  break
+              func sourceKey(_ source: SessionSource) -> String {
+                switch source {
+                case .codexLocal: return "codex-local"
+                case .codexRemote(let host): return "codex-\(host)"
+                case .claudeLocal: return "claude-local"
+                case .claudeRemote(let host): return "claude-\(host)"
+                case .geminiLocal: return "gemini-local"
+                case .geminiRemote(let host): return "gemini-\(host)"
                 }
               }
+
+              items.append(
+                contentsOf: externalTerminalMenuItems(idPrefix: "resume-\(sourceKey(focused.source))") {
+                  profile in
+                  launchResume(for: focused, using: focused.source, profile: profile)
+                })
               let enabledRemoteHosts = viewModel.preferences.enabledRemoteHosts
               if !enabledRemoteHosts.isEmpty {
                 items.append(.init(kind: .separator))
@@ -179,20 +168,12 @@ extension ContentView {
                     : .claudeRemote(host: host)
                   let remoteName = remoteSrc.branding.displayName
                   items.append(
-                    .init(
-                      kind: .action(title: "\(remoteName) with Terminal") {
-                        launchResume(for: focused, using: remoteSrc, style: .terminal)
-                      }))
-                  items.append(
-                    .init(
-                      kind: .action(title: "\(remoteName) with iTerm2") {
-                        launchResume(for: focused, using: remoteSrc, style: .iterm)
-                      }))
-                  items.append(
-                    .init(
-                      kind: .action(title: "\(remoteName) with Warp") {
-                        launchResume(for: focused, using: remoteSrc, style: .warp)
-                      }))
+                    contentsOf: externalTerminalMenuItems(
+                      idPrefix: "resume-\(sourceKey(remoteSrc))",
+                      titlePrefix: "\(remoteName) with "
+                    ) { profile in
+                      launchResume(for: focused, using: remoteSrc, profile: profile)
+                    })
                 }
               }
               if !embeddedPreferred && viewModel.preferences.defaultResumeUseEmbeddedTerminal
@@ -202,7 +183,7 @@ extension ContentView {
                 items.append(
                   .init(
                     kind: .action(title: "Embedded") {
-                      launchResume(for: focused, using: focused.source, style: .embedded)
+                      startEmbedded(for: focused)
                     }))
               }
               return items
@@ -330,121 +311,196 @@ private extension ContentView {
   // Build split menu items for project-level New actions
   func buildProjectNewMenuItems(for project: Project) -> [SplitMenuItem] {
     var items: [SplitMenuItem] = []
-    // Upper group: Codex quick targets (Terminal/iTerm2/Warp)
+    let profiles = externalTerminalMenuProfiles()
+    func runCodex(for profile: ExternalTerminalProfile) {
+      let dir =
+        (project.directory?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+          $0.isEmpty ? nil : $0
+        } ?? NSHomeDirectory()
+      let fallbackCommand = simpleProjectNewCommands(project: project)
+      let cmd = viewModel.buildNewProjectCLIInvocation(project: project)
+      if profile.usesWarpCommands {
+        guard viewModel.copyNewProjectCommands(project: project, destinationApp: profile) else {
+          return
+        }
+        viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in \(profile.displayTitle).")
+        }
+        return
+      }
+      if profile.isTerminal {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(fallbackCommand + "\n", forType: .string)
+        _ = viewModel.openAppleTerminal(at: dir)
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in Terminal.")
+        }
+        return
+      }
+
+      if !profile.supportsCommandResolved {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(fallbackCommand + "\n", forType: .string)
+      }
+      let runCommand = profile.supportsDirectoryResolved ? cmd : fallbackCommand
+      let inline = profile.supportsCommandResolved ? runCommand : nil
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: inline)
+      if !profile.supportsCommandResolved {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in \(profile.displayTitle).")
+        }
+      }
+    }
+
+    // Project-level Claude invocation
+    func runClaude(for profile: ExternalTerminalProfile) {
+      let dir =
+        (project.directory?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+          $0.isEmpty ? nil : $0
+        } ?? NSHomeDirectory()
+      let cmd = buildClaudeProjectInvocation(for: project)
+      let cdCommand = "cd " + shellEscapedPath(dir) + "\n" + cmd
+      if profile.isTerminal {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(cdCommand + "\n", forType: .string)
+        _ = viewModel.openAppleTerminal(at: dir)
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in Terminal.")
+        }
+        return
+      }
+
+      if !profile.supportsCommandResolved {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(cdCommand + "\n", forType: .string)
+      }
+      let runCommand = profile.supportsDirectoryResolved ? cmd : cdCommand
+      let inline = profile.supportsCommandResolved ? runCommand : nil
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: inline)
+      if !profile.supportsCommandResolved {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in \(profile.displayTitle).")
+        }
+      }
+    }
+    func runGemini(for profile: ExternalTerminalProfile) {
+      let dir =
+        (project.directory?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+          $0.isEmpty ? nil : $0
+        } ?? NSHomeDirectory()
+      let cmd = buildGeminiProjectInvocation(for: project)
+      let cdCommand = "cd " + shellEscapedPath(dir) + "\n" + cmd
+
+      if profile.isTerminal {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(cdCommand + "\n", forType: .string)
+        _ = viewModel.openAppleTerminal(at: dir)
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in Terminal.")
+        }
+        return
+      }
+
+      if !profile.supportsCommandResolved {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(cdCommand + "\n", forType: .string)
+      }
+      let runCommand = profile.supportsDirectoryResolved ? cmd : cdCommand
+      let inline = profile.supportsCommandResolved ? runCommand : nil
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: inline)
+      if !profile.supportsCommandResolved {
+        Task {
+          await SystemNotifier.shared.notify(
+            title: "CodMate", body: "Command copied. Paste it in \(profile.displayTitle).")
+        }
+      }
+    }
+
+    // Two-level menu: provider -> terminals
     items.append(
       .init(
-        kind: .action(title: "Codex with Terminal") {
-          let dir =
-            (project.directory?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
-              $0.isEmpty ? nil : $0
-            } ?? NSHomeDirectory()
-          let pb = NSPasteboard.general
-          pb.clearContents()
-          pb.setString(simpleProjectNewCommands(project: project) + "\n", forType: .string)
-          _ = viewModel.openAppleTerminal(at: dir)
-          Task {
-            await SystemNotifier.shared.notify(
-              title: "CodMate", body: "Command copied. Paste it in Terminal.")
+        id: "provider-codex",
+        kind: .submenu(
+          title: "Codex",
+          items: externalTerminalMenuItems(idPrefix: "project-codex", profiles: profiles) {
+            profile in
+            runCodex(for: profile)
           }
-        }))
+        )
+      )
+    )
     items.append(
       .init(
-        kind: .action(title: "Codex with iTerm2") {
-          let dir =
-            (project.directory?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
-              $0.isEmpty ? nil : $0
-            } ?? NSHomeDirectory()
-          let cmd = viewModel.buildNewProjectCLIInvocation(project: project)
-          viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: cmd)
-        }))
-    items.append(
-      .init(
-        kind: .action(title: "Codex with Warp") {
-          let dir =
-            (project.directory?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
-              $0.isEmpty ? nil : $0
-            } ?? NSHomeDirectory()
-          guard viewModel.copyNewProjectCommands(project: project, destinationApp: .warp) else {
-            return
+        id: "provider-claude",
+        kind: .submenu(
+          title: "Claude",
+          items: externalTerminalMenuItems(idPrefix: "project-claude", profiles: profiles) {
+            profile in
+            runClaude(for: profile)
           }
-          viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
-          Task {
-            await SystemNotifier.shared.notify(
-              title: "CodMate", body: "Command copied. Paste it in Warp.")
-          }
-        }))
-    // Divider
-    items.append(.init(kind: .separator))
-    // Middle group: Claude quick targets — project-level (fallback to simple "claude" command)
+        )
+      )
+    )
     items.append(
       .init(
-        kind: .action(title: "Claude with Terminal") {
-          let dir =
-            (project.directory?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
-              $0.isEmpty ? nil : $0
-            } ?? NSHomeDirectory()
-          let cmd = buildClaudeProjectInvocation(for: project)
-          let pb = NSPasteboard.general
-          pb.clearContents()
-          pb.setString("cd " + shellEscapedPath(dir) + "\n" + cmd + "\n", forType: .string)
-          _ = viewModel.openAppleTerminal(at: dir)
-          Task {
-            await SystemNotifier.shared.notify(
-              title: "CodMate", body: "Command copied. Paste it in Terminal.")
+        id: "provider-gemini",
+        kind: .submenu(
+          title: "Gemini",
+          items: externalTerminalMenuItems(idPrefix: "project-gemini", profiles: profiles) {
+            profile in
+            runGemini(for: profile)
           }
-        }))
-    items.append(
-      .init(
-        kind: .action(title: "Claude with iTerm2") {
-          let dir =
-            (project.directory?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
-              $0.isEmpty ? nil : $0
-            } ?? NSHomeDirectory()
-          let cmd = buildClaudeProjectInvocation(for: project)
-          viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: cmd)
-        }))
-    items.append(
-      .init(
-        kind: .action(title: "Claude with Warp") {
-          let dir =
-            (project.directory?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
-              $0.isEmpty ? nil : $0
-            } ?? NSHomeDirectory()
-          let pb = NSPasteboard.general
-          pb.clearContents()
-          let cmd = buildClaudeProjectInvocation(for: project)
-          pb.setString("cd " + shellEscapedPath(dir) + "\n" + cmd + "\n", forType: .string)
-          viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
-          Task {
-            await SystemNotifier.shared.notify(
-              title: "CodMate", body: "Command copied. Paste it in Warp.")
-          }
-        }))
+        )
+      )
+    )
     return items
   }
 
   // Build external Terminal flow exactly like SessionListColumnView's project New
   // external branch, but scoped to the detail toolbar.
   func startExternalNewForProject(_ project: Project) {
-    let app = viewModel.preferences.defaultResumeExternalApp
+    guard let profile = ExternalTerminalProfileStore.shared.resolvePreferredProfile(
+      id: viewModel.preferences.defaultResumeExternalAppId
+    ) else { return }
     let dir: String = {
       let d = (project.directory ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
       return d.isEmpty ? NSHomeDirectory() : d
     }()
-    switch app {
-    case .iterm2:
-      let cmd = viewModel.buildNewProjectCLIInvocation(project: project)
-      viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: cmd)
-    case .warp:
-      guard viewModel.copyNewProjectCommands(project: project, destinationApp: .warp) else { return }
-      viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
-    case .terminal:
+    if profile.isNone {
+      viewModel.copyNewProjectCommands(project: project, destinationApp: profile)
+      return
+    }
+    if profile.usesWarpCommands {
+      guard viewModel.copyNewProjectCommands(project: project, destinationApp: profile) else { return }
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+    } else if profile.isTerminal {
       let pb = NSPasteboard.general
       pb.clearContents()
       pb.setString(simpleProjectNewCommands(project: project) + "\n", forType: .string)
       _ = viewModel.openAppleTerminal(at: dir)
-    case .none:
-      break
+    } else if !profile.isNone {
+      let cmd = profile.supportsCommandResolved
+        ? viewModel.buildNewProjectCLIInvocation(project: project)
+        : nil
+      if !profile.supportsCommandResolved {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(simpleProjectNewCommands(project: project) + "\n", forType: .string)
+      }
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
     }
     Task {
       await SystemNotifier.shared.notify(
@@ -558,6 +614,23 @@ private extension ContentView {
     }
 
     return parts.joined(separator: " ")
+  }
+
+  // Build a Gemini invocation honoring resume options.
+  func buildGeminiProjectInvocation(for project: Project) -> String {
+    let execPath =
+      viewModel.preferences.resolvedCommandOverrideURL(for: .gemini)?.path
+      ?? SessionSource.Kind.gemini.cliExecutableName
+    let options = viewModel.preferences.resumeOptions
+    let config = viewModel.actions.geminiRuntimeConfiguration(options: options)
+    var parts: [String] = [shellQuoteIfNeeded(execPath)]
+    parts.append(contentsOf: config.flags.map(shellQuoteIfNeeded))
+    let cmd = parts.joined(separator: " ")
+    let envLines = viewModel.actions.geminiEnvironmentExportLines(environment: config.environment)
+    if envLines.isEmpty {
+      return cmd
+    }
+    return (envLines + [cmd]).joined(separator: "\n")
   }
 }
 

@@ -1,0 +1,35 @@
+[
+  {
+    "id": "iterm2",
+    "title": "iTerm2",
+    "bundleIdentifiers": ["com.googlecode.iterm2"],
+    "managedByCodMate": true,
+    "supportsCommand": true,
+    "supportsDirectory": true
+  },
+  {
+    "id": "warp",
+    "title": "Warp",
+    "bundleIdentifiers": ["dev.warp.Warp-Stable", "dev.warp.Warp"],
+    "managedByCodMate": true,
+    "commandStyle": "warp",
+    "supportsCommand": false,
+    "supportsDirectory": true
+  },
+  {
+    "id": "ghostty",
+    "title": "Ghostty",
+    "bundleIdentifiers": ["com.mitchellh.ghostty"],
+    "managedByCodMate": true,
+    "supportsCommand": false,
+    "supportsDirectory": true
+  },
+  {
+    "id": "kitty",
+    "title": "Kitty",
+    "bundleIdentifiers": ["net.kovidgoyal.kitty"],
+    "managedByCodMate": true,
+    "supportsCommand": false,
+    "supportsDirectory": true
+  }
+]

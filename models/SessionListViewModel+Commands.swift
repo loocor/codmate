@@ -31,6 +31,12 @@ extension SessionListViewModel {
         return kind.cliExecutableName
     }
 
+    private func preferredExternalTerminalProfile() -> ExternalTerminalProfile? {
+        ExternalTerminalProfileStore.shared.resolvePreferredProfile(
+            id: preferences.defaultResumeExternalAppId
+        )
+    }
+
     func copyResumeCommands(session: SessionSummary) {
         let cwd = resolvedWorkingDirectory(for: session)
         actions.copyResumeCommands(
@@ -59,11 +65,11 @@ extension SessionListViewModel {
     @discardableResult
     func copyResumeCommandsRespectingProject(
         session: SessionSummary,
-        destinationApp: TerminalApp? = nil
+        destinationApp: ExternalTerminalProfile? = nil
     ) -> Bool {
         let cwd = resolvedWorkingDirectory(for: session)
         var warpHint: String? = nil
-        if destinationApp == .warp {
+        if destinationApp?.usesWarpCommands == true {
             guard let hint = warpResumeTitle(for: session) else { return false }
             warpHint = hint
         }
@@ -206,9 +212,9 @@ extension SessionListViewModel {
     }
 
     @discardableResult
-    func copyNewProjectCommands(project: Project, destinationApp: TerminalApp? = nil) -> Bool {
+    func copyNewProjectCommands(project: Project, destinationApp: ExternalTerminalProfile? = nil) -> Bool {
         var warpHint: String? = nil
-        if destinationApp == .warp {
+        if destinationApp?.usesWarpCommands == true {
             let base = warpTitleForProject(project)
             guard let resolved = resolveWarpTitleInput(defaultValue: base) else { return false }
             warpHint = resolved
@@ -252,28 +258,25 @@ extension SessionListViewModel {
         }
 
         // Resolve preferred external terminal and open at the project directory
-        let app = preferences.defaultResumeExternalApp
+        guard let profile = preferredExternalTerminalProfile() else { return }
         let dir: String = {
             let d = (project.directory ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             return d.isEmpty ? NSHomeDirectory() : d
         }()
 
         // External terminal path: copy command and open preferred terminal.
-        guard copyNewProjectCommands(project: project, destinationApp: app) else { return }
+        guard copyNewProjectCommands(project: project, destinationApp: profile) else { return }
 
-        switch app {
-        case .iterm2:
-            // Build inline invocation for iTerm scheme and launch directly
-            let cmd = actions.buildNewProjectCLIInvocation(project: project, options: preferences.resumeOptions)
-            openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: cmd)
-        case .warp:
-            // Warp scheme cannot run a command; open path only and rely on clipboard
-            openPreferredTerminalViaScheme(app: .warp, directory: dir)
-        case .terminal:
-            // Fallback: open Apple Terminal at directory; user pastes from clipboard
-            _ = openAppleTerminal(at: dir)
-        case .none:
-            break
+        if !profile.isNone {
+            let cmd = profile.supportsCommandResolved
+                ? actions.buildNewProjectCLIInvocation(project: project, options: preferences.resumeOptions)
+                : nil
+
+            if profile.isTerminal {
+                _ = openAppleTerminal(at: dir)
+            } else {
+                openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
+            }
         }
 
         // Friendly nudge so users know the command was placed on clipboard
@@ -326,13 +329,13 @@ extension SessionListViewModel {
     @discardableResult
     func copyNewSessionCommandsRespectingProject(
         session: SessionSummary,
-        destinationApp: TerminalApp? = nil
+        destinationApp: ExternalTerminalProfile? = nil
     ) -> Bool {
         let project = projectIdForSession(session.id).flatMap { pid in
             projects.first(where: { $0.id == pid })
         }
         var warpHint: String? = nil
-        if destinationApp == .warp {
+        if destinationApp?.usesWarpCommands == true {
             let base = warpNewSessionTitleHint(for: session, project: project)
             guard let resolved = resolveWarpTitleInput(defaultValue: base) else { return false }
             warpHint = resolved
@@ -361,14 +364,14 @@ extension SessionListViewModel {
     @discardableResult
     func copyNewSessionCommandsRespectingProject(
         session: SessionSummary,
-        destinationApp: TerminalApp? = nil,
+        destinationApp: ExternalTerminalProfile? = nil,
         initialPrompt: String
     ) -> Bool {
         let project = projectIdForSession(session.id).flatMap { pid in
             projects.first(where: { $0.id == pid })
         }
         var warpHint: String? = nil
-        if destinationApp == .warp {
+        if destinationApp?.usesWarpCommands == true {
             let base = warpNewSessionTitleHint(for: session, project: project)
             guard let resolved = resolveWarpTitleInput(defaultValue: base) else { return false }
             warpHint = resolved
@@ -392,7 +395,7 @@ extension SessionListViewModel {
                 executablePath: preferredExecutablePath(for: session.source.baseKind))
             let pb = NSPasteboard.general
             pb.clearContents()
-            if destinationApp == .warp, let title = warpHint {
+            if destinationApp?.usesWarpCommands == true, let title = warpHint {
                 let lines = ["#\(title)", cmd]
                 pb.setString(lines.joined(separator: "\n") + "\n", forType: .string)
             } else {
@@ -543,12 +546,16 @@ extension SessionListViewModel {
         )
     }
 
-    func openPreferredTerminal(app: TerminalApp) {
-        actions.openTerminalApp(app)
+    func openPreferredTerminal(profile: ExternalTerminalProfile) {
+        actions.openTerminalApp(profile)
     }
 
-    func openPreferredTerminalViaScheme(app: TerminalApp, directory: String, command: String? = nil) {
-        actions.openTerminalViaScheme(app, directory: directory, command: command)
+    func openPreferredTerminalViaScheme(
+        profile: ExternalTerminalProfile,
+        directory: String,
+        command: String? = nil
+    ) {
+        actions.openTerminalViaScheme(profile, directory: directory, command: command)
     }
 
     func openAppleTerminal(at directory: String) -> Bool {

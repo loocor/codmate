@@ -157,13 +157,10 @@ final class SessionPreferencesStore: ObservableObject {
     self.defaultResumeUseEmbeddedTerminal = resumeEmbedded
     self.defaultResumeCopyToClipboard =
       defaults.object(forKey: Keys.resumeCopyClipboard) as? Bool ?? true
-    let appRaw = defaults.string(forKey: Keys.resumeExternalApp) ?? TerminalApp.terminal.rawValue
-    var resumeApp = TerminalApp(rawValue: appRaw) ?? .terminal
-    let installedApps = TerminalApp.availableExternalAppsIncludingNone
-    if !installedApps.contains(resumeApp) {
-      resumeApp = .terminal
-    }
-    self.defaultResumeExternalApp = resumeApp
+    ExternalTerminalProfileStore.shared.seedUserFileIfNeeded()
+    let appRaw = defaults.string(forKey: Keys.resumeExternalApp) ?? "terminal"
+    let resolvedExternalId = ExternalTerminalProfileStore.shared.resolvePreferredId(id: appRaw)
+    self.defaultResumeExternalAppId = resolvedExternalId
 
     // Default editor for quick open (files)
     let editorRaw = defaults.string(forKey: Keys.defaultFileEditor) ?? EditorApp.vscode.rawValue
@@ -425,8 +422,8 @@ final class SessionPreferencesStore: ObservableObject {
   @Published var defaultResumeCopyToClipboard: Bool {
     didSet { defaults.set(defaultResumeCopyToClipboard, forKey: Keys.resumeCopyClipboard) }
   }
-  @Published var defaultResumeExternalApp: TerminalApp {
-    didSet { defaults.set(defaultResumeExternalApp.rawValue, forKey: Keys.resumeExternalApp) }
+  @Published var defaultResumeExternalAppId: String {
+    didSet { defaults.set(defaultResumeExternalAppId, forKey: Keys.resumeExternalApp) }
   }
   @Published var promptForWarpTitle: Bool {
     didSet { defaults.set(promptForWarpTitle, forKey: Keys.warpPromptEnabled) }

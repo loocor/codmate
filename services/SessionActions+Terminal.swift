@@ -79,8 +79,8 @@ extension SessionActions {
     }
 
     // Open a terminal app without auto-executing; user can paste clipboard
-    func openTerminalApp(_ app: TerminalApp) {
-        guard let bundleID = app.bundleIdentifier else { return }
+    func openTerminalApp(_ profile: ExternalTerminalProfile) {
+        guard let bundleID = profile.resolvedBundleIdentifier else { return }
 
         if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
             let config = NSWorkspace.OpenConfiguration()
@@ -91,16 +91,16 @@ extension SessionActions {
     }
 
     // Optional: open using URL schemes (iTerm2 / Warp) when available
-    func openTerminalViaScheme(_ app: TerminalApp, directory: String?, command: String? = nil) {
+    func openTerminalViaScheme(_ profile: ExternalTerminalProfile, directory: String?, command: String? = nil) {
         terminalLaunchQueue.async {
-            self.openTerminalViaSchemeSync(app: app, directory: directory, command: command)
+            self.openTerminalViaSchemeSync(profile: profile, directory: directory, command: command)
         }
     }
 
-    private func openTerminalViaSchemeSync(app: TerminalApp, directory: String?, command: String?) {
+    private func openTerminalViaSchemeSync(profile: ExternalTerminalProfile, directory: String?, command: String?) {
         let dir = directory ?? NSHomeDirectory()
-        switch app {
-        case .iterm2:
+        switch profile.id {
+        case "iterm2":
             if openITermViaAppleScript(directory: dir, command: command) {
                 return
             }
@@ -114,9 +114,9 @@ extension SessionActions {
             if let url = comps.url {
                 NSWorkspace.shared.open(url)
             } else {
-                openTerminalApp(.iterm2)
+                openTerminalApp(profile)
             }
-        case .warp:
+        case "warp":
             var comps = URLComponents()
             comps.scheme = "warp"
             comps.host = "action"
@@ -125,10 +125,19 @@ extension SessionActions {
             if let url = comps.url {
                 NSWorkspace.shared.open(url)
             } else {
-                openTerminalApp(.warp)
+                openTerminalApp(profile)
             }
         default:
-            openTerminalApp(app)
+            if profile.isTerminal {
+                _ = openAppleTerminal(at: dir)
+                return
+            }
+            if let urlTemplate = profile.urlTemplate,
+               let url = buildLaunchURL(template: urlTemplate, directory: dir, command: command, profile: profile) {
+                NSWorkspace.shared.open(url)
+                return
+            }
+            openTerminalApp(profile)
         }
     }
 
@@ -144,6 +153,22 @@ extension SessionActions {
             proc.waitUntilExit()
             return proc.terminationStatus == 0
         } catch { return false }
+    }
+
+    private func buildLaunchURL(
+        template: String,
+        directory: String,
+        command: String?,
+        profile: ExternalTerminalProfile
+    ) -> URL? {
+        let encodedDir = directory.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? directory
+        let encodedCommand: String? = {
+            guard let command, profile.supportsCommandResolved else { return nil }
+            return command.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? command
+        }()
+        var result = template.replacingOccurrences(of: "{cwd}", with: encodedDir)
+        result = result.replacingOccurrences(of: "{command}", with: encodedCommand ?? "")
+        return URL(string: result)
     }
 
     // MARK: - Warp Launch Configuration

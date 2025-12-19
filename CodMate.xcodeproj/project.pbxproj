@@ -14,6 +14,7 @@
 		41A001242B30040000000001 /* THIRD-PARTY-NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = 41A001232B30040000000001 /* THIRD-PARTY-NOTICES.md */; };
 		41A001282B30040000000005 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 41A001272B30040000000004 /* PrivacyInfo.xcprivacy */; };
 		41A0012A2B30050000000001 /* providers.json in Resources */ = {isa = PBXBuildFile; fileRef = 41A001292B30050000000001 /* providers.json */; };
+		41A0012B2B30050000000002 /* terminals.json in Resources */ = {isa = PBXBuildFile; fileRef = 41A0012C2B30050000000002 /* terminals.json */; };
 		5A1A6B062F3A8D1C00A1B001 /* CodMateNotifyMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A1A6B042F3A8D1C00A1B001 /* CodMateNotifyMain.swift */; };
 		5A1A6B0B2F3A8D1D00A1B001 /* codmate-notify in CopyFiles */ = {isa = PBXBuildFile; fileRef = 5A1A6B052F3A8D1C00A1B001 /* codmate-notify */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -49,6 +50,7 @@
 		41A001232B30040000000001 /* THIRD-PARTY-NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "THIRD-PARTY-NOTICES.md"; sourceTree = SOURCE_ROOT; };
 		41A001272B30040000000004 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
 		41A001292B30050000000001 /* providers.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = providers.json; path = payload/providers.json; sourceTree = SOURCE_ROOT; };
+		41A0012C2B30050000000002 /* terminals.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = terminals.json; path = payload/terminals.json; sourceTree = SOURCE_ROOT; };
 		5A1A6B042F3A8D1C00A1B001 /* CodMateNotifyMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodMateNotifyMain.swift; sourceTree = "<group>"; };
 		5A1A6B052F3A8D1C00A1B001 /* codmate-notify */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "codmate-notify"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -106,6 +108,7 @@
 				41A001232B30040000000001 /* THIRD-PARTY-NOTICES.md */,
 				41A001272B30040000000004 /* PrivacyInfo.xcprivacy */,
 				41A001292B30050000000001 /* providers.json */,
+				41A0012C2B30050000000002 /* terminals.json */,
 			);
 			name = CodMate;
 			sourceTree = SOURCE_ROOT;
@@ -217,6 +220,7 @@
 				41A001282B30040000000005 /* PrivacyInfo.xcprivacy in Resources */,
 				41A001242B30040000000001 /* THIRD-PARTY-NOTICES.md in Resources */,
 				41A0012A2B30050000000001 /* providers.json in Resources */,
+				41A0012B2B30050000000002 /* terminals.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

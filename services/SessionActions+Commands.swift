@@ -809,12 +809,12 @@ extension SessionActions {
     func copyResumeCommands(
         session: SessionSummary, executableURL: URL, options: ResumeOptions,
         simplifiedForExternal: Bool = true,
-        destinationApp: TerminalApp? = nil,
+        destinationApp: ExternalTerminalProfile? = nil,
         titleHint: String? = nil,
         workingDirectory: String? = nil
     ) {
         let commands: String
-        if simplifiedForExternal, destinationApp == .warp {
+        if simplifiedForExternal, destinationApp?.usesWarpCommands == true {
             commands = buildWarpResumeCommands(
                 session: session, executableURL: executableURL, options: options, titleHint: titleHint)
         } else {
@@ -839,11 +839,11 @@ extension SessionActions {
     func copyNewSessionCommands(
         session: SessionSummary, executableURL: URL, options: ResumeOptions,
         simplifiedForExternal: Bool = true,
-        destinationApp: TerminalApp? = nil,
+        destinationApp: ExternalTerminalProfile? = nil,
         titleHint: String? = nil
     ) {
         let commands: String
-        if simplifiedForExternal, destinationApp == .warp {
+        if simplifiedForExternal, destinationApp?.usesWarpCommands == true {
             commands = buildWarpNewSessionCommands(
                 session: session, executableURL: executableURL, options: options, titleHint: titleHint)
         } else {
@@ -1004,11 +1004,11 @@ extension SessionActions {
     func copyNewProjectCommands(
         project: Project, executableURL: URL, options: ResumeOptions,
         simplifiedForExternal: Bool = true,
-        destinationApp: TerminalApp? = nil,
+        destinationApp: ExternalTerminalProfile? = nil,
         titleHint: String? = nil
     ) {
         let commands: String
-        if simplifiedForExternal, destinationApp == .warp {
+        if simplifiedForExternal, destinationApp?.usesWarpCommands == true {
             let base = titleHint ?? WarpTitleBuilder.newSessionLabel(
                 scope: project.name,
                 task: nil
@@ -1259,12 +1259,12 @@ extension SessionActions {
     func copyNewSessionUsingProjectProfileCommands(
         session: SessionSummary, project: Project, executableURL: URL, options: ResumeOptions,
         simplifiedForExternal: Bool = true,
-        destinationApp: TerminalApp? = nil,
+        destinationApp: ExternalTerminalProfile? = nil,
         initialPrompt: String? = nil,
         titleHint: String? = nil
     ) {
         let commands: String
-        if simplifiedForExternal, destinationApp == .warp {
+        if simplifiedForExternal, destinationApp?.usesWarpCommands == true {
             let invocation: String
             if session.isRemote {
                 invocation = buildNewSessionUsingProjectProfileCLIInvocation(
@@ -1532,11 +1532,11 @@ extension SessionActions {
     func copyResumeUsingProjectProfileCommands(
         session: SessionSummary, project: Project, executableURL: URL, options: ResumeOptions,
         simplifiedForExternal: Bool = true,
-        destinationApp: TerminalApp? = nil,
+        destinationApp: ExternalTerminalProfile? = nil,
         titleHint: String? = nil
     ) {
         let commands: String
-        if simplifiedForExternal, destinationApp == .warp {
+        if simplifiedForExternal, destinationApp?.usesWarpCommands == true {
             let invocation: String
             if session.isRemote {
                 invocation = buildResumeUsingProjectProfileCLIInvocation(

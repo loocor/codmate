@@ -427,6 +427,29 @@ struct SettingsView: View {
           VStack(alignment: .leading, spacing: 10) {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 18) {
               // Row: Copy to clipboard (always relevant)
+              // Row: Default external app (still relevant)
+              GridRow {
+                VStack(alignment: .leading, spacing: 0) {
+                  Text("Auto open external terminal")
+                    .font(.subheadline).fontWeight(.medium)
+                  Text("CodMate helps open the terminal app for external sessions")
+                    .font(.caption).foregroundColor(.secondary)
+                }
+                let terminals = externalTerminalOrderedProfiles(includeNone: true)
+                Picker("", selection: $preferences.defaultResumeExternalAppId) {
+                  ForEach(terminals) { profile in
+                    Text(profile.displayTitle).tag(profile.id)
+                  }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .gridColumnAlignment(.trailing)
+                .gridCellAnchor(.trailing)
+              }
+
+              gridDivider
+
               GridRow {
                 VStack(alignment: .leading, spacing: 0) {
                   Text("Copy resume commands to clipboard")
@@ -441,36 +464,6 @@ struct SettingsView: View {
                   .frame(maxWidth: .infinity, alignment: .trailing)
                   .gridColumnAlignment(.trailing)
               }
-
-              gridDivider
-
-              // Row: Default external app (still relevant)
-              GridRow {
-                VStack(alignment: .leading, spacing: 0) {
-                  Text("Open external terminal")
-                    .font(.subheadline).fontWeight(.medium)
-                  Text("Choose the terminal app for external sessions")
-                    .font(.caption).foregroundColor(.secondary)
-                }
-                Picker("", selection: $preferences.defaultResumeExternalApp) {
-                  ForEach(TerminalApp.availableExternalAppsIncludingNone) { app in
-                    Text(app.title).tag(app)
-                  }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .padding(2)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                  RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
-                )
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .gridColumnAlignment(.trailing)
-                .gridCellAnchor(.trailing)
-              }
-
-              gridDivider
 
               GridRow {
                 VStack(alignment: .leading, spacing: 0) {
@@ -558,6 +551,7 @@ struct SettingsView: View {
                 )
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .gridColumnAlignment(.trailing)
+                .disabled(!preferences.defaultResumeUseEmbeddedTerminal)
               }
 
               gridDivider
@@ -585,6 +579,29 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .gridColumnAlignment(.trailing)
+                .disabled(!preferences.defaultResumeUseEmbeddedTerminal)
+              }
+
+              gridDivider
+
+              GridRow {
+                VStack(alignment: .leading, spacing: 0) {
+                  Text("Auto open external terminal")
+                    .font(.subheadline).fontWeight(.medium)
+                  Text("CodMate helps open the terminal app for external sessions")
+                    .font(.caption).foregroundColor(.secondary)
+                }
+                let terminals = externalTerminalOrderedProfiles(includeNone: true)
+                Picker("", selection: $preferences.defaultResumeExternalAppId) {
+                  ForEach(terminals) { profile in
+                    Text(profile.displayTitle).tag(profile.id)
+                  }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .gridColumnAlignment(.trailing)
+                .gridCellAnchor(.trailing)
               }
 
               gridDivider
@@ -603,35 +620,6 @@ struct SettingsView: View {
                   .frame(maxWidth: .infinity, alignment: .trailing)
                   .gridColumnAlignment(.trailing)
               }
-
-              gridDivider
-
-              GridRow {
-                VStack(alignment: .leading, spacing: 0) {
-                  Text("Open external terminal")
-                    .font(.subheadline).fontWeight(.medium)
-                  Text("Choose the terminal app for external sessions")
-                    .font(.caption).foregroundColor(.secondary)
-                }
-                Picker("", selection: $preferences.defaultResumeExternalApp) {
-                  ForEach(TerminalApp.availableExternalAppsIncludingNone) { app in
-                    Text(app.title).tag(app)
-                  }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .padding(2)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(
-                  RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
-                )
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .gridColumnAlignment(.trailing)
-                .gridCellAnchor(.trailing)
-              }
-
-              gridDivider
 
               GridRow {
                 VStack(alignment: .leading, spacing: 0) {
@@ -1083,7 +1071,7 @@ struct SettingsView: View {
     preferences.geminiCommandPath = ""
     preferences.defaultResumeUseEmbeddedTerminal = true
     preferences.defaultResumeCopyToClipboard = true
-    preferences.defaultResumeExternalApp = .terminal
+    preferences.defaultResumeExternalAppId = "terminal"
     preferences.defaultResumeSandboxMode = .workspaceWrite
     preferences.defaultResumeApprovalPolicy = .onRequest
     preferences.defaultResumeFullAuto = false

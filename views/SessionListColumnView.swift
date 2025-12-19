@@ -528,25 +528,32 @@ extension SessionListColumnView {
   // Build external Terminal flow exactly like newSession(project:) external branch,
   // but force external when App Sandbox blocks embedded terminals.
   private func startExternalNewForProject(_ project: Project) {
-    let app = viewModel.preferences.defaultResumeExternalApp
+    guard let profile = ExternalTerminalProfileStore.shared.resolvePreferredProfile(
+      id: viewModel.preferences.defaultResumeExternalAppId
+    ) else { return }
     let dir: String = {
       let d = (project.directory ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
       return d.isEmpty ? NSHomeDirectory() : d
     }()
     let command = buildProjectCommand(project: project, directory: dir)
-    switch app {
-    case .iterm2:
-      viewModel.openPreferredTerminalViaScheme(app: .iterm2, directory: dir, command: command)
-    case .warp:
-      guard viewModel.copyNewProjectCommands(project: project, destinationApp: .warp) else { return }
-      viewModel.openPreferredTerminalViaScheme(app: .warp, directory: dir)
-    case .terminal:
-      let pb = NSPasteboard.general
-      pb.clearContents()
-      pb.setString(command + "\n", forType: .string)
-      _ = viewModel.openAppleTerminal(at: dir)
-    case .none:
-      break
+    if profile.usesWarpCommands {
+      guard viewModel.copyNewProjectCommands(project: project, destinationApp: profile) else { return }
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+    } else {
+      if !profile.supportsCommandResolved {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(command + "\n", forType: .string)
+      }
+      if profile.isNone {
+        return
+      }
+      if profile.isTerminal {
+        _ = viewModel.openAppleTerminal(at: dir)
+      } else {
+        let cmd = profile.supportsCommandResolved ? command : nil
+        viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
+      }
     }
     Task {
       await SystemNotifier.shared.notify(
@@ -634,13 +641,6 @@ extension SessionListColumnView {
     }
   }
 
-  // Build the same New Session menu used by the Timeline toolbar
-  private enum NewLaunchStyle {
-    case terminal
-    case iterm
-    case warp
-  }
-
   private func workingDirectory(for session: SessionSummary) -> String {
     viewModel.resolvedWorkingDirectory(for: session)
   }
@@ -648,31 +648,37 @@ extension SessionListColumnView {
   private func launchNewSession(
     for session: SessionSummary,
     using source: SessionSource,
-    style: NewLaunchStyle
+    profile: ExternalTerminalProfile
   ) {
     let target = session.overridingSource(source)
     viewModel.recordIntentForDetailNew(anchor: target)
-    switch style {
-    case .terminal:
-      if !viewModel.openNewSession(session: target) {
-        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .terminal)
-        _ = viewModel.openAppleTerminal(at: workingDirectory(for: target))
-      }
-    case .iterm:
-      let cmd = viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
-      viewModel.openPreferredTerminalViaScheme(
-        app: .iterm2,
-        directory: workingDirectory(for: target),
-        command: cmd
-      )
-    case .warp:
-      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: .warp)
+    let dir = workingDirectory(for: target)
+    if profile.usesWarpCommands {
+      guard viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
       else { return }
-      viewModel.openPreferredTerminalViaScheme(
-        app: .warp,
-        directory: workingDirectory(for: target)
-      )
+      viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
+      return
     }
+    if profile.isTerminal {
+      if !viewModel.openNewSession(session: target) {
+        viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+        _ = viewModel.openAppleTerminal(at: dir)
+      }
+      return
+    }
+    guard !profile.isNone else { return }
+
+    let cmd = profile.supportsCommandResolved
+      ? viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
+      : nil
+    if !profile.supportsCommandResolved {
+      viewModel.copyNewSessionCommandsRespectingProject(session: target, destinationApp: profile)
+    }
+    viewModel.openPreferredTerminalViaScheme(
+      profile: profile,
+      directory: dir,
+      command: cmd
+    )
   }
 
   private func copyAbsolutePath(_ session: SessionSummary) {
@@ -700,26 +706,9 @@ extension SessionListColumnView {
 
     func launchItems(for source: SessionSource) -> [SplitMenuItem] {
       let key = sourceKey(source)
-      return [
-        SplitMenuItem(
-          id: "\(key)-terminal",
-          kind: .action(title: "Terminal", run: {
-            launchNewSession(for: anchor, using: source, style: .terminal)
-          })
-        ),
-        SplitMenuItem(
-          id: "\(key)-iterm2",
-          kind: .action(title: "iTerm2", run: {
-            launchNewSession(for: anchor, using: source, style: .iterm)
-          })
-        ),
-        SplitMenuItem(
-          id: "\(key)-warp",
-          kind: .action(title: "Warp", run: {
-            launchNewSession(for: anchor, using: source, style: .warp)
-          })
-        )
-      ]
+      return externalTerminalMenuItems(idPrefix: key) { profile in
+        launchNewSession(for: anchor, using: source, profile: profile)
+      }
     }
 
     func remoteSource(for base: ProjectSessionSource, host: String) -> SessionSource {
