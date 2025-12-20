@@ -2,6 +2,26 @@ import Foundation
 
 @MainActor
 extension SessionListViewModel {
+    func timelineVisibleKindsOverride(for sessionId: String) -> Set<MessageVisibilityKind>? {
+        let raw = notesSnapshot[sessionId]?.timelineVisibleKinds
+        return Set<MessageVisibilityKind>.fromRawValues(raw)
+    }
+
+    func updateTimelineVisibleKindsOverride(
+        for sessionId: String,
+        kinds: Set<MessageVisibilityKind>?
+    ) async {
+        let raw = kinds?.rawValues
+        await notesStore.updateTimelineVisibleKinds(id: sessionId, kinds: raw)
+        if let updatedNote = await notesStore.note(for: sessionId) {
+            notesSnapshot[sessionId] = updatedNote
+        }
+    }
+
+    func clearTimelineVisibleKindsOverride(for sessionId: String) async {
+        await updateTimelineVisibleKindsOverride(for: sessionId, kinds: nil)
+    }
+
     func beginEditing(session: SessionSummary) async {
         editingSession = session
         if let note = await notesStore.note(for: session.id) {
@@ -35,6 +55,7 @@ extension SessionListViewModel {
             updated.userComment = commentValue
             return updated
         }
+        await autoAssignSessionAfterEditIfNeeded(session)
         scheduleApplyFilters()
         cancelEdits()
     }

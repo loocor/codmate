@@ -249,16 +249,6 @@ struct ProjectsListView: View {
   private func autoAssignOthersForCurrentDay() async {
     let descriptors = currentDayDescriptors()
 
-    let projectDirs: [(id: String, path: String)] = viewModel.projects.compactMap { project in
-      guard let raw = project.directory?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !raw.isEmpty
-      else { return nil }
-      let normalized = URL(fileURLWithPath: raw).standardizedFileURL.path
-      let slash = normalized.hasSuffix("/") ? normalized : normalized + "/"
-      return (project.id, slash)
-    }
-    guard !projectDirs.isEmpty else { return }
-
     let candidates = viewModel.allSessions.filter { session in
       viewModel.projectIdForSession(session.id) == nil
         && viewModel.matchesDayFilters(session, descriptors: descriptors)
@@ -270,22 +260,8 @@ struct ProjectsListView: View {
 
     var assignments: [String: [String]] = [:]
     for session in candidates {
-      let rawPath = session.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
-      let cwd =
-        rawPath.isEmpty
-        ? session.fileURL.deletingLastPathComponent().path
-        : rawPath
-      let normalized = URL(fileURLWithPath: cwd).standardizedFileURL.path
-      let sessionPath = normalized.hasSuffix("/") ? normalized : normalized + "/"
-
-      let matchingProjects = projectDirs.filter { candidate in
-        sessionPath.hasPrefix(candidate.path)
-      }
-
-      if let best = matchingProjects.max(by: { lhs, rhs in
-        lhs.path.count < rhs.path.count
-      }) {
-        assignments[best.id, default: []].append(session.id)
+      if let bestId = viewModel.bestMatchingProjectId(for: session) {
+        assignments[bestId, default: []].append(session.id)
       }
     }
 
@@ -680,16 +656,6 @@ private struct ProjectTreeNodeView: View {
     let vm = self.viewModel
     let descriptors = currentDayDescriptors()
 
-    let projectDirs: [(id: String, path: String)] = vm.projects.compactMap { project in
-      guard let raw = project.directory?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !raw.isEmpty
-      else { return nil }
-      let normalized = URL(fileURLWithPath: raw).standardizedFileURL.path
-      let slash = normalized.hasSuffix("/") ? normalized : normalized + "/"
-      return (project.id, slash)
-    }
-    guard !projectDirs.isEmpty else { return }
-
     let candidates = vm.allSessions.filter { session in
       vm.projectIdForSession(session.id) == nil
         && vm.matchesDayFilters(session, descriptors: descriptors)
@@ -701,22 +667,8 @@ private struct ProjectTreeNodeView: View {
 
     var assignments: [String: [String]] = [:]
     for session in candidates {
-      let rawPath = session.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
-      let cwd =
-        rawPath.isEmpty
-        ? session.fileURL.deletingLastPathComponent().path
-        : rawPath
-      let normalized = URL(fileURLWithPath: cwd).standardizedFileURL.path
-      let sessionPath = normalized.hasSuffix("/") ? normalized : normalized + "/"
-
-      let matchingProjects = projectDirs.filter { candidate in
-        sessionPath.hasPrefix(candidate.path)
-      }
-
-      if let best = matchingProjects.max(by: { lhs, rhs in
-        lhs.path.count < rhs.path.count
-      }) {
-        assignments[best.id, default: []].append(session.id)
+      if let bestId = vm.bestMatchingProjectId(for: session) {
+        assignments[bestId, default: []].append(session.id)
       }
     }
 

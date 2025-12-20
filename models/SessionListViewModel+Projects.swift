@@ -83,6 +83,38 @@ extension SessionListViewModel {
         }
     }
 
+    func autoAssignSessionAfterEditIfNeeded(_ session: SessionSummary) async {
+        guard projectIdForSession(session.id) == nil else { return }
+        guard let bestProjectId = bestMatchingProjectId(for: session) else { return }
+        await assignSessions(to: bestProjectId, ids: [session.id])
+    }
+
+    func bestMatchingProjectId(for session: SessionSummary) -> String? {
+        let projectDirs: [(id: String, path: String)] = projects.compactMap { project in
+            guard let raw = project.directory?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty
+            else { return nil }
+            let normalized = URL(fileURLWithPath: raw).standardizedFileURL.path
+            let slash = normalized.hasSuffix("/") ? normalized : normalized + "/"
+            return (project.id, slash)
+        }
+        guard !projectDirs.isEmpty else { return nil }
+
+        let rawPath = session.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cwd = rawPath.isEmpty
+          ? session.fileURL.deletingLastPathComponent().path
+          : rawPath
+        let normalized = URL(fileURLWithPath: cwd).standardizedFileURL.path
+        let sessionPath = normalized.hasSuffix("/") ? normalized : normalized + "/"
+
+        let matchingProjects = projectDirs.filter { candidate in
+            sessionPath.hasPrefix(candidate.path)
+        }
+        return matchingProjects.max(by: { lhs, rhs in
+            lhs.path.count < rhs.path.count
+        })?.id
+    }
+
     func projectCountsFromStore() -> [String: Int] { projectCounts }
 
     func visibleProjectCountsForDateScope() -> [String: Int] {
