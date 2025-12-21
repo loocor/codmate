@@ -21,6 +21,9 @@ struct SessionDetailView: View {
     @State private var searchText: String = ""
     @State private var expandAllOnSearch = false
     @State private var nowModeEnabled = true  // Auto-scroll to bottom when enabled
+    @State private var timelineRefreshToken = 0
+    @State private var lastLocalChangeAt: Date? = nil
+    @State private var localActivityClearTask: Task<Void, Never>? = nil
     @State private var inlineFiltersExpanded = false
     @State private var sessionVisibleKinds: Set<MessageVisibilityKind> = MessageVisibilityKind.timelineDefault
     @State private var hasSessionVisibleKindsOverride = false
@@ -410,10 +413,12 @@ struct SessionDetailView: View {
                     ConversationTimelineView(
                         turns: turns,
                         expandedTurnIDs: $expandedTurnIDs,
+                        refreshToken: timelineRefreshToken,
                         ascending: true,  // Fixed: oldest first (newest at bottom)
                         branding: summary.source.branding,
                         allowManualToggle: !autoExpandVisible,
                         autoExpandVisible: autoExpandVisible,
+                        isActive: isConversationActive,
                         nowModeEnabled: nowModeEnabled,
                         onNowModeChange: { newValue in
                             nowModeEnabled = newValue
@@ -591,6 +596,8 @@ extension SessionDetailView {
         hasSessionVisibleKindsOverride = override != nil
         autoExpandVisible = false
         expandedTurnIDs.removeAll()
+        lastLocalChangeAt = nil
+        localActivityClearTask?.cancel()
 
         // Stage 1: Try to load previews from cache (fast path)
         if let previews = await viewModel.loadTimelinePreviews(for: summary) {
@@ -609,6 +616,8 @@ extension SessionDetailView {
             // Debounce rapid write events
             debounceReloadTask?.cancel()
             debounceReloadTask = Task { @MainActor in
+                let activityStamp = Date()
+                markLocalActivity(activityStamp)
                 try? await Task.sleep(nanoseconds: 300_000_000)  // 300ms
                 // Confirm file still the same session file
                 guard fileURL == summary.fileURL else { return }
@@ -620,7 +629,9 @@ extension SessionDetailView {
     @MainActor
     private func reloadConversation(resetUI: Bool = false) async {
         loadingTimeline = true
-        loadingStage = .loading
+        if loadingStage == .initial {
+            loadingStage = .loading
+        }
         defer { loadingTimeline = false }
 
         loadTask?.cancel()
@@ -634,7 +645,7 @@ extension SessionDetailView {
                 environmentInfo = nil
                 environmentLoading = false
             }
-            applyFilterAndSort()
+            applyFilterAndSort(markRefresh: true)
             return
         }
 
@@ -664,7 +675,7 @@ extension SessionDetailView {
             environmentLoading = false
         }
 
-        applyFilterAndSort()
+        applyFilterAndSort(markRefresh: true)
 
         if !loaded.isEmpty {
             Task {
@@ -675,12 +686,13 @@ extension SessionDetailView {
     }
 
     @MainActor
-    private func applyFilterAndSort() {
+    private func applyFilterAndSort(markRefresh: Bool = false) {
         filterTask?.cancel()
         let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let all = allTurns
         let kinds = effectiveVisibleKinds
         let expandOnSearch = expandAllOnSearch
+        let shouldMarkRefresh = markRefresh
 
         filterTask = Task.detached(priority: .userInitiated) {
             var filtered = all
@@ -700,6 +712,29 @@ extension SessionDetailView {
                     expandedTurnIDs.removeAll()
                     expandAllOnSearch = false
                 }
+                if shouldMarkRefresh {
+                    timelineRefreshToken &+= 1
+                }
+            }
+        }
+    }
+
+    private var isConversationActive: Bool {
+        viewModel.isActivelyUpdating(summary.id) || isLocallyActive
+    }
+
+    private var isLocallyActive: Bool {
+        guard let lastLocalChangeAt else { return false }
+        return Date().timeIntervalSince(lastLocalChangeAt) < 3.0
+    }
+
+    private func markLocalActivity(_ stamp: Date) {
+        lastLocalChangeAt = stamp
+        localActivityClearTask?.cancel()
+        localActivityClearTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_200_000_000)
+            if lastLocalChangeAt == stamp {
+                lastLocalChangeAt = nil
             }
         }
     }
@@ -775,11 +810,11 @@ private struct SessionDetailPreviewContainer: View {
         SessionDetailView(
             summary: summary,
             isProcessing: isProcessing,
-            preferences: SessionPreferencesStore(),
             onResume: { print("Resume session") },
             onReveal: { print("Reveal in Finder") },
             onDelete: { print("Delete session") },
-            columnVisibility: $visibility
+            columnVisibility: $visibility,
+            preferences: SessionPreferencesStore()
         )
     }
 }
