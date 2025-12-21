@@ -73,9 +73,12 @@ struct ClaudeSessionParser {
         var activeAccumulator = ActiveDurationAccumulator()
         var rows: [SessionRow] = []
         rows.reserveCapacity(256)
-        var seenUserMessageIds: Set<String> = []
+        // For user messages without message.id, use timestamp+content as unique key
+        var seenUserMessageKeys: Set<String> = []
         var seenAssistantMessageIds: Set<String> = []
         var seenToolUseIds: Set<String> = []
+        // Track seen UUIDs to prevent true duplicates (same UUID = exact same JSONL record)
+        var seenUUIDs: Set<String> = []
         var dedupUserCount = 0
         var dedupAssistantCount = 0
         var dedupToolCount = 0
@@ -85,30 +88,56 @@ struct ClaudeSessionParser {
             guard !slice.isEmpty else { continue }
             guard let line = decodeLine(Data(slice)) else { continue }
             if line.isSidechain == true { continue }
+
+            // Skip true duplicates (exact same JSONL record with same UUID)
+            if let uuid = line.uuid, !uuid.isEmpty {
+                if !seenUUIDs.insert(uuid).inserted {
+                    // This is a true duplicate with the same UUID, skip it
+                    continue
+                }
+            }
+
             let renderedText = line.message.flatMap(Self.renderFlatText)
             let model = line.message?.model
             let usageTokens = line.message?.usage?.totalTokens
             accumulator.consume(line, renderedText: renderedText, model: model, usageTokens: usageTokens)
             activeAccumulator.observe(type: line.type, timestamp: line.timestamp)
             let hasText = ClaudeSessionParser.hasRenderableText(line.message)
+
+            // Track stats for user and assistant messages
             if let type = line.type {
                 let messageId = line.message?.id
                 switch type {
                 case "user":
-                    if hasText, messageId.map({ seenUserMessageIds.insert($0).inserted }) ?? true {
-                        dedupUserCount &+= 1
+                    // Just count for stats, UUID already handles deduplication
+                    if hasText {
+                        let userKey: String
+                        if let msgId = messageId, !msgId.isEmpty {
+                            userKey = msgId
+                        } else {
+                            let ts = line.timestamp?.timeIntervalSince1970 ?? 0
+                            let content = renderedText ?? ""
+                            userKey = "\(Int(ts * 1000)):\(content.prefix(100).hashValue)"
+                        }
+                        if seenUserMessageKeys.insert(userKey).inserted {
+                            dedupUserCount &+= 1
+                        }
                     }
                 case "assistant":
+                    // Just count for stats, UUID already handles deduplication
                     let newTools = ClaudeSessionParser.countToolUses(in: line.message, seen: &seenToolUseIds)
                     if newTools > 0 { dedupToolCount &+= newTools }
                     if hasText {
-                        let isNew = messageId.map({ seenAssistantMessageIds.insert($0).inserted }) ?? true
-                        if isNew { dedupAssistantCount &+= 1 }
+                        if messageId.map({ seenAssistantMessageIds.insert($0).inserted }) ?? true {
+                            dedupAssistantCount &+= 1
+                        }
                     }
                 default:
                     break
                 }
             }
+
+            // Always convert (UUID-based deduplication already handled true duplicates)
             rows.append(contentsOf: convert(line))
         }
         activeAccumulator.flush()
@@ -301,6 +330,7 @@ struct ClaudeSessionParser {
         // Collect all text blocks and images into a single user message
         var textParts: [String] = []
         var hasImage = false
+        var imageDataURLs: [String] = []
 
         for block in blocks {
             switch block.type {
@@ -310,6 +340,9 @@ struct ClaudeSessionParser {
                 }
             case "image":
                 hasImage = true
+                if let dataURL = Self.imageDataURL(from: block) {
+                    imageDataURLs.append(dataURL)
+                }
             case "tool_result":
                 let outputValue: JSONValue? = {
                     if let content = block.content { return content }
@@ -360,7 +393,8 @@ struct ClaudeSessionParser {
                 text: displayText,
                 reason: nil,
                 info: nil,
-                rateLimits: nil)
+                rateLimits: nil,
+                images: imageDataURLs.isEmpty ? nil : imageDataURLs)
             rows.insert(SessionRow(timestamp: timestamp, kind: .eventMessage(payload)), at: 0)
         }
 
@@ -589,7 +623,7 @@ struct ClaudeSessionParser {
     private static func blocks(from message: ClaudeMessage) -> [ClaudeContentBlock] {
         switch message.content {
         case .string(let text):
-            return [ClaudeContentBlock(type: "text", text: text, thinking: nil, id: nil, name: nil, input: nil, toolUseId: nil, content: nil, signature: nil)]
+            return [ClaudeContentBlock(type: "text", text: text, thinking: nil, id: nil, name: nil, input: nil, toolUseId: nil, content: nil, signature: nil, source: nil)]
         case .blocks(let blocks):
             return blocks
         case .none:
@@ -620,6 +654,14 @@ struct ClaudeSessionParser {
             return rendered
         }
         return nil
+    }
+
+    private static func imageDataURL(from block: ClaudeContentBlock) -> String? {
+        guard block.type == "image", let source = block.source else { return nil }
+        guard let data = source.data, !data.isEmpty else { return nil }
+        let mediaType = source.mediaType?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedType = (mediaType?.isEmpty == false) ? mediaType! : "image/png"
+        return "data:\(resolvedType);base64,\(data)"
     }
 
     private static func stringify(_ value: JSONValue?) -> String? {
@@ -792,6 +834,7 @@ struct ClaudeSessionParser {
         let isMeta: Bool?
         let subtype: String?
         let isSidechain: Bool?
+        let uuid: String?
     }
 
     private struct ClaudeMessage: Decodable {
@@ -869,6 +912,18 @@ struct ClaudeSessionParser {
         }
     }
 
+    private struct ClaudeImageSource: Decodable {
+        let type: String?
+        let mediaType: String?
+        let data: String?
+
+        enum CodingKeys: String, CodingKey {
+            case type
+            case mediaType = "media_type"
+            case data
+        }
+    }
+
     private struct ClaudeContentBlock: Decodable {
         let type: String?
         let text: String?
@@ -879,6 +934,7 @@ struct ClaudeSessionParser {
         let toolUseId: String?
         let content: JSONValue?
         let signature: String?
+        let source: ClaudeImageSource?
     }
 
     private static func countToolUses(in message: ClaudeMessage?, seen: inout Set<String>) -> Int {

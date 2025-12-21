@@ -106,7 +106,9 @@ struct SessionTimelineLoader {
             }
 
             let message = cleanedText(payload.message ?? payload.text ?? payload.reason ?? "")
-            guard !message.isEmpty else { return nil }
+            let attachments = attachments(from: payload)
+            guard !message.isEmpty || !attachments.isEmpty else { return nil }
+            let displayMessage = message.isEmpty ? "[Image]" : message
             let mappedKind = MessageVisibilityKind.mappedKind(
                 rawType: payload.type,
                 title: payload.kind ?? payload.type,
@@ -126,9 +128,10 @@ struct SessionTimelineLoader {
                     timestamp: row.timestamp,
                     actor: .user,
                     title: nil,
-                    text: message,
+                    text: displayMessage,
                     metadata: nil,
                     repeatCount: repeatCountHint(from: payload.info),
+                    attachments: attachments,
                     visibilityKind: effectiveKind ?? .user
                 )
             case "agent_message":
@@ -137,9 +140,10 @@ struct SessionTimelineLoader {
                     timestamp: row.timestamp,
                     actor: .assistant,
                     title: nil,
-                    text: message,
+                    text: displayMessage,
                     metadata: nil,
                     repeatCount: repeatCountHint(from: payload.info),
+                    attachments: attachments,
                     visibilityKind: effectiveKind ?? .assistant
                 )
             default:
@@ -149,8 +153,9 @@ struct SessionTimelineLoader {
                     timestamp: row.timestamp,
                     actor: actor,
                     title: payload.type,
-                    text: message,
+                    text: displayMessage,
                     metadata: nil,
+                    attachments: attachments,
                     visibilityKind: effectiveKind
                 )
             }
@@ -274,7 +279,7 @@ struct SessionTimelineLoader {
 
         let ordered = events.sorted(by: { $0.timestamp < $1.timestamp })
         let mergedTools = mergeToolInvocations(in: ordered)
-        let deduped = collapseDuplicates(mergedTools)
+        let deduped = collapseDuplicates(mergeConsecutiveUserMessages(mergedTools))
 
         for event in deduped {
             if event.title == TimelineEvent.environmentContextTitle {
@@ -538,6 +543,22 @@ struct SessionTimelineLoader {
         value.contains("\n") ? "\(label):\n\(value)" : "\(label): \(value)"
     }
 
+    private func attachments(from payload: EventMessagePayload) -> [TimelineAttachment] {
+        guard let images = payload.images, !images.isEmpty else { return [] }
+        return images.enumerated().compactMap { index, raw in
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            let label = "Image \(index + 1)"
+            if let url = URL(string: trimmed), let scheme = url.scheme, scheme != "data" {
+                return TimelineAttachment(kind: .image, label: label, url: url)
+            }
+            if trimmed.hasPrefix("/") {
+                return TimelineAttachment(kind: .image, label: label, url: URL(fileURLWithPath: trimmed))
+            }
+            return TimelineAttachment(kind: .image, label: label, dataURL: trimmed)
+        }
+    }
+
     private func renderValue(_ value: JSONValue?) -> String? {
         guard let value else { return nil }
         switch value {
@@ -574,6 +595,90 @@ struct SessionTimelineLoader {
         case .null:
             return NSNull()
         }
+    }
+
+    /// Merge consecutive user messages with the exact same timestamp
+    /// This handles Claude Code's behavior of splitting a single user input into multiple JSONL records
+    /// with identical timestamps (down to millisecond precision)
+    private func mergeConsecutiveUserMessages(_ events: [TimelineEvent]) -> [TimelineEvent] {
+        guard !events.isEmpty else { return [] }
+        var result: [TimelineEvent] = []
+        var pendingUserMessages: [TimelineEvent] = []
+        var lastUserTimestamp: Date?
+
+        func flushPendingUserMessages() {
+            guard !pendingUserMessages.isEmpty else { return }
+
+            // Filter out auto-generated image description messages
+            // (text-only messages that start with "[Image:")
+            let realMessages = pendingUserMessages.filter { event in
+                if event.attachments.isEmpty,
+                   let text = event.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   text.hasPrefix("[Image:") {
+                    return false  // Skip auto-generated image description
+                }
+                return true
+            }
+
+            if realMessages.count == 1 {
+                // Only one real message, use it as-is
+                result.append(realMessages[0])
+            } else if realMessages.count > 1 {
+                // Multiple messages need to be merged
+                let first = realMessages[0]
+                let mergedText = realMessages.compactMap { $0.text }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+                var mergedAttachments: [TimelineAttachment] = []
+
+                for event in realMessages {
+                    mergedAttachments.append(contentsOf: event.attachments)
+                }
+
+                // Create merged event
+                let merged = TimelineEvent(
+                    id: first.id,
+                    timestamp: first.timestamp,
+                    actor: first.actor,
+                    title: first.title,
+                    text: mergedText.isEmpty ? nil : mergedText,
+                    metadata: first.metadata,
+                    repeatCount: first.repeatCount,
+                    attachments: mergedAttachments,
+                    visibilityKind: first.visibilityKind,
+                    callID: first.callID
+                )
+                result.append(merged)
+            }
+
+            pendingUserMessages.removeAll()
+            lastUserTimestamp = nil
+        }
+
+        for event in events {
+            if event.actor == .user {
+                // Check if this user message has the exact same timestamp as pending ones
+                if let lastTimestamp = lastUserTimestamp {
+                    // Compare timestamps with exact equality (millisecond precision)
+                    if event.timestamp == lastTimestamp {
+                        pendingUserMessages.append(event)
+                        continue
+                    }
+                }
+
+                // Different timestamp, flush pending and start new batch
+                flushPendingUserMessages()
+                pendingUserMessages.append(event)
+                lastUserTimestamp = event.timestamp
+            } else {
+                // Non-user message, flush pending user messages first
+                flushPendingUserMessages()
+                result.append(event)
+            }
+        }
+
+        // Flush any remaining pending user messages
+        flushPendingUserMessages()
+
+        return result
     }
 
     private func collapseDuplicates(_ events: [TimelineEvent]) -> [TimelineEvent] {
