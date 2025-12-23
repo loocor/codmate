@@ -484,7 +484,12 @@ final class CodexVM: ObservableObject {
       let overrides = await overridesTask
       var defaults = featureDefaults
       var rows: [FeatureFlag] = []
-      for info in infos {
+      let hiddenKeys: Set<String> = [
+        "experimental_windows_sandbox",
+        "elevated_windows_sandbox",
+        "powershell_utf8",
+      ]
+      for info in infos where !hiddenKeys.contains(info.name) {
         let base = defaults[info.name] ?? info.enabled
         defaults[info.name] = base
         let state: FeatureOverrideState
