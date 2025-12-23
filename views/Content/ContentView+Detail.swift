@@ -223,6 +223,5 @@ extension ContentView {
   func presentProjectEditor(for project: Project) {
     guard project.id != SessionListViewModel.otherProjectId else { return }
     projectEditorTarget = project
-    showProjectEditorSheet = true
   }
 }

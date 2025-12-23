@@ -15,7 +15,10 @@ struct SettingsView: View {
   @State private var availableRemoteHosts: [SSHHost] = []
   @State private var isRequestingSSHAccess = false
 
-  init(preferences: SessionPreferencesStore, selection: Binding<SettingCategory>, extensionsTab: Binding<ExtensionsSettingsTab>) {
+  init(
+    preferences: SessionPreferencesStore, selection: Binding<SettingCategory>,
+    extensionsTab: Binding<ExtensionsSettingsTab>
+  ) {
     self._preferences = ObservedObject(wrappedValue: preferences)
     self._selectedCategory = selection
     self._selectedExtensionsTab = extensionsTab
@@ -25,6 +28,7 @@ struct SettingsView: View {
     ZStack(alignment: .topLeading) {
       WindowConfigurator { window in
         window.isMovableByWindowBackground = false
+        window.identifier = NSUserInterfaceItemIdentifier("CodMateSettingsWindow")
         if window.toolbar == nil {
           let toolbar = NSToolbar(identifier: "CodMateSettingsToolbar")
           SettingsToolbarCoordinator.shared.configure(toolbar: toolbar)
@@ -159,6 +163,34 @@ struct SettingsView: View {
           Text("Configure basic application settings")
             .font(.subheadline)
             .foregroundColor(.secondary)
+        }
+
+        VStack(alignment: .leading, spacing: 10) {
+          Text("System Menu").font(.headline).fontWeight(.semibold)
+          settingsCard {
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+              GridRow {
+                VStack(alignment: .leading, spacing: 2) {
+                  Label("System menu bar icon", systemImage: "menubar.rectangle")
+                    .font(.subheadline).fontWeight(.medium)
+                  Text("Control whether the menu bar icon appears")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                Picker("", selection: $preferences.systemMenuVisibility) {
+                  ForEach(SystemMenuVisibility.allCases) { visibility in
+                    Text(visibility.title).tag(visibility)
+                  }
+                }
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .pickerStyle(.segmented)
+                .padding(2)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+              }
+            }
+          }
         }
 
         VStack(alignment: .leading, spacing: 10) {
@@ -416,25 +448,32 @@ struct SettingsView: View {
   private var messageTypeRows: [MessageTypeRow] {
     [
       MessageTypeRow(
-        id: MessageVisibilityKind.user.rawValue, title: MessageVisibilityKind.user.settingsLabel, kind: .user, level: 0,
+        id: MessageVisibilityKind.user.rawValue, title: MessageVisibilityKind.user.settingsLabel,
+        kind: .user, level: 0,
         isGroup: false),
       MessageTypeRow(
-        id: MessageVisibilityKind.assistant.rawValue, title: MessageVisibilityKind.assistant.settingsLabel, kind: .assistant,
+        id: MessageVisibilityKind.assistant.rawValue,
+        title: MessageVisibilityKind.assistant.settingsLabel, kind: .assistant,
         level: 0, isGroup: false),
       MessageTypeRow(
-        id: MessageVisibilityKind.reasoning.rawValue, title: MessageVisibilityKind.reasoning.settingsLabel, kind: .reasoning,
+        id: MessageVisibilityKind.reasoning.rawValue,
+        title: MessageVisibilityKind.reasoning.settingsLabel, kind: .reasoning,
         level: 0, isGroup: false),
       MessageTypeRow(
-        id: MessageVisibilityKind.codeEdit.rawValue, title: MessageVisibilityKind.codeEdit.settingsLabel, kind: .codeEdit,
+        id: MessageVisibilityKind.codeEdit.rawValue,
+        title: MessageVisibilityKind.codeEdit.settingsLabel, kind: .codeEdit,
         level: 0, isGroup: false),
       MessageTypeRow(
-        id: MessageVisibilityKind.tool.rawValue, title: MessageVisibilityKind.tool.settingsLabel, kind: .tool, level: 0,
+        id: MessageVisibilityKind.tool.rawValue, title: MessageVisibilityKind.tool.settingsLabel,
+        kind: .tool, level: 0,
         isGroup: false),
       MessageTypeRow(
-        id: MessageVisibilityKind.tokenUsage.rawValue, title: MessageVisibilityKind.tokenUsage.settingsLabel, kind: .tokenUsage,
+        id: MessageVisibilityKind.tokenUsage.rawValue,
+        title: MessageVisibilityKind.tokenUsage.settingsLabel, kind: .tokenUsage,
         level: 0, isGroup: false),
       MessageTypeRow(
-        id: MessageVisibilityKind.infoOther.rawValue, title: MessageVisibilityKind.infoOther.settingsLabel, kind: .infoOther,
+        id: MessageVisibilityKind.infoOther.rawValue,
+        title: MessageVisibilityKind.infoOther.settingsLabel, kind: .infoOther,
         level: 0, isGroup: false),
     ]
   }
@@ -897,11 +936,13 @@ struct SettingsView: View {
   }()
 
   private var extensionsSettings: some View {
-    ExtensionsSettingsView(selectedTab: $selectedExtensionsTab, openMCPMateDownload: openMCPMateDownload)
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      .padding(.top, 24)
-      .padding(.horizontal, 24)
-      .padding(.bottom, 24)
+    ExtensionsSettingsView(
+      selectedTab: $selectedExtensionsTab, openMCPMateDownload: openMCPMateDownload
+    )
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .padding(.top, 24)
+    .padding(.horizontal, 24)
+    .padding(.bottom, 24)
   }
 
   private var remoteHostsSettings: some View {
@@ -1209,7 +1250,9 @@ struct SettingsView_Previews: PreviewProvider {
   static var previews: some View {
     let prefs = SessionPreferencesStore()
     let vm = SessionListViewModel(preferences: prefs)
-    return SettingsView(preferences: prefs, selection: .constant(.general), extensionsTab: .constant(.mcp))
-      .environmentObject(vm)
+    return SettingsView(
+      preferences: prefs, selection: .constant(.general), extensionsTab: .constant(.mcp)
+    )
+    .environmentObject(vm)
   }
 }

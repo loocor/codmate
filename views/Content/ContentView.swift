@@ -32,7 +32,6 @@ struct ContentView: View {
   // Persist content column (sessions list / review left pane) preferred width
   @State var contentColumnIdealWidth: CGFloat = 420
   @State var showSidebarNewProjectSheet = false
-  @State var showProjectEditorSheet = false
   @State var projectEditorTarget: Project? = nil
   // When starting embedded sessions, record the initial command lines per-session
   @State var embeddedInitialCommands: [SessionSummary.ID: String] = [:]
@@ -180,16 +179,33 @@ struct ContentView: View {
 
   var body: some View {
     GeometryReader { geometry in
-      navigationSplitView(geometry: geometry)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .sheet(isPresented: $showProjectEditorSheet, onDismiss: { projectEditorTarget = nil }) {
-          if let target = projectEditorTarget {
-            ProjectEditorSheet(isPresented: $showProjectEditorSheet, mode: .edit(existing: target))
-              .environmentObject(viewModel)
-          } else {
-            EmptyView()
-          }
+      ZStack {
+        WindowConfigurator { window in
+          MainWindowCoordinator.shared.attach(window)
+          window.identifier = NSUserInterfaceItemIdentifier("CodMateMainWindow")
+          MenuBarController.shared.reapplyVisibilityFromPreferences()
         }
+        .frame(width: 0, height: 0)
+
+        navigationSplitView(geometry: geometry)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .sheet(item: $projectEditorTarget) { target in
+            ProjectEditorSheet(
+              isPresented: Binding(
+                get: { true },
+                set: { if !$0 { projectEditorTarget = nil } }
+              ),
+              mode: .edit(existing: target)
+            )
+            .environmentObject(viewModel)
+          }
+      }
+      .onAppear {
+        MainWindowCoordinator.shared.applyMenuVisibility(preferences.systemMenuVisibility)
+      }
+      .onChange(of: preferences.systemMenuVisibility) { newValue in
+        MainWindowCoordinator.shared.applyMenuVisibility(newValue)
+      }
     }
   }
 

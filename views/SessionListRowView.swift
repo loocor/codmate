@@ -122,6 +122,11 @@ struct SessionListRowView: View {
               .renderingMode(.original)
               .aspectRatio(contentMode: .fit)
               .padding(4)
+              .modifier(
+                DarkModeInvertModifier(
+                  active: summary.source.baseKind == .codex && colorScheme == .dark
+                )
+              )
           } else if !isUpdating {
             Image(systemName: branding.symbolName)
               .font(.system(size: 14, weight: .semibold))

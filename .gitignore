@@ -22,3 +22,7 @@ dist/
 .env
 .comate
 .serena
+# Project-level AI assistant configs (generated at runtime)
+.claude/
+.codex/
+.gemini/

@@ -17,10 +17,15 @@ struct CodMateApp: App {
 
   init() {
     let prefs = SessionPreferencesStore()
+    let listVM = SessionListViewModel(preferences: prefs)
     _preferences = StateObject(wrappedValue: prefs)
-    _listViewModel = StateObject(wrappedValue: SessionListViewModel(preferences: prefs))
+    _listViewModel = StateObject(wrappedValue: listVM)
     // Prepare user notifications early so banners can show while app is active
     SystemNotifier.shared.bootstrap()
+    // Setup menu bar before windows appear
+    #if os(macOS)
+      MenuBarController.shared.configure(viewModel: listVM, preferences: prefs)
+    #endif
     // In App Sandbox, restore security-scoped access to user-selected directories
     SecurityScopedBookmarks.shared.restoreAndStartAccess()
     // Restore all dynamic bookmarks (e.g., repository directories for Git Review)
@@ -67,7 +72,7 @@ struct CodMateApp: App {
   }
 
   var body: some Scene {
-    WindowGroup {
+    WindowGroup("CodMate", id: "main") {
       ContentView(viewModel: listViewModel)
         .frame(minWidth: 880, minHeight: 600)
         .onReceive(NotificationCenter.default.publisher(for: .codMateOpenSettings)) { note in
@@ -82,25 +87,33 @@ struct CodMateApp: App {
           } else {
             settingsSelection = .general
           }
-          openWindow(id: "settings")
+          if !bringWindow(identifier: "CodMateSettingsWindow") {
+            openWindow(id: "settings")
+          }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .codMateOpenMainWindow)) { _ in
+          if !bringWindow(identifier: "CodMateMainWindow") {
+            openWindow(id: "main")
+          }
         }
     }
     .defaultSize(width: 1200, height: 780)
     .handlesExternalEvents(matching: [])  // 防止 URL scheme 触发新窗口创建
     .commands { bodyCommands }
-    WindowGroup("Settings", id: "settings") {
-      SettingsWindowContainer(
-        preferences: preferences,
-        listViewModel: listViewModel,
-        selection: $settingsSelection,
-        extensionsTab: $extensionsTabSelection
-      )
-    }
-    .defaultSize(width: 800, height: 640)
-    .handlesExternalEvents(matching: [])  // 防止 URL scheme 触发新设置窗口创建
-    .windowStyle(.titleBar)
-    .windowToolbarStyle(.automatic)
-    .windowResizability(.contentMinSize)
+    #if os(macOS)
+      Window("Settings", id: "settings") {
+        SettingsWindowContainer(
+          preferences: preferences,
+          listViewModel: listViewModel,
+          selection: $settingsSelection,
+          extensionsTab: $extensionsTabSelection
+        )
+      }
+      .defaultSize(width: 800, height: 640)
+      .windowStyle(.titleBar)
+      .windowToolbarStyle(.automatic)
+      .windowResizability(.contentMinSize)
+    #endif
   }
 
   private func presentSettings(for category: SettingCategory) {
@@ -111,7 +124,20 @@ struct CodMateApp: App {
     #if os(macOS)
       NSApplication.shared.activate(ignoringOtherApps: true)
     #endif
-    openWindow(id: "settings")
+    if !bringWindow(identifier: "CodMateSettingsWindow") {
+      openWindow(id: "settings")
+    }
+  }
+
+  private func bringWindow(identifier: String) -> Bool {
+    #if os(macOS)
+      let id = NSUserInterfaceItemIdentifier(identifier)
+      if let window = NSApplication.shared.windows.first(where: { $0.identifier == id }) {
+        window.makeKeyAndOrderFront(nil)
+        return true
+      }
+    #endif
+    return false
   }
 }
 
@@ -140,11 +166,14 @@ private struct SettingsWindowContainer: View {
       -> Bool
     {
       print("🔄 [AppDelegate] applicationShouldHandleReopen called, hasVisibleWindows: \(flag)")
-      //  If there are visible windows, bring them to the front
-      if flag {
-        sender.windows
-          .filter { $0.isVisible }
-          .forEach { $0.makeKeyAndOrderFront(nil) }
+      // If there are visible keyable windows, bring them to the front; otherwise open main.
+      let keyable = sender.windows.filter { $0.canBecomeKey }
+      if let visible = keyable.first(where: { $0.isVisible }) {
+        visible.makeKeyAndOrderFront(nil)
+      } else if let hidden = keyable.first {
+        hidden.makeKeyAndOrderFront(nil)
+      } else {
+        NotificationCenter.default.post(name: .codMateOpenMainWindow, object: nil)
       }
       //  Always return true to prevent the system from creating new windows
       //  This is particularly important for notification forwarding triggered by URL scheme (codmate://)

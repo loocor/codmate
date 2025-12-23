@@ -53,6 +53,7 @@ final class SessionPreferencesStore: ObservableObject {
     static let markdownVisibleKinds = "codex.markdown.visibleKinds"
     static let enabledRemoteHosts = "codex.remote.enabledHosts"
     static let searchPanelStyle = "codmate.search.panelStyle"
+    static let systemMenuVisibility = "codmate.systemMenu.visibility"
     // Claude advanced
     static let claudeDebug = "claude.debug"
     static let claudeDebugFilter = "claude.debug.filter"
@@ -266,6 +267,12 @@ final class SessionPreferencesStore: ObservableObject {
       self.searchPanelStyle = style
     } else {
       self.searchPanelStyle = .floating
+    }
+    if let rawMenu = defaults.string(forKey: Keys.systemMenuVisibility),
+       let visibility = SystemMenuVisibility(rawValue: rawMenu) {
+      self.systemMenuVisibility = visibility
+    } else {
+      self.systemMenuVisibility = .visible
     }
     // Claude advanced defaults
     self.claudeDebug = defaults.object(forKey: Keys.claudeDebug) as? Bool ?? false
@@ -483,6 +490,10 @@ final class SessionPreferencesStore: ObservableObject {
 
   @Published var searchPanelStyle: GlobalSearchPanelStyle {
     didSet { defaults.set(searchPanelStyle.rawValue, forKey: Keys.searchPanelStyle) }
+  }
+
+  @Published var systemMenuVisibility: SystemMenuVisibility {
+    didSet { defaults.set(systemMenuVisibility.rawValue, forKey: Keys.systemMenuVisibility) }
   }
 
   @Published var enabledRemoteHosts: Set<String> = [] {

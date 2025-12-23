@@ -289,6 +289,12 @@ extension ContentView {
 
   func applyNotificationModifiers<V: View>(to view: V) -> some View {
     view
+      .onReceive(NotificationCenter.default.publisher(for: .codMateResumeSession)) { note in
+        guard let sessionId = note.userInfo?["sessionId"] as? String else { return }
+        if let summary = summaryLookup[sessionId] ?? viewModel.sessionSummary(for: sessionId) {
+          resumeFromList(summary)
+        }
+      }
       .onReceive(NotificationCenter.default.publisher(for: .codMateStartEmbeddedNewProject)) {
         note in
         NSLog("📌 [ContentView] Received codMateStartEmbeddedNewProject: %@", note.userInfo ?? [:])

@@ -27,6 +27,7 @@ UI Rules (macOS specific)
   - Advanced capabilities (MCPMate download and instructions) remain as a footer/section in MCP Servers tab.
 - Search: prefer a toolbar `SearchField` in macOS, not `.searchable` when exact placement (far right) matters.
 - Toolbars: place refresh as the last ToolbarItem to pin it at the far right. Keep destructive actions in the detail pane, not in the main toolbar. Command+R and the refresh button also invalidate and recompute global sidebar statistics (projects/path tree and calendar day counts) to reflect new sessions immediately.
+- Menu Bar (status item): keep it lightweight with status + quick actions. Show provider/model/sandbox/approval, New/Resume/Search/Open, Recent Projects/Sessions (max 5), Usage summary, Provider switch, Settings/Quit; avoid destructive actions.
 - Sidebar (left):
   - Top (fixed): "All Sessions" row showing total count and selection state.
   - Middle (scrollable): path tree built from `cwd` counts. Rows are compact: default min row height 18, small control size, reduced insets. Single-click selects/expands; double-click applies filter (enter the directory).
