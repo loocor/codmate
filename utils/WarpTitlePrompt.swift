@@ -16,6 +16,7 @@ enum WarpTitlePrompt {
         field.stringValue = defaultValue
         alert.accessoryView = field
         field.selectText(nil)
+        alert.window.initialFirstResponder = field
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {

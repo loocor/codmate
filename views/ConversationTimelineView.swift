@@ -1085,13 +1085,17 @@ private struct CollapsibleText: View {
 
       if truncated {
         Button(action: { isExpanded.toggle() }) {
-          Image(systemName: "ellipsis")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(4)  // Add padding to increase tap area
+          HStack {
+            Spacer()
+            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+              .font(.caption.weight(.bold))
+              .foregroundStyle(.secondary)
+            Spacer()
+          }
+          .frame(height: 24)
+          .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contentShape(Rectangle())  // Make entire button area tappable
         .hoverHand()
       }
     }
