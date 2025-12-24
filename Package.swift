@@ -34,6 +34,7 @@ let package = Package(
         "SwiftTerm",
         "notify",
         "build",
+        "artifacts",
         ".build",
         "scripts",
         "docs",

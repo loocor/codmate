@@ -255,6 +255,7 @@ final class SessionListViewModel: ObservableObject {
   @Published private(set) var codexUsageStatus: CodexUsageStatus?
   @Published private(set) var usageSnapshots: [UsageProviderKind: UsageProviderSnapshot] = [:]
   private var claudeUsageAutoRefreshEnabled = false
+  private var didAutoRefreshUsage = false
   // Live activity indicators
   @Published private(set) var activeUpdatingIDs: Set<String> = []
   @Published private(set) var awaitingFollowupIDs: Set<String> = []
@@ -553,7 +554,8 @@ final class SessionListViewModel: ObservableObject {
     )
     self.projectsStore = ProjectsStore(paths: p)
     self.claudeProvider = ClaudeSessionProvider(cacheStore: sqliteStore)
-    self.geminiProvider = GeminiSessionProvider(projectsStore: self.projectsStore, cacheStore: sqliteStore)
+    self.geminiProvider = GeminiSessionProvider(
+      projectsStore: self.projectsStore, cacheStore: sqliteStore)
     self.remoteProvider = RemoteSessionProvider(indexer: SessionIndexer(sqliteStore: sqliteStore))
 
     suppressFilterNotifications = true
@@ -616,11 +618,15 @@ final class SessionListViewModel: ObservableObject {
       if let coverage {
         self.cacheCoverage = coverage
         self.globalSessionCount = coverage.sessionCount
-        self.diagLogger.log("prime index coverage count=\(coverage.sessionCount, privacy: .public) sources=\(coverage.sources, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+        self.diagLogger.log(
+          "prime index coverage count=\(coverage.sessionCount, privacy: .public) sources=\(coverage.sources, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+        )
       } else if let meta {
         self.indexMeta = meta
         self.globalSessionCount = meta.sessionCount
-        self.diagLogger.log("prime index meta count=\(meta.sessionCount, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+        self.diagLogger.log(
+          "prime index meta count=\(meta.sessionCount, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+        )
       }
     }
 
@@ -701,6 +707,13 @@ final class SessionListViewModel: ObservableObject {
           self.refreshGeminiUsageStatus()
         }
       }
+      await MainActor.run {
+        self.autoRefreshUsageIfNeeded(
+          codexOrigin: codexOrigin,
+          claudeOrigin: claudeOrigin,
+          geminiOrigin: geminiOrigin
+        )
+      }
     }
   }
 
@@ -715,7 +728,9 @@ final class SessionListViewModel: ObservableObject {
     let token = UUID()
     activeRefreshToken = token
     if shouldSkipForCacheUnavailable() {
-      diagLogger.log("refreshSessions skipped due to cache unavailable (cooldown) ts=\(self.ts(), format: .fixed(precision: 3))")
+      diagLogger.log(
+        "refreshSessions skipped due to cache unavailable (cooldown) ts=\(self.ts(), format: .fixed(precision: 3))"
+      )
       await MainActor.run { self.isLoading = false }
       return
     }
@@ -723,7 +738,9 @@ final class SessionListViewModel: ObservableObject {
     let scopeKeyValue = scopeKey(scope)
 
     if shouldSkipRefresh(scope: scope, force: force) {
-      diagLogger.log("refreshSessions skipped (executing or recent) scope=\(scopeKeyValue, privacy: .public) force=\(force, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+      diagLogger.log(
+        "refreshSessions skipped (executing or recent) scope=\(scopeKeyValue, privacy: .public) force=\(force, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+      )
       await MainActor.run { self.isLoading = false }
       return
     }
@@ -744,7 +761,9 @@ final class SessionListViewModel: ObservableObject {
         if activeScopeRefreshes[scopeKeyValue] == token {
           activeScopeRefreshes.removeValue(forKey: scopeKeyValue)
         }
-        diagLogger.log("refreshSessions done in \(elapsed, format: .fixed(precision: 3))s sessions=\(self.allSessions.count, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+        diagLogger.log(
+          "refreshSessions done in \(elapsed, format: .fixed(precision: 3))s sessions=\(self.allSessions.count, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+        )
       }
     }
 
@@ -752,7 +771,9 @@ final class SessionListViewModel: ObservableObject {
     await ensureSessionsAccess()
 
     let enabledRemoteHosts = preferences.enabledRemoteHosts
-    diagLogger.log("refreshSessions start force=\(force, privacy: .public) scope=\(String(describing: scope), privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3)) hosts=\(enabledRemoteHosts.count, privacy: .public)")
+    diagLogger.log(
+      "refreshSessions start force=\(force, privacy: .public) scope=\(String(describing: scope), privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3)) hosts=\(enabledRemoteHosts.count, privacy: .public)"
+    )
 
     let providers = buildProviders(enabledRemoteHosts: Set(enabledRemoteHosts))
     let projectDirectories = singleSelectedProjectDirectory()
@@ -857,7 +878,9 @@ final class SessionListViewModel: ObservableObject {
       guard let self else { return }
       self.indexMeta = await self.indexer.currentMeta()
       self.cacheCoverage = await self.indexer.currentCoverage()
-      self.diagLogger.log("refreshSessions meta/coverage updated metaCount=\(self.indexMeta?.sessionCount ?? -1, privacy: .public) coverageCount=\(self.cacheCoverage?.sessionCount ?? -1, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+      self.diagLogger.log(
+        "refreshSessions meta/coverage updated metaCount=\(self.indexMeta?.sessionCount ?? -1, privacy: .public) coverageCount=\(self.cacheCoverage?.sessionCount ?? -1, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+      )
     }
     refreshCodexUsageStatus()
     if claudeUsageAutoRefreshEnabled {
@@ -881,11 +904,15 @@ final class SessionListViewModel: ObservableObject {
   func refreshSelectedSessions(sessionIds: Set<String>, force: Bool = false) async -> Bool {
     guard !sessionIds.isEmpty else { return false }
     if shouldSkipForCacheUnavailable() {
-      diagLogger.log("refreshSelectedSessions skipped due to cache unavailable (cooldown) ts=\(self.ts(), format: .fixed(precision: 3))")
+      diagLogger.log(
+        "refreshSelectedSessions skipped due to cache unavailable (cooldown) ts=\(self.ts(), format: .fixed(precision: 3))"
+      )
       return false
     }
 
-    diagLogger.log("refreshSelectedSessions: start sessionIds=\(sessionIds.count, privacy: .public) force=\(force, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+    diagLogger.log(
+      "refreshSelectedSessions: start sessionIds=\(sessionIds.count, privacy: .public) force=\(force, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+    )
     let refreshBegan = Date()
 
     // Pull cached file metadata (mtime/size) to avoid re-parsing unchanged files (Codex only)
@@ -911,8 +938,9 @@ final class SessionListViewModel: ObservableObject {
       for session in codexSessions {
         let record = cachedById[session.id]
         let fileURL = record.flatMap { URL(fileURLWithPath: $0.filePath) } ?? session.fileURL
-        guard let values = try? fileURL.resourceValues(
-          forKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]),
+        guard
+          let values = try? fileURL.resourceValues(
+            forKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]),
           values.isRegularFile == true
         else {
           // Missing file or unreadable: refresh to reconcile state
@@ -928,7 +956,9 @@ final class SessionListViewModel: ObservableObject {
         var hasComparableMetric = false
         var changed = false
 
-        if let cachedMtime = record?.fileModificationTime, let mtime = values.contentModificationDate {
+        if let cachedMtime = record?.fileModificationTime,
+          let mtime = values.contentModificationDate
+        {
           hasComparableMetric = true
           if mtime > cachedMtime.addingTimeInterval(0.001) {
             changed = true
@@ -949,13 +979,17 @@ final class SessionListViewModel: ObservableObject {
       }
 
       if !needsRefresh.isEmpty {
-        diagLogger.log("refreshSelectedSessions (codex): refreshing \(needsRefresh.count, privacy: .public) files")
+        diagLogger.log(
+          "refreshSelectedSessions (codex): refreshing \(needsRefresh.count, privacy: .public) files"
+        )
         let urlsToRefresh = needsRefresh.map { $0.url }
         do {
           let codexSummaries = try await indexer.reindexFiles(urlsToRefresh)
           refreshedSummaries.append(contentsOf: codexSummaries)
         } catch {
-          diagLogger.error("refreshSelectedSessions: codex reindex failed: \(error.localizedDescription, privacy: .public)")
+          diagLogger.error(
+            "refreshSelectedSessions: codex reindex failed: \(error.localizedDescription, privacy: .public)"
+          )
         }
       }
     }
@@ -1020,7 +1054,9 @@ final class SessionListViewModel: ObservableObject {
     }
 
     let elapsed = Date().timeIntervalSince(refreshBegan)
-    diagLogger.log("refreshSelectedSessions: completed in \(elapsed, format: .fixed(precision: 3))s, refreshed=\(refreshedSummaries.count, privacy: .public)")
+    diagLogger.log(
+      "refreshSelectedSessions: completed in \(elapsed, format: .fixed(precision: 3))s, refreshed=\(refreshedSummaries.count, privacy: .public)"
+    )
 
     return didChange
   }
@@ -1045,7 +1081,7 @@ final class SessionListViewModel: ObservableObject {
     var providers: [any SessionProvider] = [
       indexer,
       claudeProvider,
-      geminiProvider
+      geminiProvider,
     ]
     if !enabledRemoteHosts.isEmpty {
       providers.append(
@@ -1078,13 +1114,17 @@ final class SessionListViewModel: ObservableObject {
         || error is ClaudeSessionProvider.SessionProviderCacheError
         || error is GeminiSessionProvider.SessionProviderCacheError
     }
-    return await withTaskGroup(of: ([SessionSummary], SessionIndexCoverage?, SessionSource.Kind).self) { group in
+    return await withTaskGroup(
+      of: ([SessionSummary], SessionIndexCoverage?, SessionSource.Kind).self
+    ) { group in
       for provider in providers {
         group.addTask { [self] in
           do {
             let result = try await provider.load(context: context)
             let label = result.summaries.first?.source.baseKind.rawValue ?? provider.kind.rawValue
-            logger.log("provider load success kind=\(label, privacy: .public) count=\(result.summaries.count, privacy: .public) cacheHit=\(result.cacheHit, privacy: .public)")
+            logger.log(
+              "provider load success kind=\(label, privacy: .public) count=\(result.summaries.count, privacy: .public) cacheHit=\(result.cacheHit, privacy: .public)"
+            )
             if !result.summaries.isEmpty {
               await MainActor.run { self.clearCacheUnavailable() }
             }
@@ -1093,7 +1133,9 @@ final class SessionListViewModel: ObservableObject {
             if isCacheUnavailableError(error) {
               await MainActor.run { self.markCacheUnavailableNow() }
             }
-            logger.error("provider load failed kind=\(provider.kind.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            logger.error(
+              "provider load failed kind=\(provider.kind.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
             return ([], nil, provider.kind)
           }
         }
@@ -1396,7 +1438,9 @@ final class SessionListViewModel: ObservableObject {
     Task { [weak self, monthStart, dimension, enabledHosts, sessionsRoot] in
       guard let self else { return }
       let started = Date()
-      self.diagLogger.log("calendarCounts start month=\(key, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+      self.diagLogger.log(
+        "calendarCounts start month=\(key, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+      )
       var merged = await self.indexer.computeCalendarCounts(
         root: sessionsRoot, monthStart: monthStart, dimension: dimension)
       if !enabledHosts.isEmpty {
@@ -1426,7 +1470,9 @@ final class SessionListViewModel: ObservableObject {
         self.monthCountsCache[self.cacheKey(monthStart, dimension)] = merged
       }
       let elapsed = Date().timeIntervalSince(started)
-      self.diagLogger.log("calendarCounts done month=\(key, privacy: .public) days=\(merged.count, privacy: .public) in \(elapsed, format: .fixed(precision: 3))s ts=\(self.ts(), format: .fixed(precision: 3))")
+      self.diagLogger.log(
+        "calendarCounts done month=\(key, privacy: .public) days=\(merged.count, privacy: .public) in \(elapsed, format: .fixed(precision: 3))s ts=\(self.ts(), format: .fixed(precision: 3))"
+      )
     }
   }
 
@@ -1476,7 +1522,9 @@ final class SessionListViewModel: ObservableObject {
       let tree = await self.pathTreeStore.applySnapshot(counts: counts)
       await MainActor.run { self.pathTreeRootPublished = tree }
       let elapsed = Date().timeIntervalSince(started)
-      diagLogger.log("pathTreeRefresh done in \(elapsed, format: .fixed(precision: 3))s counts=\(counts.count, privacy: .public) ts=\(ts(), format: .fixed(precision: 3))")
+      diagLogger.log(
+        "pathTreeRefresh done in \(elapsed, format: .fixed(precision: 3))s counts=\(counts.count, privacy: .public) ts=\(ts(), format: .fixed(precision: 3))"
+      )
     }
   }
 
@@ -1783,7 +1831,9 @@ final class SessionListViewModel: ObservableObject {
 
   private func singleSelectedProjectDirectory() -> [String]? {
     guard let pid = selectedProjectIDs.first, selectedProjectIDs.count == 1 else { return nil }
-    guard let project = projects.first(where: { $0.id == pid }), let dir = project.directory, !dir.isEmpty else {
+    guard let project = projects.first(where: { $0.id == pid }), let dir = project.directory,
+      !dir.isEmpty
+    else {
       return nil
     }
     return [Self.canonicalPath(dir)]
@@ -1927,7 +1977,8 @@ final class SessionListViewModel: ObservableObject {
       dayIndex: dayIndexMap,
       dayCoverage: updatedMonthCoverage,
       dayDescriptors: dayDescriptors,
-      reasonDescription: "filters: projects=\(selectedProjectIDs.count) path=\(selectedPath ?? "nil") days=\(selectedDays.count) dim=\(dateDimension.rawValue) search=\(trimmedSearch.isEmpty ? "none" : "non-empty") isLoading=\(isLoading)"
+      reasonDescription:
+        "filters: projects=\(selectedProjectIDs.count) path=\(selectedPath ?? "nil") days=\(selectedDays.count) dim=\(dateDimension.rawValue) search=\(trimmedSearch.isEmpty ? "none" : "non-empty") isLoading=\(isLoading)"
     )
   }
 
@@ -2039,8 +2090,6 @@ final class SessionListViewModel: ObservableObject {
     }
     return false
   }
-
-
 
   nonisolated private static func referenceDate(
     for session: SessionSummary, dimension: DateDimension
@@ -2370,8 +2419,12 @@ final class SessionListViewModel: ObservableObject {
   private static func geminiHashComponent(in path: String) -> String? {
     guard let range = path.range(of: "/.gemini/tmp/") else { return nil }
     let remainder = path[range.upperBound...]
-    guard let candidate = remainder.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
-      .first else { return nil }
+    guard
+      let candidate = remainder.split(
+        separator: "/", maxSplits: 1, omittingEmptySubsequences: false
+      )
+      .first
+    else { return nil }
     let hash = String(candidate)
     guard hash.count == 64,
       hash.range(of: "^[0-9a-f]+$", options: .regularExpression) != nil
@@ -2480,11 +2533,17 @@ final class SessionListViewModel: ObservableObject {
   }
 
   private func logApplyFiltersStart(reason: String) {
-    diagLogger.log("applyFilters start reason=\(reason, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+    diagLogger.log(
+      "applyFilters start reason=\(reason, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+    )
   }
 
-  private func logApplyFiltersEnd(reason: String, elapsed: TimeInterval, sections: Int, sessions: Int) {
-    diagLogger.log("applyFilters done reason=\(reason, privacy: .public) in \(elapsed, format: .fixed(precision: 3))s sections=\(sections, privacy: .public) sessions=\(sessions, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+  private func logApplyFiltersEnd(
+    reason: String, elapsed: TimeInterval, sections: Int, sessions: Int
+  ) {
+    diagLogger.log(
+      "applyFilters done reason=\(reason, privacy: .public) in \(elapsed, format: .fixed(precision: 3))s sections=\(sections, privacy: .public) sessions=\(sessions, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+    )
   }
 
   private func configureDirectoryMonitor() {
@@ -2573,7 +2632,8 @@ final class SessionListViewModel: ObservableObject {
       let timeSinceLastEvent = Date().timeIntervalSince(self.lastFileEventAt)
       if timeSinceLastEvent < 0.1 && Date().timeIntervalSince(startTime) < 1.0 {
         // More events are coming in, wait a bit more (up to max window)
-        let remainingTime = maxAggregationWindow - UInt64(Date().timeIntervalSince(startTime) * 1_000_000_000)
+        let remainingTime =
+          maxAggregationWindow - UInt64(Date().timeIntervalSince(startTime) * 1_000_000_000)
         if remainingTime > 0 {
           try? await Task.sleep(nanoseconds: min(remainingTime, 200_000_000))
         }
@@ -2625,16 +2685,21 @@ final class SessionListViewModel: ObservableObject {
       // Parse Level Protection:
       // If old session has better parse level than new session (e.g. Enriched vs Metadata),
       // and file metadata (mtime/size) hasn't changed significantly, KEEP OLD SESSION.
-      if let oldLevel = oldSession.parseLevel, let newLevel = newSession.parseLevel, oldLevel > newLevel {
-         // Check if file is effectively unchanged to justify keeping old data
-         let lastUpdatedMatches = abs((newSession.lastUpdatedAt ?? Date.distantPast).timeIntervalSince((oldSession.lastUpdatedAt ?? Date.distantPast))) < 0.1
-         let fileSizeMatches = (newSession.fileSizeBytes ?? 0) == (oldSession.fileSizeBytes ?? 0)
-         
-         if lastUpdatedMatches && fileSizeMatches {
-             // Keep high-quality old session
-             mergedSessions.append(oldSession)
-             continue
-         }
+      if let oldLevel = oldSession.parseLevel, let newLevel = newSession.parseLevel,
+        oldLevel > newLevel
+      {
+        // Check if file is effectively unchanged to justify keeping old data
+        let lastUpdatedMatches =
+          abs(
+            (newSession.lastUpdatedAt ?? Date.distantPast).timeIntervalSince(
+              (oldSession.lastUpdatedAt ?? Date.distantPast))) < 0.1
+        let fileSizeMatches = (newSession.fileSizeBytes ?? 0) == (oldSession.fileSizeBytes ?? 0)
+
+        if lastUpdatedMatches && fileSizeMatches {
+          // Keep high-quality old session
+          mergedSessions.append(oldSession)
+          continue
+        }
       }
 
       // Check if this specific session actually changed by comparing key fields
@@ -2648,19 +2713,19 @@ final class SessionListViewModel: ObservableObject {
       // - UI flicker when refresh switches between fast parse (low counts) and full parse (correct counts)
       // Solution: If file metadata unchanged but ANY count DECREASED, it's fast parse - keep old richer data
       let fileUnchanged = fileSizeMatches && lastUpdatedMatches
-      let anyCountDecreased = (
-        newSession.userMessageCount < oldSession.userMessageCount ||
-        newSession.assistantMessageCount < oldSession.assistantMessageCount ||
-        newSession.toolInvocationCount < oldSession.toolInvocationCount
-      )
+      let anyCountDecreased =
+        (newSession.userMessageCount < oldSession.userMessageCount
+          || newSession.assistantMessageCount < oldSession.assistantMessageCount
+          || newSession.toolInvocationCount < oldSession.toolInvocationCount)
 
       if fileUnchanged && anyCountDecreased {
         // File hasn't changed but counts decreased - this is fast parse, keep old richer data
         mergedSessions.append(oldSession)
-      } else if fileSizeMatches && startedAtMatches && lastUpdatedMatches &&
-         oldSession.userMessageCount == newSession.userMessageCount &&
-         oldSession.assistantMessageCount == newSession.assistantMessageCount &&
-         oldSession.toolInvocationCount == newSession.toolInvocationCount {
+      } else if fileSizeMatches && startedAtMatches && lastUpdatedMatches
+        && oldSession.userMessageCount == newSession.userMessageCount
+        && oldSession.assistantMessageCount == newSession.assistantMessageCount
+        && oldSession.toolInvocationCount == newSession.toolInvocationCount
+      {
         // All counts match and file unchanged - truly no change
         mergedSessions.append(oldSession)
       } else {
@@ -2877,7 +2942,7 @@ final class SessionListViewModel: ObservableObject {
     pendingIncrementalHint = PendingIncrementalRefreshHint(
       kind: .codexDay(day), expiresAt: Date().addingTimeInterval(seconds))
   }
-  
+
   func setIncrementalHintForGeminiToday(window seconds: TimeInterval = 10) {
     let day = Calendar.current.startOfDay(for: Date())
     pendingIncrementalHint = PendingIncrementalRefreshHint(
@@ -3008,13 +3073,14 @@ final class SessionListViewModel: ObservableObject {
       // Swallow errors for incremental path; full refresh will recover if needed.
     }
   }
-  
+
   func refreshIncrementalForGeminiToday() async {
     do {
       let subset = try await geminiProvider.sessions(scope: .day(dayOfToday()))
       await MainActor.run { self.mergeAndApply(subset) }
     } catch {
-      diagLogger.error("refreshIncrementalForGeminiToday failed: \(error.localizedDescription, privacy: .public)")
+      diagLogger.error(
+        "refreshIncrementalForGeminiToday failed: \(error.localizedDescription, privacy: .public)")
     }
   }
 
@@ -3023,7 +3089,8 @@ final class SessionListViewModel: ObservableObject {
       let subset = try await claudeProvider.sessions(scope: .day(dayOfToday()))
       await MainActor.run { self.mergeAndApply(subset) }
     } catch {
-      diagLogger.error("refreshIncrementalForClaudeToday failed: \(error.localizedDescription, privacy: .public)")
+      diagLogger.error(
+        "refreshIncrementalForClaudeToday failed: \(error.localizedDescription, privacy: .public)")
     }
   }
 
@@ -3032,7 +3099,9 @@ final class SessionListViewModel: ObservableObject {
       let subset = try await claudeProvider.sessions(inProjectDirectory: directory)
       await MainActor.run { self.mergeAndApply(subset) }
     } catch {
-      diagLogger.error("refreshIncrementalForClaudeProject failed: \(error.localizedDescription, privacy: .public)")
+      diagLogger.error(
+        "refreshIncrementalForClaudeProject failed: \(error.localizedDescription, privacy: .public)"
+      )
     }
   }
 
@@ -3090,12 +3159,16 @@ extension SessionListViewModel {
     // Fast path: use cached coverage/meta to avoid re-parsing sessions on cold start.
     if let coverage = await indexer.currentCoverage() {
       await MainActor.run { self.globalSessionCount = coverage.sessionCount }
-      diagLogger.log("refreshGlobalCount via coverage count=\(coverage.sessionCount, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+      diagLogger.log(
+        "refreshGlobalCount via coverage count=\(coverage.sessionCount, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+      )
       return
     }
     if let meta = await indexer.currentMeta() {
       await MainActor.run { self.globalSessionCount = meta.sessionCount }
-      diagLogger.log("refreshGlobalCount via meta count=\(meta.sessionCount, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))")
+      diagLogger.log(
+        "refreshGlobalCount via meta count=\(meta.sessionCount, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
+      )
       return
     }
 
@@ -3109,7 +3182,9 @@ extension SessionListViewModel {
         codexSummaries = []
       }
     } catch {
-      diagLogger.error("refreshGlobalCount failed to read codex cache: \(error.localizedDescription, privacy: .public)")
+      diagLogger.error(
+        "refreshGlobalCount failed to read codex cache: \(error.localizedDescription, privacy: .public)"
+      )
       await MainActor.run { self.globalSessionCount = 0 }
       return
     }
@@ -3127,11 +3202,14 @@ extension SessionListViewModel {
     if !enabledHosts.isEmpty {
       let startRemote = Date()
       let codexCount = await remoteProvider.countSessions(kind: .codex, enabledHosts: enabledHosts)
-      let claudeCount = await remoteProvider.countSessions(kind: .claude, enabledHosts: enabledHosts)
+      let claudeCount = await remoteProvider.countSessions(
+        kind: .claude, enabledHosts: enabledHosts)
       total += codexCount
       total += claudeCount
       let elapsed = Date().timeIntervalSince(startRemote)
-      diagLogger.log("refreshGlobalCount remote counts codex=\(codexCount, privacy: .public) claude=\(claudeCount, privacy: .public) in \(elapsed, format: .fixed(precision: 3))s ts=\(self.ts(), format: .fixed(precision: 3))")
+      diagLogger.log(
+        "refreshGlobalCount remote counts codex=\(codexCount, privacy: .public) claude=\(claudeCount, privacy: .public) in \(elapsed, format: .fixed(precision: 3))s ts=\(self.ts(), format: .fixed(precision: 3))"
+      )
     }
     await MainActor.run { self.globalSessionCount = total }
   }
@@ -3277,7 +3355,8 @@ extension SessionListViewModel {
   }
 
   private static func codexPlanBadge(from rawPlanType: String?) -> String? {
-    guard let raw = rawPlanType?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+    guard let raw = rawPlanType?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
+    else {
       return nil
     }
     let plan = raw.lowercased()
@@ -3437,7 +3516,7 @@ extension SessionListViewModel {
     case .credentialExpired:
       return ClaudeUsageErrorDescriptor(
         message:
-          "No Claude usage recently. Will be automatically updated after running Claude Code again.",
+          "No Claude usage recently. ",
         requiresReauth: false,
         action: .refresh
       )
@@ -3535,6 +3614,32 @@ extension SessionListViewModel {
       return
     }
     usageSnapshots[provider] = new
+  }
+
+  private func autoRefreshUsageIfNeeded(
+    codexOrigin: UsageProviderOrigin,
+    claudeOrigin: UsageProviderOrigin,
+    geminiOrigin: UsageProviderOrigin
+  ) {
+    guard !didAutoRefreshUsage else { return }
+    didAutoRefreshUsage = true
+
+    let shouldRefresh: (UsageProviderKind) -> Bool = { provider in
+      guard let snapshot = self.usageSnapshots[provider] else { return true }
+      if snapshot.origin == .thirdParty { return false }
+      if snapshot.availability == .ready { return false }
+      return snapshot.updatedAt == nil
+    }
+
+    if codexOrigin == .builtin, shouldRefresh(.codex) {
+      refreshCodexUsageStatus()
+    }
+    if claudeOrigin == .builtin, shouldRefresh(.claude) {
+      refreshClaudeUsageStatus()
+    }
+    if geminiOrigin == .builtin, shouldRefresh(.gemini) {
+      refreshGeminiUsageStatus()
+    }
   }
 
   private static func usageSnapshotCoreEqual(_ a: UsageProviderSnapshot, _ b: UsageProviderSnapshot)
@@ -3657,12 +3762,14 @@ extension SessionListViewModel {
   private func timelineCacheSignature(for summary: SessionSummary) -> TimelineCacheSignature {
     // Prefer on-disk metadata for local sessions; fall back to summary hints.
     if !summary.source.isRemote,
-       let attrs = try? FileManager.default.attributesOfItem(atPath: summary.fileURL.path) {
+      let attrs = try? FileManager.default.attributesOfItem(atPath: summary.fileURL.path)
+    {
       let mtime = attrs[.modificationDate] as? Date
       let size = (attrs[.size] as? NSNumber)?.uint64Value
       return TimelineCacheSignature(modifiedAt: mtime, fileSize: size)
     }
-    return TimelineCacheSignature(modifiedAt: summary.lastUpdatedAt, fileSize: summary.fileSizeBytes)
+    return TimelineCacheSignature(
+      modifiedAt: summary.lastUpdatedAt, fileSize: summary.fileSizeBytes)
   }
 
   // MARK: - Timeline Previews
@@ -3671,7 +3778,8 @@ extension SessionListViewModel {
   func loadTimelinePreviews(for summary: SessionSummary) async -> [ConversationTurnPreview]? {
     // Get file attributes for mtime validation
     guard let attrs = try? FileManager.default.attributesOfItem(atPath: summary.fileURL.path),
-          let mtime = attrs[.modificationDate] as? Date else {
+      let mtime = attrs[.modificationDate] as? Date
+    else {
       return nil
     }
 
@@ -3690,7 +3798,8 @@ extension SessionListViewModel {
   /// Update timeline preview cache for a session
   func updateTimelinePreviews(for summary: SessionSummary, turns: [ConversationTurn]) async {
     guard let attrs = try? FileManager.default.attributesOfItem(atPath: summary.fileURL.path),
-          let mtime = attrs[.modificationDate] as? Date else {
+      let mtime = attrs[.modificationDate] as? Date
+    else {
       return
     }
 
@@ -3709,9 +3818,13 @@ extension SessionListViewModel {
         fileModificationTime: mtime,
         fileSize: size
       )
-      diagLogger.log("Timeline previews cached for session \(summary.id, privacy: .public): \(previews.count, privacy: .public) turns")
+      diagLogger.log(
+        "Timeline previews cached for session \(summary.id, privacy: .public): \(previews.count, privacy: .public) turns"
+      )
     } catch {
-      diagLogger.error("Failed to cache timeline previews for \(summary.id, privacy: .public): \(error.localizedDescription, privacy: .public)")
+      diagLogger.error(
+        "Failed to cache timeline previews for \(summary.id, privacy: .public): \(error.localizedDescription, privacy: .public)"
+      )
     }
   }
 

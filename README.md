@@ -141,6 +141,7 @@ Makefile (recommended)
 ```sh
 make build   # SwiftPM debug build
 make test    # SwiftPM tests (if any)
+make run     # Build (debug, native arch) and launch for local testing
 make app VER=1.2.3     # Create CodMate.app in build/ (ARCH defaults to host)
 make app VER=1.2.3 ARCH=arm64
 make app VER=1.2.3 ARCH=x86_64
