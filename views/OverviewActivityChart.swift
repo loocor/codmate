@@ -229,23 +229,23 @@ struct OverviewActivityChart: View {
 
     @ViewBuilder
     private var emptyStateView: some View {
-        if #available(macOS 14.0, *) {
-            ContentUnavailableView {
-                Label("No Activity", systemImage: "chart.bar")
-            } description: {
-                Text("No sessions found in this time range.")
+        ZStack {
+            if #available(macOS 14.0, *) {
+                ContentUnavailableView {
+                    Label("No Activity", systemImage: "chart.bar")
+                } description: {
+                    Text("No sessions found in this time range.")
+                }
+            } else {
+                UnavailableStateView(
+                    "No Activity",
+                    systemImage: "chart.bar",
+                    description: "No sessions found in this time range.",
+                    titleFont: .callout
+                )
             }
-            .frame(height: 160)
-        } else {
-            UnavailableStateView(
-                "No Activity",
-                systemImage: "chart.bar",
-                description: "No sessions found in this time range.",
-                titleFont: .callout
-            )
-            .frame(height: 160)
-            .frame(maxWidth: .infinity)
         }
+        .frame(maxWidth: .infinity, minHeight: 160, maxHeight: 160, alignment: .center)
     }
 
     @ViewBuilder

@@ -4,11 +4,13 @@ import Foundation
 @MainActor
 final class ProjectOverviewViewModel: ObservableObject {
   @Published private(set) var snapshot: ProjectOverviewSnapshot = .empty
+  @Published private(set) var isLoading: Bool = true
 
   private let sessionListViewModel: SessionListViewModel
   private var project: Project
   private var cancellables: Set<AnyCancellable> = []
   private var pendingRefreshTask: Task<Void, Never>? = nil
+  private var hasLoadedOnce: Bool = false
 
   init(sessionListViewModel: SessionListViewModel, project: Project) {
     self.sessionListViewModel = sessionListViewModel
@@ -49,6 +51,18 @@ final class ProjectOverviewViewModel: ObservableObject {
     sessionListViewModel.$projects
       .sink { [weak self] _ in self?.scheduleSnapshotRefresh() }
       .store(in: &cancellables)
+
+    sessionListViewModel.$isLoading
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] value in
+        guard let self else { return }
+        if self.hasLoadedOnce {
+          self.isLoading = value
+        } else {
+          self.isLoading = true
+        }
+      }
+      .store(in: &cancellables)
   }
 
   private func scheduleSnapshotRefresh() {
@@ -58,12 +72,60 @@ final class ProjectOverviewViewModel: ObservableObject {
       guard !Task.isCancelled else { return }
       guard let self else { return }
       
+      let shouldShowLoading = !self.hasLoadedOnce || self.sessionListViewModel.isLoading
+      if shouldShowLoading {
+        await MainActor.run {
+          self.isLoading = true
+        }
+      }
+      
       // Capture data on MainActor
       // Filter sessions on MainActor because projectId(for:) accesses MainActor state
       let filteredSessions = self.sessionListViewModel.sections.flatMap { $0.sessions }
-      let projectSessions: [SessionSummary] = filteredSessions
-        .filter { self.sessionListViewModel.projectId(for: $0) == self.project.id }
-      
+      var allowedProjects = Set([self.project.id])
+      let descendants = self.sessionListViewModel.collectDescendants(
+        of: self.project.id,
+        in: self.sessionListViewModel.projects
+      )
+      allowedProjects.formUnion(descendants)
+      var projectSessions: [SessionSummary] = filteredSessions.filter {
+        guard let pid = self.sessionListViewModel.projectId(for: $0) else { return false }
+        return allowedProjects.contains(pid)
+      }
+
+      // If the filtered view is empty but counts indicate data, fall back to a local filter pass.
+      if projectSessions.isEmpty,
+         !self.sessionListViewModel.isLoading {
+        let trimmedSearch = self.sessionListViewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedQuick = self.sessionListViewModel.quickSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasScopeFilters = self.sessionListViewModel.selectedPath != nil || !trimmedSearch.isEmpty || !trimmedQuick.isEmpty
+        let visibleCount = self.sessionListViewModel.projectCountsDisplay()[self.project.id]?.visible ?? 0
+        if !hasScopeFilters, visibleCount > 0 {
+          let allowedSourcesByProject = self.sessionListViewModel.projects.reduce(
+            into: [String: Set<ProjectSessionSource>]()
+          ) { $0[$1.id] = $1.sources }
+          let descriptors = SessionListViewModel.makeDayDescriptors(
+            selectedDays: self.sessionListViewModel.selectedDays,
+            singleDay: self.sessionListViewModel.selectedDay
+          )
+          let filterByDay = !descriptors.isEmpty
+          let fallback = self.sessionListViewModel.allSessions.filter { session in
+            guard let pid = self.sessionListViewModel.projectId(for: session),
+                  allowedProjects.contains(pid)
+            else { return false }
+            let allowedSources = allowedSourcesByProject[pid] ?? ProjectSessionSource.allSet
+            guard allowedSources.contains(session.source.projectSource) else { return false }
+            if filterByDay {
+              return self.sessionListViewModel.matchesDayFilters(session, descriptors: descriptors)
+            }
+            return true
+          }
+          if !fallback.isEmpty {
+            projectSessions = fallback
+          }
+        }
+      }
+
       let usageSnapshots = self.sessionListViewModel.usageSnapshots
       
       // Run computation in background
@@ -75,6 +137,8 @@ final class ProjectOverviewViewModel: ObservableObject {
       guard !Task.isCancelled else { return }
       await MainActor.run {
         self.snapshot = newSnapshot
+        self.hasLoadedOnce = true
+        self.isLoading = self.sessionListViewModel.isLoading
       }
     }
   }

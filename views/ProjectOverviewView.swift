@@ -32,9 +32,11 @@ struct ProjectOverviewView: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 20) {
           headerSection
-          
-          if !snapshot.activityChartData.points.isEmpty {
-             OverviewActivityChart(data: snapshot.activityChartData, onSelectDate: onSelectDate)
+
+          if shouldShowChartPlaceholder {
+            OverviewChartPlaceholder()
+          } else {
+            OverviewActivityChart(data: snapshot.activityChartData, onSelectDate: onSelectDate)
           }
 
           heroSection(columns: cols)
@@ -49,6 +51,9 @@ struct ProjectOverviewView: View {
   }
 
   private var snapshot: ProjectOverviewSnapshot { viewModel.snapshot }
+  private var shouldShowChartPlaceholder: Bool {
+    viewModel.isLoading && snapshot.activityChartData.points.isEmpty
+  }
 
   private var headerSection: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -194,4 +199,34 @@ struct ProjectOverviewView: View {
     formatter.zeroFormattingBehavior = .dropLeading
     return formatter
   }()
+}
+
+private struct OverviewChartPlaceholder: View {
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .center, spacing: 8) {
+        RoundedRectangle(cornerRadius: 4)
+          .fill(Color.secondary.opacity(0.2))
+          .frame(width: 140, height: 18)
+        Spacer()
+        HStack(spacing: 10) {
+          ForEach(0..<3, id: \.self) { _ in
+            HStack(spacing: 4) {
+              Circle()
+                .fill(Color.secondary.opacity(0.2))
+                .frame(width: 8, height: 8)
+              RoundedRectangle(cornerRadius: 3)
+                .fill(Color.secondary.opacity(0.2))
+                .frame(width: 36, height: 8)
+            }
+          }
+        }
+      }
+
+      RoundedRectangle(cornerRadius: 12)
+        .fill(Color.secondary.opacity(0.08))
+        .frame(height: 160)
+    }
+    .redacted(reason: .placeholder)
+  }
 }
