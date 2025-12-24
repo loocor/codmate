@@ -153,16 +153,22 @@ struct UsageStatusControl: View {
   }
 
   private func autoRefreshCodexIfNeeded() {
-    guard !didAutoRefreshCodex else { return }
     let shouldRefresh: Bool = {
       guard let snapshot = snapshots[.codex] else { return true }
       if snapshot.origin == .thirdParty { return false }
       if snapshot.availability == .ready { return false }
       return snapshot.updatedAt == nil
     }()
-    guard shouldRefresh else { return }
-    didAutoRefreshCodex = true
-    onRequestRefresh(.codex)
+
+    if shouldRefresh {
+      // Only trigger refresh if we haven't already done so
+      guard !didAutoRefreshCodex else { return }
+      didAutoRefreshCodex = true
+      onRequestRefresh(.codex)
+    } else {
+      // Reset flag when data is available, allowing future auto-refresh if data becomes unavailable again
+      didAutoRefreshCodex = false
+    }
   }
 
   private func ringState(for provider: UsageProviderKind, relativeTo date: Date) -> UsageRingState {
@@ -240,8 +246,8 @@ where Value: VectorArithmetic {
   }
 }
 
-private extension View {
-  func onAnimationCompleted<Value: VectorArithmetic>(
+extension View {
+  fileprivate func onAnimationCompleted<Value: VectorArithmetic>(
     for value: Value,
     completion: @escaping () -> Void
   ) -> some View {

@@ -56,9 +56,11 @@ final class ProjectOverviewViewModel: ObservableObject {
       .receive(on: DispatchQueue.main)
       .sink { [weak self] value in
         guard let self else { return }
+        // Always sync parent loading state, but show loading during initial computation
         if self.hasLoadedOnce {
           self.isLoading = value
         } else {
+          // During initial load, stay loading until first snapshot completes
           self.isLoading = true
         }
       }
@@ -72,10 +74,16 @@ final class ProjectOverviewViewModel: ObservableObject {
       guard !Task.isCancelled else { return }
       guard let self else { return }
       
-      let shouldShowLoading = !self.hasLoadedOnce || self.sessionListViewModel.isLoading
-      if shouldShowLoading {
+      // Mark as loaded early so loading state can sync properly after first computation
+      let isFirstLoad = !self.hasLoadedOnce
+      if isFirstLoad {
         await MainActor.run {
+          self.hasLoadedOnce = true
           self.isLoading = true
+        }
+      } else {
+        await MainActor.run {
+          self.isLoading = self.sessionListViewModel.isLoading
         }
       }
       
@@ -137,7 +145,6 @@ final class ProjectOverviewViewModel: ObservableObject {
       guard !Task.isCancelled else { return }
       await MainActor.run {
         self.snapshot = newSnapshot
-        self.hasLoadedOnce = true
         self.isLoading = self.sessionListViewModel.isLoading
       }
     }

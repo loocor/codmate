@@ -201,7 +201,10 @@ struct AutoAssignSheet: View {
             
         case .custom:
             let start = Calendar.current.startOfDay(for: startDate)
-            let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: endDate))!
+            guard let end = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: endDate)) else {
+                // Calendar operation failed (edge case), fallback to all unassigned
+                return allUnassigned
+            }
             let range = start..<end
             
             return allUnassigned.filter { session in
