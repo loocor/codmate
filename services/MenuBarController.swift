@@ -945,6 +945,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     activateApp(raiseWindows: true)
   }
 
+  /// Public method to handle app activation from Dock icon clicks or other external triggers
+  func handleDockIconClick() {
+    activateApp(raiseWindows: true)
+  }
+
   @objc private func handleOpenSettings() {
     activateApp(raiseWindows: false)
     NotificationCenter.default.post(name: .codMateOpenSettings, object: nil)
@@ -1244,15 +1249,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     NSApp.activate(ignoringOtherApps: true)
     guard raiseWindows else { return }
+
+    // Try to find and activate visible windows first
     let keyable = NSApp.windows.filter { $0.canBecomeKey }
     if let front = keyable.first(where: { $0.isVisible }) {
       front.makeKeyAndOrderFront(nil)
       return
     }
-    if let hidden = keyable.first {
-      hidden.makeKeyAndOrderFront(nil)
+
+    // Then try to find main window by identifier (should always exist since Window is singleton)
+    let mainWindowId = NSUserInterfaceItemIdentifier("CodMateMainWindow")
+    if let mainWindow = NSApp.windows.first(where: { $0.identifier == mainWindowId }) {
+      mainWindow.makeKeyAndOrderFront(nil)
       return
     }
+
+    // Fallback: post notification to create/show window (e.g., first launch)
     NotificationCenter.default.post(name: .codMateOpenMainWindow, object: nil)
   }
 }

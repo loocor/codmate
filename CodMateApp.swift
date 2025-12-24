@@ -72,7 +72,8 @@ struct CodMateApp: App {
   }
 
   var body: some Scene {
-    WindowGroup("CodMate", id: "main") {
+    // Use Window instead of WindowGroup to enforce single instance
+    Window("CodMate", id: "main") {
       ContentView(viewModel: listViewModel)
         .frame(minWidth: 880, minHeight: 600)
         .onReceive(NotificationCenter.default.publisher(for: .codMateOpenSettings)) { note in
@@ -92,12 +93,14 @@ struct CodMateApp: App {
           }
         }
         .onReceive(NotificationCenter.default.publisher(for: .codMateOpenMainWindow)) { _ in
+          // Window is singleton, so openWindow is idempotent
           if !bringWindow(identifier: "CodMateMainWindow") {
             openWindow(id: "main")
           }
         }
     }
     .defaultSize(width: 1200, height: 780)
+    .windowToolbarStyle(.unified)  // Prevent toolbar KVO issues with Window singleton
     .handlesExternalEvents(matching: [])  // 防止 URL scheme 触发新窗口创建
     .commands { bodyCommands }
     #if os(macOS)
@@ -166,15 +169,9 @@ private struct SettingsWindowContainer: View {
       -> Bool
     {
       print("🔄 [AppDelegate] applicationShouldHandleReopen called, hasVisibleWindows: \(flag)")
-      // If there are visible keyable windows, bring them to the front; otherwise open main.
-      let keyable = sender.windows.filter { $0.canBecomeKey }
-      if let visible = keyable.first(where: { $0.isVisible }) {
-        visible.makeKeyAndOrderFront(nil)
-      } else if let hidden = keyable.first {
-        hidden.makeKeyAndOrderFront(nil)
-      } else {
-        NotificationCenter.default.post(name: .codMateOpenMainWindow, object: nil)
-      }
+      // Delegate to MenuBarController for unified window activation logic
+      // This ensures consistent behavior between Dock clicks and menu bar actions
+      MenuBarController.shared.handleDockIconClick()
       //  Always return true to prevent the system from creating new windows
       //  This is particularly important for notification forwarding triggered by URL scheme (codmate://)
       return true
