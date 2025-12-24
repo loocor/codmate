@@ -149,6 +149,7 @@ make dmg VER=1.2.3     # Create Developer ID DMG (ARCH defaults to host)
 make dmg VER=1.2.3 ARCH=arm64
 make dmg VER=1.2.3 ARCH=x86_64
 make dmg VER=1.2.3 ARCH="arm64 x86_64"  # produces codmate-arm64.dmg + codmate-x86_64.dmg
+make notices # Regenerate THIRD-PARTY-NOTICES.md
 ```
 
 Direct scripts

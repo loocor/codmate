@@ -1,4 +1,4 @@
-.PHONY: help build release test app dmg clean run
+.PHONY: help build release test app dmg clean run notices
 
 APP_NAME := CodMate
 BUILD_NUMBER_STRATEGY ?= date
@@ -23,6 +23,9 @@ release: ## SwiftPM release build
 
 test: ## Run SwiftPM tests (if any)
 	@swift test
+
+notices: ## Update THIRD-PARTY-NOTICES.md
+	@python3 scripts/gen-third-party-notices.py
 
 app: ## Build CodMate.app (ARCH=arm64|x86_64|"arm64 x86_64")
 	@if [ -z "$(VER)" ]; then echo "error: VER is required (e.g., VER=1.2.3)"; exit 1; fi

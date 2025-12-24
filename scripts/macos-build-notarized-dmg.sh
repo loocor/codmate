@@ -117,6 +117,7 @@ build_dmg_for_arch() {
   local dmg_name="codmate-${arch_suffix}.dmg"
   local dmg_path="$OUTPUT_DIR/$dmg_name"
   local stage_dir="$BUILD_DIR/.stage-dmg-${arch_suffix}"
+  local bundle_name="CodMate.app"
 
   if [[ ${#ARCH_MATRIX[@]} -gt 1 ]]; then
     arch_app_dir="$BUILD_DIR/CodMate-${arch_suffix}.app"
@@ -163,7 +164,7 @@ build_dmg_for_arch() {
 
   rm -rf "$stage_dir"
   mkdir -p "$stage_dir"
-  cp -R "$arch_app_dir" "$stage_dir/$(basename "$arch_app_dir")"
+  cp -R "$arch_app_dir" "$stage_dir/$bundle_name"
   ln -s /Applications "$stage_dir/Applications"
 
   if command -v create-dmg >/dev/null 2>&1; then
@@ -173,11 +174,11 @@ build_dmg_for_arch() {
       --window-pos 200 120 \
       --window-size 600 400 \
       --icon-size 100 \
-      --icon "$(basename "$arch_app_dir")" 175 120 \
-      --hide-extension "$(basename "$arch_app_dir")" \
+      --icon "$bundle_name" 175 120 \
+      --hide-extension "$bundle_name" \
       --app-drop-link 425 120 \
       "$dmg_path" \
-      "$(basename "$arch_app_dir")"); then
+      "$bundle_name"); then
       :
     else
       echo "[warn] create-dmg failed; falling back to hdiutil"

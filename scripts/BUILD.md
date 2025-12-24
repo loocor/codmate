@@ -61,6 +61,15 @@ VER=1.2.3 ./scripts/macos-build-notarized-dmg.sh
 
 ---
 
+### 3) `make notices`
+**Purpose**: Regenerate `THIRD-PARTY-NOTICES.md` from resolved dependencies.
+
+**Notes**:
+- Scans `Package.resolved` and local checkouts in `.build/checkouts`.
+- Fails if any dependency is missing a license file.
+
+---
+
 ## Environment Variables
 
 ### Common
