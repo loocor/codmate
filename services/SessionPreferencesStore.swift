@@ -209,22 +209,38 @@ final class SessionPreferencesStore: ObservableObject {
     self.terminalCursorStyleRaw = storedCursor
 
     // CLI policy defaults (with legacy value coercion)
-    if let s = defaults.string(forKey: Keys.resumeSandboxMode),
-      let val = SessionPreferencesStore.coerceSandboxMode(s)
-    {
-      self.defaultResumeSandboxMode = val
-      if val.rawValue != s { defaults.set(val.rawValue, forKey: Keys.resumeSandboxMode) }
-    } else {
-      self.defaultResumeSandboxMode = .workspaceWrite
-    }
-    if let a = defaults.string(forKey: Keys.resumeApprovalPolicy),
-      let val = SessionPreferencesStore.coerceApprovalPolicy(a)
-    {
-      self.defaultResumeApprovalPolicy = val
-      if val.rawValue != a { defaults.set(val.rawValue, forKey: Keys.resumeApprovalPolicy) }
-    } else {
-      self.defaultResumeApprovalPolicy = .onRequest
-    }
+    let resolvedSandbox: SandboxMode = {
+      if let s = defaults.string(forKey: Keys.resumeSandboxMode),
+        let val = SessionPreferencesStore.coerceSandboxMode(s)
+      {
+        if val.rawValue != s { defaults.set(val.rawValue, forKey: Keys.resumeSandboxMode) }
+        return val
+      }
+      return .workspaceWrite
+    }()
+    let resolvedApproval: ApprovalPolicy = {
+      if let a = defaults.string(forKey: Keys.resumeApprovalPolicy),
+        let val = SessionPreferencesStore.coerceApprovalPolicy(a)
+      {
+        if val.rawValue != a { defaults.set(val.rawValue, forKey: Keys.resumeApprovalPolicy) }
+        return val
+      }
+      return .onRequest
+    }()
+
+    // Prefer Codex config.toml defaults when present (keeps CodMate in sync with Codex settings)
+    let codexSandbox = SessionPreferencesStore.readCodexTopLevelConfigString("sandbox_mode")
+      .flatMap { SandboxMode(rawValue: $0) }
+    let codexApproval = SessionPreferencesStore.readCodexTopLevelConfigString("approval_policy")
+      .flatMap { ApprovalPolicy(rawValue: $0) }
+
+    let finalSandbox = codexSandbox ?? resolvedSandbox
+    let finalApproval = codexApproval ?? resolvedApproval
+
+    self.defaultResumeSandboxMode = finalSandbox
+    self.defaultResumeApprovalPolicy = finalApproval
+    defaults.set(finalSandbox.rawValue, forKey: Keys.resumeSandboxMode)
+    defaults.set(finalApproval.rawValue, forKey: Keys.resumeApprovalPolicy)
     self.defaultResumeFullAuto = defaults.object(forKey: Keys.resumeFullAuto) as? Bool ?? false
     self.defaultResumeDangerBypass =
       defaults.object(forKey: Keys.resumeDangerBypass) as? Bool ?? false
@@ -422,6 +438,27 @@ final class SessionPreferencesStore: ObservableObject {
     case "fail", "onfail": return ApprovalPolicy.onFailure
     default: return nil
     }
+  }
+
+  private static func readCodexTopLevelConfigString(_ key: String) -> String? {
+    let url = getRealUserHomeURL()
+      .appendingPathComponent(".codex", isDirectory: true)
+      .appendingPathComponent("config.toml", isDirectory: false)
+    guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+    for raw in text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+      let trimmed = raw.trimmingCharacters(in: CharacterSet.whitespaces)
+      guard trimmed.hasPrefix(key + " ") || trimmed.hasPrefix(key + "=") else { continue }
+      guard let eq = trimmed.firstIndex(of: "=") else { continue }
+      var value = String(trimmed[trimmed.index(after: eq)...])
+        .trimmingCharacters(in: CharacterSet.whitespaces)
+      if value.hasPrefix("\"") && value.hasSuffix("\"") {
+        value.removeFirst()
+        value.removeLast()
+      }
+      let finalValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !finalValue.isEmpty { return finalValue }
+    }
+    return nil
   }
 
   // MARK: - Resume Preferences

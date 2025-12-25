@@ -22,6 +22,7 @@ enum UsageProviderKind: String, CaseIterable, Identifiable {
     case .gemini: return "teal"
     }
   }
+
 }
 
 struct UsageMetricSnapshot: Identifiable, Equatable {

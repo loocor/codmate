@@ -158,10 +158,21 @@ private struct SettingsWindowContainer: View {
 
 #if os(macOS)
   final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var suppressNextReopenActivation = false
+    private var suppressResetTask: Task<Void, Never>? = nil
+
     func application(_ application: NSApplication, open urls: [URL]) {
       print("🔗 [AppDelegate] Received URLs: \(urls)")
       print("🪟 [AppDelegate] Current windows count: \(application.windows.count)")
       print("🪟 [AppDelegate] Visible windows: \(application.windows.filter { $0.isVisible }.count)")
+      if urls.contains(where: { $0.scheme?.lowercased() == "codmate" && ($0.host ?? "").lowercased() == "notify" }) {
+        suppressNextReopenActivation = true
+        suppressResetTask?.cancel()
+        suppressResetTask = Task { @MainActor [weak self] in
+          try? await Task.sleep(nanoseconds: 1_000_000_000)
+          self?.suppressNextReopenActivation = false
+        }
+      }
       ExternalURLRouter.handle(urls)
     }
 
@@ -169,6 +180,10 @@ private struct SettingsWindowContainer: View {
       -> Bool
     {
       print("🔄 [AppDelegate] applicationShouldHandleReopen called, hasVisibleWindows: \(flag)")
+      if suppressNextReopenActivation {
+        suppressNextReopenActivation = false
+        return true
+      }
       // Delegate to MenuBarController for unified window activation logic
       // This ensures consistent behavior between Dock clicks and menu bar actions
       MenuBarController.shared.handleDockIconClick()
