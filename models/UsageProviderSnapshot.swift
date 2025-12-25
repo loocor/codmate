@@ -89,36 +89,55 @@ struct UsageProviderSnapshot: Identifiable, Equatable {
   }
 
   func urgentMetric(relativeTo now: Date = Date()) -> UsageMetricSnapshot? {
-    let ordered =
-      metrics
-      .filter { $0.kind != .snapshot && $0.kind != .context }
-      .sorted(by: { a, b in
-        // For quota-style metrics, prioritize the lowest remaining fraction first.
-        if a.kind == .quota && b.kind == .quota {
-          let ap = a.progress ?? 1
-          let bp = b.progress ?? 1
-          if ap != bp { return ap < bp }
-        }
-        switch (a.priorityDate, b.priorityDate) {
-        case (let lhs?, let rhs?): return lhs < rhs
-        case (_?, nil): return true
-        case (nil, _?): return false
-        default: return a.kind == .fiveHour
-        }
-      })
+    let candidates = metrics.filter { $0.kind != .snapshot && $0.kind != .context }
+    guard !candidates.isEmpty else { return nil }
 
-    if let future = ordered.first(where: { metric in
-      if let reset = metric.resetDate {
-        return reset > now
-      }
-      if metric.resetDate == nil, let minutes = metric.fallbackWindowMinutes {
-        return minutes > 0
-      }
-      return false
-    }) {
-      return future
+    // Step 1: If any limit is depleted (≤0.1%), prioritize the one with longest reset time
+    // This ensures we show the most restrictive bottleneck
+    let depleted = candidates.filter { ($0.progress ?? 1) <= 0.001 }
+    if !depleted.isEmpty {
+      return depleted.max(by: { a, b in
+        let aReset = a.resetDate?.timeIntervalSince(now) ?? 0
+        let bReset = b.resetDate?.timeIntervalSince(now) ?? 0
+        return aReset < bReset
+      })
     }
-    return ordered.first
+
+    // Step 2: Filter out metrics that reset very soon (<5 minutes)
+    // They're not representative of the stable state
+    let significant = candidates.filter { metric in
+      guard let reset = metric.resetDate else { return true }
+      let remaining = reset.timeIntervalSince(now)
+      return remaining > 5 * 60 || remaining <= 0
+    }
+
+    // Step 3: Calculate urgency score and return the most urgent
+    // Urgency = (consumption %) × log(1 + reset hours)
+    // Higher score = more urgent = should be displayed
+    return significant.max(by: { a, b in
+      urgencyScore(for: a, relativeTo: now) < urgencyScore(for: b, relativeTo: now)
+    })
+  }
+
+  private func urgencyScore(for metric: UsageMetricSnapshot, relativeTo now: Date) -> Double {
+    // Calculate consumption (0..1, where 1 = fully consumed)
+    let consumed = 1.0 - (metric.progress ?? 0)
+
+    // Calculate reset time in minutes
+    let resetMinutes: Double
+    if let reset = metric.resetDate {
+      resetMinutes = max(0, reset.timeIntervalSince(now) / 60)
+    } else if let fallback = metric.fallbackWindowMinutes {
+      resetMinutes = Double(fallback)
+    } else {
+      resetMinutes = 0
+    }
+
+    // Urgency score = consumption × log(1 + reset hours)
+    // The log ensures diminishing importance for longer times
+    // e.g., 10min→1h matters more than 1day→2days
+    let resetHours = resetMinutes / 60.0
+    return consumed * log(1.0 + resetHours)
   }
 
   static func placeholder(
