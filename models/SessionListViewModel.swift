@@ -254,6 +254,7 @@ final class SessionListViewModel: ObservableObject {
   private var monthCountsCache: [String: [Int: Int]] = [:]  // key: "dim|yyyy-MM" (not @Published to avoid updates during view reads)
   @Published private(set) var codexUsageStatus: CodexUsageStatus?
   @Published private(set) var usageSnapshots: [UsageProviderKind: UsageProviderSnapshot] = [:]
+  private var lastUsageRefreshByProvider: [UsageProviderKind: Date] = [:]
   private var claudeUsageAutoRefreshEnabled = false
   private var didAutoRefreshUsage = false
   // Live activity indicators
@@ -704,7 +705,7 @@ final class SessionListViewModel: ObservableObject {
         if geminiOrigin == .thirdParty {
           self.setUsageSnapshot(.gemini, Self.thirdPartyUsageSnapshot(for: .gemini))
         } else {
-          self.refreshGeminiUsageStatus()
+          self.refreshGeminiUsageStatus(silent: false)
         }
       }
       await MainActor.run {
@@ -884,9 +885,9 @@ final class SessionListViewModel: ObservableObject {
     }
     refreshCodexUsageStatus()
     if claudeUsageAutoRefreshEnabled {
-      refreshClaudeUsageStatus()
+      refreshClaudeUsageStatus(silent: false)
     }
-    refreshGeminiUsageStatus()
+    refreshGeminiUsageStatus(silent: false)
     schedulePathTreeRefresh()
 
     // Ensure currently selected sessions are fully up-to-date with high-quality parsing.
@@ -3221,10 +3222,36 @@ extension SessionListViewModel {
       refreshCodexUsageStatus()
     case .claude:
       claudeUsageAutoRefreshEnabled = true
-      refreshClaudeUsageStatus()
+      refreshClaudeUsageStatus(silent: false)
     case .gemini:
-      refreshGeminiUsageStatus()
+      refreshGeminiUsageStatus(silent: false)
     }
+  }
+
+  func requestUsageStatusRefreshSilently(for provider: UsageProviderKind) {
+    switch provider {
+    case .codex:
+      refreshCodexUsageStatus()
+    case .claude:
+      claudeUsageAutoRefreshEnabled = true
+      refreshClaudeUsageStatus(silent: true)
+    case .gemini:
+      refreshGeminiUsageStatus(silent: true)
+    }
+  }
+
+  /// Refresh usage with a simple throttle window to avoid repeated calls.
+  func requestUsageStatusRefreshThrottled(
+    for provider: UsageProviderKind,
+    triggerDate: Date = Date(),
+    minInterval: TimeInterval = 15
+  ) {
+    if let last = lastUsageRefreshByProvider[provider],
+       triggerDate.timeIntervalSince(last) < minInterval {
+      return
+    }
+    lastUsageRefreshByProvider[provider] = triggerDate
+    requestUsageStatusRefreshSilently(for: provider)
   }
 
   private func setInitialClaudePlaceholder() {
@@ -3416,7 +3443,7 @@ extension SessionListViewModel {
     return Array(sorted.prefix(limit))
   }
 
-  private func refreshClaudeUsageStatus() {
+  private func refreshClaudeUsageStatus(silent: Bool) {
     claudeUsageTask?.cancel()
     claudeUsageTask = Task { [weak self] in
       guard let self else { return }
@@ -3427,8 +3454,10 @@ extension SessionListViewModel {
         }
         return
       }
-      await MainActor.run {
-        self.setClaudeUsagePlaceholder("Refreshing …", action: nil, availability: .comingSoon)
+      if !silent {
+        await MainActor.run {
+          self.setClaudeUsagePlaceholder("Refreshing …", action: nil, availability: .comingSoon)
+        }
       }
       let client = self.claudeUsageClient
       do {
@@ -3443,27 +3472,34 @@ extension SessionListViewModel {
         NSLog("[ClaudeUsage] API fetch failed: \(error)")
         guard !Task.isCancelled else { return }
         let descriptor = Self.claudeUsageErrorState(from: error)
-        await MainActor.run {
-          self.setUsageSnapshot(
-            .claude,
-            UsageProviderSnapshot(
-              provider: .claude,
-              title: UsageProviderKind.claude.displayName,
-              availability: .empty,
-              metrics: [],
-              updatedAt: nil,
-              statusMessage: descriptor.message,
-              requiresReauth: descriptor.requiresReauth,
-              origin: .builtin,
-              action: descriptor.action
-            )
+        if silent {
+          await SystemNotifier.shared.notify(
+            title: "Claude",
+            body: descriptor.message
           )
+        } else {
+          await MainActor.run {
+            self.setUsageSnapshot(
+              .claude,
+              UsageProviderSnapshot(
+                provider: .claude,
+                title: UsageProviderKind.claude.displayName,
+                availability: .empty,
+                metrics: [],
+                updatedAt: nil,
+                statusMessage: descriptor.message,
+                requiresReauth: descriptor.requiresReauth,
+                origin: .builtin,
+                action: descriptor.action
+              )
+            )
+          }
         }
       }
     }
   }
 
-  private func refreshGeminiUsageStatus() {
+  private func refreshGeminiUsageStatus(silent: Bool) {
     geminiUsageTask?.cancel()
     geminiUsageTask = Task { [weak self] in
       guard let self else { return }
@@ -3474,8 +3510,10 @@ extension SessionListViewModel {
         }
         return
       }
-      await MainActor.run {
-        self.setGeminiUsagePlaceholder("Refreshing …", action: nil, availability: .comingSoon)
+      if !silent {
+        await MainActor.run {
+          self.setGeminiUsagePlaceholder("Refreshing …", action: nil, availability: .comingSoon)
+        }
       }
 
       do {
@@ -3489,21 +3527,28 @@ extension SessionListViewModel {
         NSLog("[GeminiUsage] API fetch failed: \(error)")
         guard !Task.isCancelled else { return }
         let descriptor = Self.geminiUsageErrorState(from: error)
-        await MainActor.run {
-          self.setUsageSnapshot(
-            .gemini,
-            UsageProviderSnapshot(
-              provider: .gemini,
-              title: UsageProviderKind.gemini.displayName,
-              availability: .empty,
-              metrics: [],
-              updatedAt: nil,
-              statusMessage: descriptor.message,
-              requiresReauth: descriptor.requiresReauth,
-              origin: .builtin,
-              action: descriptor.action
-            )
+        if silent {
+          await SystemNotifier.shared.notify(
+            title: "Gemini",
+            body: descriptor.message
           )
+        } else {
+          await MainActor.run {
+            self.setUsageSnapshot(
+              .gemini,
+              UsageProviderSnapshot(
+                provider: .gemini,
+                title: UsageProviderKind.gemini.displayName,
+                availability: .empty,
+                metrics: [],
+                updatedAt: nil,
+                statusMessage: descriptor.message,
+                requiresReauth: descriptor.requiresReauth,
+                origin: .builtin,
+                action: descriptor.action
+              )
+            )
+          }
         }
       }
     }
@@ -3664,10 +3709,10 @@ extension SessionListViewModel {
       refreshCodexUsageStatus()
     }
     if claudeOrigin == .builtin, shouldRefresh(.claude) {
-      refreshClaudeUsageStatus()
+      refreshClaudeUsageStatus(silent: false)
     }
     if geminiOrigin == .builtin, shouldRefresh(.gemini) {
-      refreshGeminiUsageStatus()
+      refreshGeminiUsageStatus(silent: false)
     }
   }
 

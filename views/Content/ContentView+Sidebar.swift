@@ -257,7 +257,7 @@ extension ContentView {
       EquatableUsageContainer(
         snapshots: viewModel.usageSnapshots,
         selectedProvider: $selectedUsageProvider,
-        onRequestRefresh: { viewModel.requestUsageStatusRefresh(for: $0) }
+        onRequestRefresh: { viewModel.requestUsageStatusRefreshThrottled(for: $0) }
       )
 
       searchToolbarButton

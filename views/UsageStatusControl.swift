@@ -99,6 +99,11 @@ struct UsageStatusControl: View {
       .onChange(of: snapshots[.codex]?.updatedAt ?? nil) { _ in
         autoRefreshCodexIfNeeded()
       }
+      .onChange(of: showPopover) { isPresented in
+        if isPresented {
+          refreshAllProviders()
+        }
+      }
       .onAnimationCompleted(for: hoverPhase) {
         guard hoverPhase == 0 else { return }
         hoverLockoutActive = false
@@ -187,6 +192,12 @@ struct UsageStatusControl: View {
       color: color,
       disabled: false
     )
+  }
+
+  private func refreshAllProviders() {
+    onRequestRefresh(.codex)
+    onRequestRefresh(.claude)
+    onRequestRefresh(.gemini)
   }
 
   private func providerColor(_ provider: UsageProviderKind) -> Color {
