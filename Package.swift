@@ -50,6 +50,7 @@ let package = Package(
         "assets/Assets.xcassets",
         "assets/Info.plist",
         "assets/CodMate.entitlements",
+        "assets/CodMate-Notify.entitlements",
       ],
       sources: [
         "CodMateApp.swift",
