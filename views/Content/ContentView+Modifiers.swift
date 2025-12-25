@@ -59,6 +59,9 @@ extension ContentView {
        let project = viewModel.projects.first(where: { $0.id == pid }),
        let dir = project.directory, !dir.isEmpty {
       guard pendingSelectionID == nil else { return }
+      // If we are already in .tasks mode (e.g. explicitly navigated to a session), respect it.
+      if viewModel.projectWorkspaceMode == .tasks { return }
+
       if viewModel.projectWorkspaceMode != .settings {
         viewModel.projectWorkspaceMode = .settings
       }
