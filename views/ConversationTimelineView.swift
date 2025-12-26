@@ -6,6 +6,7 @@ private let timelineTimeFormatter: DateFormatter = {
   formatter.dateFormat = "HH:mm:ss"
   return formatter
 }()
+private let timelineRowSpacing: CGFloat = 16
 
 struct ConversationTimelineView: View {
   let turns: [ConversationTurn]
@@ -49,7 +50,7 @@ struct ConversationTimelineView: View {
           }
           .frame(width: 0, height: 0)
 
-          LazyVStack(alignment: .leading, spacing: 20) {
+          LazyVStack(alignment: .leading, spacing: timelineRowSpacing) {
             ForEach(Array(turns.enumerated()), id: \.element.id) { index, turn in
               let pos = ascending ? (index + 1) : (turns.count - index)
               let markerOpacity = markerOpacity(for: turn.id)
@@ -147,11 +148,15 @@ struct ConversationTimelineView: View {
   private var timelineVerticalLine: some View {
     // Draw vertical timeline line (behind all markers)
     if let lineParams = calculateTimelineLineParams() {
-      Rectangle()
-        .fill(Color.secondary.opacity(0.25))
-        .frame(width: 2, height: lineParams.height)
-        .offset(x: lineParams.x - 1, y: lineParams.y)
-        .animation(nil, value: timelinePositions)
+      ZStack(alignment: .topLeading) {
+        ForEach(timelineLineSegments(for: lineParams)) { segment in
+          Rectangle()
+            .fill(Color.secondary.opacity(0.5))
+            .frame(width: 1, height: segment.height)
+            .offset(x: lineParams.x - 1, y: segment.minY)
+        }
+      }
+      .animation(nil, value: timelinePositions)
     }
   }
 
@@ -184,6 +189,61 @@ struct ConversationTimelineView: View {
     guard lineHeight > 0 else { return nil }
 
     return (x: lineX, y: lineTop, height: lineHeight)
+  }
+
+  private func timelineLineGaps(
+    for lineParams: (x: CGFloat, y: CGFloat, height: CGFloat)
+  ) -> [TimelineLineGap] {
+    let lineMinY = lineParams.y
+    let lineMaxY = lineParams.y + lineParams.height
+    let topPadding: CGFloat = timelineRowSpacing
+    let bottomPadding: CGFloat = 4
+
+    var ranges = markerHeadFrames.values.compactMap { frame -> TimelineLineRange? in
+      let minY = max(lineMinY, frame.minY - topPadding)
+      let maxY = min(lineMaxY, frame.maxY + bottomPadding)
+      guard maxY > minY else { return nil }
+      return TimelineLineRange(minY: minY, maxY: maxY)
+    }
+
+    ranges.sort { $0.minY < $1.minY }
+    var merged: [TimelineLineRange] = []
+
+    for range in ranges {
+      if let last = merged.last, range.minY <= last.maxY + 1 {
+        merged[merged.count - 1] = TimelineLineRange(minY: last.minY, maxY: max(last.maxY, range.maxY))
+      } else {
+        merged.append(range)
+      }
+    }
+
+    return merged.enumerated().map { index, range in
+      TimelineLineGap(id: index, minY: range.minY, maxY: range.maxY)
+    }
+  }
+
+  private func timelineLineSegments(
+    for lineParams: (x: CGFloat, y: CGFloat, height: CGFloat)
+  ) -> [TimelineLineSegment] {
+    let lineMinY = lineParams.y
+    let lineMaxY = lineParams.y + lineParams.height
+    let gaps = timelineLineGaps(for: lineParams)
+
+    var segments: [TimelineLineSegment] = []
+    var currentY = lineMinY
+
+    for gap in gaps {
+      if gap.minY > currentY {
+        segments.append(TimelineLineSegment(minY: currentY, maxY: gap.minY))
+      }
+      currentY = max(currentY, gap.maxY)
+    }
+
+    if lineMaxY > currentY {
+      segments.append(TimelineLineSegment(minY: currentY, maxY: lineMaxY))
+    }
+
+    return segments
   }
 
   private func attachScrollView(_ sv: NSScrollView) {
@@ -356,6 +416,25 @@ struct ConversationTimelineView: View {
   }
 }
 
+private struct TimelineLineRange {
+  let minY: CGFloat
+  let maxY: CGFloat
+}
+
+private struct TimelineLineGap: Identifiable {
+  let id: Int
+  let minY: CGFloat
+  let maxY: CGFloat
+  var height: CGFloat { maxY - minY }
+}
+
+private struct TimelineLineSegment: Identifiable {
+  let id = UUID()
+  let minY: CGFloat
+  let maxY: CGFloat
+  var height: CGFloat { maxY - minY }
+}
+
 // ScrollViewAccessor to get the underlying NSScrollView
 private struct ScrollViewAccessor: NSViewRepresentable {
   let onScrollViewAvailable: (NSScrollView) -> Void
@@ -468,7 +547,7 @@ private struct TimelineMarker: View {
   let isLast: Bool
   var frameKeyID: String? = nil
   var reportPosition: Int? = nil
-  var showBackground: Bool = true
+  var showBackground: Bool = false
 
   var body: some View {
     TimelineMarkerHead(
@@ -501,7 +580,7 @@ private struct TimelineMarkerHead: View {
   let timeText: String
   let isFirst: Bool
   var frameKeyID: String? = nil
-  var showBackground: Bool = true
+  var showBackground: Bool = false
 
   var body: some View {
     VStack(alignment: .center, spacing: 6) {
