@@ -95,6 +95,7 @@ extension Notification.Name {
   static let codMateToggleList = Notification.Name("CodMate.ToggleList")
   static let codMateRepoAuthorizationChanged = Notification.Name("CodMate.RepoAuthorizationChanged")
   static let codMateTerminalExited = Notification.Name("CodMate.TerminalExited")
+  static let codMateTerminalSessionsUpdated = Notification.Name("CodMate.TerminalSessionsUpdated")
   static let codMateConversationFilter = Notification.Name("CodMate.ConversationFilter")
   static let codMateFocusGlobalSearch = Notification.Name("CodMate.FocusGlobalSearch")
   static let codMateExpandProjectTree = Notification.Name("CodMate.ExpandProjectTree")
@@ -107,4 +108,5 @@ extension Notification.Name {
   static let codMateCollapseAllTasks = Notification.Name("CodMate.CollapseAllTasks")
   static let codMateExpandAllTasks = Notification.Name("CodMate.ExpandAllTasks")
   static let codMateOpenSettings = Notification.Name("CodMate.OpenSettings")
+  static let codMateFocusSessionSummary = Notification.Name("CodMate.FocusSessionSummary")
 }
