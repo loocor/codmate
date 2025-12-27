@@ -27,6 +27,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
   private var preferencesCancellable: AnyCancellable?
   private var usageCancellable: AnyCancellable?
   private var isShowingDynamicIcon = false
+  private var appearanceObserver: NSKeyValueObservation?
+  private var isMenuOpen = false
 
   private let relativeFormatter: RelativeDateTimeFormatter = {
     let formatter = RelativeDateTimeFormatter()
@@ -57,22 +59,33 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     preferencesCancellable = preferences.$systemMenuVisibility.sink { [weak self] visibility in
       self?.applySystemMenuVisibility(visibility)
     }
-    
+
     usageCancellable?.cancel()
     usageCancellable = viewModel.$usageSnapshots
       .receive(on: RunLoop.main)
       .sink { [weak self] snapshots in
-        self?.updateStatusItemIcon(with: snapshots)
+        guard let self else { return }
+        self.updateStatusItemIcon(with: snapshots)
+        // Rebuild menu if it's currently open to show updated usage data
+        if self.isMenuOpen {
+          self.rebuildMenu()
+        }
       }
 
     applySystemMenuVisibility(preferences.systemMenuVisibility)
     refreshMenuData()
+    observeAppearanceChanges()
   }
 
   func menuWillOpen(_ menu: NSMenu) {
+    isMenuOpen = true
     ensureMenuDataLoaded()
     rebuildMenu()
     refreshMenuData()
+  }
+
+  func menuDidClose(_ menu: NSMenu) {
+    isMenuOpen = false
   }
 
   func reapplyVisibilityFromPreferences() {
@@ -109,10 +122,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
   private func updateStatusItemIcon(with snapshots: [UsageProviderKind: UsageProviderSnapshot]) {
     guard let button = statusItem?.button else { return }
-    
+
     // Check if we have any valid usage data to show
     let hasData = snapshots.values.contains { $0.availability == .ready || $0.origin == .thirdParty }
-    
+
     guard hasData else {
         // If no data, keep or revert to static icon
         if isShowingDynamicIcon || button.image == nil {
@@ -123,24 +136,29 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     let referenceDate = Date()
-    // Use white color for menu bar icon (monochrome style)
-    let outerState = ringState(for: .gemini, relativeTo: referenceDate, snapshots: snapshots, colorOverride: .white)
-    let middleState = ringState(for: .claude, relativeTo: referenceDate, snapshots: snapshots, colorOverride: .white)
-    let innerState = ringState(for: .codex, relativeTo: referenceDate, snapshots: snapshots, colorOverride: .white)
+    // Adapt color based on menu bar button's actual appearance (considers wallpaper tinting)
+    let buttonAppearance = button.effectiveAppearance
+    let isDark = buttonAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    let menuBarColor = isDark ? Color.white : Color.black
+    let outerState = ringState(for: .gemini, relativeTo: referenceDate, snapshots: snapshots, colorOverride: menuBarColor)
+    let middleState = ringState(for: .claude, relativeTo: referenceDate, snapshots: snapshots, colorOverride: menuBarColor)
+    let innerState = ringState(for: .codex, relativeTo: referenceDate, snapshots: snapshots, colorOverride: menuBarColor)
 
     let view = TripleUsageDonutView(
       outerState: outerState,
       middleState: middleState,
       innerState: innerState,
-      trackColor: .white
+      trackColor: menuBarColor
     )
     .scaleEffect(0.7)
-    
+
     let renderer = ImageRenderer(content: view)
-    renderer.scale = NSScreen.main?.backingScaleFactor ?? 2.0
-    
+    // Use higher scale for anti-aliased rendering on Retina displays
+    let backingScale = NSScreen.main?.backingScaleFactor ?? 2.0
+    renderer.scale = backingScale * 2.0  // 4x for 2x display, 6x for 3x display
+
     if let nsImage = renderer.nsImage {
-        nsImage.isTemplate = false // Use true colors (white)
+        nsImage.isTemplate = false // Use adaptive colors (white/black based on appearance)
         button.image = nsImage
         isShowingDynamicIcon = true
     }
@@ -509,7 +527,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
       }
       menu.addItem(.separator())
-      menu.addItem(disabledItem(title: updatedLabel(snapshot, referenceDate: referenceDate)))
+      let refreshItem = actionItem(title: updatedLabel(snapshot, referenceDate: referenceDate), action: #selector(handleUsageAction(_:)))
+      refreshItem.representedObject = provider.rawValue
+      applySystemImage(refreshItem, name: "arrow.clockwise", fallback: "arrow.triangle.2.circlepath")
+      menu.addItem(refreshItem)
     case .empty:
       menu.addItem(disabledItem(title: snapshot.statusMessage ?? "Usage not available"))
       if let action = snapshot.action {
@@ -1078,6 +1099,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
       return appearance == .darkAqua
     }
     return false
+  }
+
+  private func observeAppearanceChanges() {
+    appearanceObserver?.invalidate()
+    // Observe menu bar button's effectiveAppearance instead of app-wide appearance
+    // This responds to wallpaper-based menu bar tinting, not just system theme
+    guard let button = statusItem?.button else { return }
+    appearanceObserver = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] (button: NSStatusBarButton, change: NSKeyValueObservedChange<NSAppearance>) in
+      guard let self else { return }
+      Task { @MainActor in
+        // Regenerate menu bar icon with new appearance
+        if let snapshots = self.viewModel?.usageSnapshots {
+          self.updateStatusItemIcon(with: snapshots)
+        }
+      }
+    }
   }
 
   private func invertedImage(_ image: NSImage) -> NSImage? {
