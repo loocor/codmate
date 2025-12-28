@@ -181,6 +181,10 @@ fi
 if [[ -f "$ROOT_DIR/payload/terminals.json" ]]; then
   cp -f "$ROOT_DIR/payload/terminals.json" "$RESOURCES_DIR/terminals.json"
 fi
+if [[ -d "$ROOT_DIR/payload/commands" ]]; then
+  mkdir -p "$RESOURCES_DIR/payload"
+  cp -R "$ROOT_DIR/payload/commands" "$RESOURCES_DIR/payload/commands"
+fi
 if [[ -f "$ROOT_DIR/PrivacyInfo.xcprivacy" ]]; then
   cp -f "$ROOT_DIR/PrivacyInfo.xcprivacy" "$RESOURCES_DIR/PrivacyInfo.xcprivacy"
 fi

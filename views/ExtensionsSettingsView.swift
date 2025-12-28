@@ -10,6 +10,9 @@ struct ExtensionsSettingsView: View {
             Group {
                 if #available(macOS 15.0, *) {
                     TabView(selection: $selectedTab) {
+                        Tab("Commands", systemImage: "command", value: ExtensionsSettingsTab.commands) {
+                            SettingsTabContent { CommandsSettingsView() }
+                        }
                         Tab("MCP Servers", systemImage: "server.rack", value: ExtensionsSettingsTab.mcp) {
                             SettingsTabContent {
                                 MCPServersSettingsPane(openMCPMateDownload: openMCPMateDownload, showHeader: false)
@@ -21,6 +24,10 @@ struct ExtensionsSettingsView: View {
                     }
                 } else {
                     TabView(selection: $selectedTab) {
+                        SettingsTabContent { CommandsSettingsView() }
+                            .tabItem { Label("Commands", systemImage: "command") }
+                            .tag(ExtensionsSettingsTab.commands)
+
                         SettingsTabContent {
                             MCPServersSettingsPane(openMCPMateDownload: openMCPMateDownload, showHeader: false)
                         }
@@ -42,7 +49,7 @@ struct ExtensionsSettingsView: View {
             Text("Extensions")
                 .font(.title2)
                 .fontWeight(.bold)
-            Text("Manage MCP servers and Skills across Codex and Claude.")
+            Text("Manage MCP servers, Skills, and Commands across AI CLI providers.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }

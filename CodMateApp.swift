@@ -12,7 +12,7 @@ struct CodMateApp: App {
   @StateObject private var listViewModel: SessionListViewModel
   @StateObject private var preferences: SessionPreferencesStore
   @State private var settingsSelection: SettingCategory = .general
-  @State private var extensionsTabSelection: ExtensionsSettingsTab = .mcp
+  @State private var extensionsTabSelection: ExtensionsSettingsTab = .commands
   @Environment(\.openWindow) private var openWindow
 
   init() {
