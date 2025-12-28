@@ -259,6 +259,7 @@ private struct SettingsWindowContainer: View {
       return nil
     }
 
+    @MainActor
     @discardableResult
     private func handleDockFileOpenPaths(_ paths: [String]) -> Bool {
       let urls = paths.map { URL(fileURLWithPath: $0) }
@@ -267,6 +268,7 @@ private struct SettingsWindowContainer: View {
       return true
     }
 
+    @MainActor
     private func handleDockFolderDrop(_ url: URL) {
       let directory = url.path
       let name = url.lastPathComponent
