@@ -1,5 +1,19 @@
 import Foundation
 
+enum SkillCreationError: LocalizedError {
+  case invalidName(String)
+  case nameConflict(existing: String, suggested: String)
+
+  var errorDescription: String? {
+    switch self {
+    case .invalidName(let message):
+      return message
+    case .nameConflict(let existing, let suggested):
+      return "A skill named '\(existing)' already exists. Suggested name: '\(suggested)'"
+    }
+  }
+}
+
 actor SkillsStore {
   struct Paths {
     let root: URL
@@ -91,6 +105,118 @@ actor SkillsStore {
       records.append(record)
     }
     save(records)
+  }
+
+  func createFromTemplate(name: String, description: String) async throws -> SkillRecord {
+    let skillId = try validateAndNormalizeSkillName(name)
+
+    try fm.createDirectory(at: paths.libraryDir, withIntermediateDirectories: true)
+    let destination = paths.libraryDir.appendingPathComponent(skillId, isDirectory: true)
+
+    if fm.fileExists(atPath: destination.path) {
+      let suggested = suggestNewId(basedOn: skillId)
+      throw SkillCreationError.nameConflict(existing: skillId, suggested: suggested)
+    }
+
+    try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+
+    let skillMarkdown = generateDefaultSkillMarkdown(name: skillId, description: description)
+    let skillFile = destination.appendingPathComponent("SKILL.md", isDirectory: false)
+    try skillMarkdown.write(to: skillFile, atomically: true, encoding: .utf8)
+
+    try writeMarker(to: destination, id: skillId, sourceType: "template")
+
+    let record = SkillRecord(
+      id: skillId,
+      name: skillId,
+      description: description,
+      summary: description,
+      tags: [],
+      source: "Template",
+      path: destination.path,
+      isEnabled: true,
+      targets: MCPServerTargets(codex: true, claude: true, gemini: false),
+      installedAt: Date()
+    )
+
+    upsert(record)
+    return record
+  }
+
+  private func validateAndNormalizeSkillName(_ name: String) throws -> String {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      throw SkillCreationError.invalidName("Skill name cannot be empty")
+    }
+
+    let normalized = trimmed
+      .lowercased()
+      .replacingOccurrences(of: " ", with: "-")
+      .replacingOccurrences(of: "_", with: "-")
+
+    let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
+    let filtered = normalized.unicodeScalars.filter { allowed.contains($0) }
+    let result = String(String.UnicodeScalarView(filtered))
+
+    guard !result.isEmpty else {
+      throw SkillCreationError.invalidName("Skill name must contain at least one alphanumeric character")
+    }
+
+    guard result.count <= 64 else {
+      throw SkillCreationError.invalidName("Skill name must be 64 characters or less")
+    }
+
+    return result
+  }
+
+  private func generateDefaultSkillMarkdown(name: String, description: String) -> String {
+    let displayName = name.split(separator: "-")
+      .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+      .joined(separator: " ")
+
+    return """
+---
+name: \(name)
+description: \(description.isEmpty ? "Custom skill for specific tasks" : description)
+---
+
+# \(displayName)
+
+## Overview
+
+This is a custom skill created from a template. Describe what this skill does and when Claude or Codex should use it.
+
+## Instructions
+
+Provide clear, step-by-step guidance for the AI assistant:
+
+1. First step or action to take
+2. Second step or action
+3. Additional steps as needed
+
+## Examples
+
+Show concrete usage examples to help the AI understand how to apply this skill:
+
+**Example 1: Basic Usage**
+```
+User: [Example user request]
+Assistant: [Expected behavior or response]
+```
+
+**Example 2: Advanced Usage**
+```
+User: [Another example]
+Assistant: [Expected behavior]
+```
+
+## Notes
+
+- Add any special considerations or limitations
+- Document required tools or dependencies
+- Include best practices or tips
+
+"""
   }
 
   func install(
@@ -324,11 +450,12 @@ actor SkillsStore {
     }
   }
 
-  private func writeMarker(to dir: URL, id: String) throws {
+  private func writeMarker(to dir: URL, id: String, sourceType: String = "installed") throws {
     let marker = dir.appendingPathComponent(".codmate.json", isDirectory: false)
     let obj: [String: Any] = [
       "managedByCodMate": true,
-      "id": id
+      "id": id,
+      "sourceType": sourceType
     ]
     let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted])
     try data.write(to: marker, options: .atomic)
@@ -341,6 +468,15 @@ actor SkillsStore {
           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     else { return false }
     return (obj["managedByCodMate"] as? Bool) == true
+  }
+
+  func getSourceType(at dir: URL) -> String? {
+    let marker = dir.appendingPathComponent(".codmate.json", isDirectory: false)
+    guard fm.fileExists(atPath: marker.path),
+          let data = try? Data(contentsOf: marker),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return nil }
+    return obj["sourceType"] as? String
   }
 
   private struct FrontMatter {

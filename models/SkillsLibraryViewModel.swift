@@ -1,5 +1,8 @@
 import Foundation
 import UniformTypeIdentifiers
+#if canImport(AppKit)
+import AppKit
+#endif
 
 struct SkillSummary: Identifiable, Hashable {
     let id: String
@@ -11,8 +14,10 @@ struct SkillSummary: Identifiable, Hashable {
     var path: String?
     var isSelected: Bool
     var targets: MCPServerTargets
+    var sourceType: String?
 
     var displayName: String { name.isEmpty ? id : name }
+    var isTemplateCreated: Bool { sourceType == "template" }
 }
 
 @MainActor
@@ -32,6 +37,11 @@ final class SkillsLibraryViewModel: ObservableObject {
     @Published var pendingInstallURL: URL?
     @Published var pendingInstallText: String = ""
     @Published var installConflict: SkillInstallConflict?
+
+    @Published var showCreateSheet: Bool = false
+    @Published var newSkillName: String = ""
+    @Published var newSkillDescription: String = ""
+    @Published var createErrorMessage: String?
 
     var filteredSkills: [SkillSummary] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -53,18 +63,31 @@ final class SkillsLibraryViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         let records = await store.list()
-        skills = records.map { record in
-            SkillSummary(
-                id: record.id,
-                name: record.name,
-                description: record.description,
-                summary: record.summary,
-                tags: record.tags,
-                source: record.source,
-                path: record.path,
-                isSelected: record.isEnabled,
-                targets: record.targets
-            )
+        skills = await withTaskGroup(of: (Int, SkillSummary).self) { group in
+            for (index, record) in records.enumerated() {
+                group.addTask {
+                    let sourceType = await self.store.getSourceType(
+                        at: URL(fileURLWithPath: record.path)
+                    )
+                    return (index, SkillSummary(
+                        id: record.id,
+                        name: record.name,
+                        description: record.description,
+                        summary: record.summary,
+                        tags: record.tags,
+                        source: record.source,
+                        path: record.path,
+                        isSelected: record.isEnabled,
+                        targets: record.targets,
+                        sourceType: sourceType
+                    ))
+                }
+            }
+            var results: [(Int, SkillSummary)] = []
+            for await result in group {
+                results.append(result)
+            }
+            return results.sorted(by: { $0.0 < $1.0 }).map { $0.1 }
         }
         if selectedSkillId == nil || !skills.contains(where: { $0.id == selectedSkillId }) {
             selectedSkillId = skills.first?.id
@@ -176,24 +199,6 @@ final class SkillsLibraryViewModel: ObservableObject {
         }
     }
 
-    func reinstall(id: String) {
-        Task {
-            guard let record = await store.record(id: id) else { return }
-            if let request = reinstallRequest(from: record) {
-                let outcome = await store.install(request: request, resolution: .overwrite)
-                await MainActor.run {
-                    handleInstallOutcome(outcome)
-                }
-            } else if let _ = await store.refreshMetadata(id: id) {
-                await MainActor.run { installStatusMessage = "Updated." }
-                await load()
-                await persistAndSync()
-            } else {
-                await MainActor.run { errorMessage = "Unable to reinstall skill." }
-            }
-        }
-    }
-
     func uninstall(id: String) {
         Task {
             await store.uninstall(id: id)
@@ -202,29 +207,127 @@ final class SkillsLibraryViewModel: ObservableObject {
         }
     }
 
-    private func installRequest() -> SkillInstallRequest {
-        SkillInstallRequest(mode: installMode, url: pendingInstallURL, text: pendingInstallText)
+    func prepareCreateSkill() {
+        newSkillName = ""
+        newSkillDescription = ""
+        createErrorMessage = nil
+        showCreateSheet = true
     }
 
-    private func reinstallRequest(from record: SkillRecord) -> SkillInstallRequest? {
-        if let url = URL(string: record.source),
-           ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
-            return SkillInstallRequest(mode: .url, url: nil, text: record.source)
-        }
-        let sourcePath = record.source.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !sourcePath.isEmpty {
-            let srcURL = URL(fileURLWithPath: sourcePath)
-            if FileManager.default.fileExists(atPath: srcURL.path) {
-                if srcURL.pathExtension.lowercased() == "zip" {
-                    return SkillInstallRequest(mode: .zip, url: srcURL, text: nil)
+    func cancelCreateSkill() {
+        showCreateSheet = false
+        newSkillName = ""
+        newSkillDescription = ""
+        createErrorMessage = nil
+    }
+
+    func createSkill() {
+        createErrorMessage = nil
+        Task {
+            do {
+                let record = try await store.createFromTemplate(
+                    name: newSkillName,
+                    description: newSkillDescription
+                )
+                await MainActor.run {
+                    showCreateSheet = false
+                    newSkillName = ""
+                    newSkillDescription = ""
                 }
-                let isDir = (try? srcURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                if isDir {
-                    return SkillInstallRequest(mode: .folder, url: srcURL, text: nil)
+                await load()
+                await MainActor.run {
+                    selectedSkillId = record.id
+                }
+                await persistAndSync()
+            } catch let error as SkillCreationError {
+                await MainActor.run {
+                    createErrorMessage = error.localizedDescription
+                }
+            } catch {
+                await MainActor.run {
+                    createErrorMessage = "Failed to create skill: \(error.localizedDescription)"
                 }
             }
         }
-        return nil
+    }
+
+    func openInEditor(_ skill: SkillSummary, using editor: EditorApp) {
+        guard let path = skill.path, !path.isEmpty else {
+            errorMessage = "Skill path not available"
+            return
+        }
+
+        let dirURL = URL(fileURLWithPath: path)
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            errorMessage = "Skill directory does not exist: \(path)"
+            return
+        }
+
+        if let executablePath = findExecutableInPath(editor.cliCommand) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executablePath)
+            process.arguments = [path]
+            process.standardOutput = Pipe()
+            process.standardError = Pipe()
+
+            do {
+                try process.run()
+                return
+            } catch {
+            }
+        }
+
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: editor.bundleIdentifier) {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+
+            NSWorkspace.shared.open(
+                [dirURL],
+                withApplicationAt: appURL,
+                configuration: config
+            ) { _, error in
+                if let error = error {
+                    DispatchQueue.main.async {
+                        self.errorMessage = "Failed to open \(editor.title): \(error.localizedDescription)"
+                    }
+                }
+            }
+            return
+        }
+
+        errorMessage = "\(editor.title) is not installed. Please install it or try a different editor."
+    }
+
+    private func findExecutableInPath(_ name: String) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        process.arguments = [name]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else { return nil }
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let path = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            return path?.isEmpty == false ? path : nil
+        } catch {
+            return nil
+        }
+    }
+
+    private func installRequest() -> SkillInstallRequest {
+        SkillInstallRequest(mode: installMode, url: pendingInstallURL, text: pendingInstallText)
     }
 
     private func handleInstallOutcome(_ outcome: SkillInstallOutcome) {

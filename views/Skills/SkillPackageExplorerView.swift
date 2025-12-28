@@ -7,7 +7,6 @@ import SwiftUI
 struct SkillPackageExplorerView: View {
   let skill: SkillSummary
   var onReveal: () -> Void
-  var onReinstall: () -> Void
   var onUninstall: () -> Void
 
   @State private var treeQuery: String = ""
@@ -83,20 +82,13 @@ struct SkillPackageExplorerView: View {
         }
         .buttonStyle(.borderless)
         .help("Reveal in Finder")
-        Button {
-          onReinstall()
-        } label: {
-          Image(systemName: "arrow.clockwise")
-        }
-        .buttonStyle(.borderless)
-        .help("Reinstall")
         Button(role: .destructive) {
           onUninstall()
         } label: {
           Image(systemName: "trash")
         }
         .buttonStyle(.borderless)
-        .help("Uninstall")
+        .help("Move to Trash")
       }
     }
   }

@@ -21,6 +21,9 @@ struct SkillsSettingsView: View {
       SkillsInstallSheet(vm: vm)
         .frame(minWidth: 520, minHeight: 340)
     }
+    .sheet(isPresented: $vm.showCreateSheet) {
+      SkillCreateSheet(vm: vm)
+    }
     .sheet(item: $vm.installConflict) { conflict in
       SkillConflictResolutionSheet(conflict: conflict, onResolve: { resolution in
         vm.resolveInstallConflict(resolution)
@@ -31,22 +34,12 @@ struct SkillsSettingsView: View {
       .frame(minWidth: 420, minHeight: 240)
     }
     .alert(item: $pendingAction) { action in
-      switch action.kind {
-      case .reinstall:
-        return Alert(
-          title: Text("Reinstall Skill?"),
-          message: Text("Reinstall \(action.skill.displayName) from its original source?"),
-          primaryButton: .default(Text("Reinstall"), action: { vm.reinstall(id: action.skill.id) }),
-          secondaryButton: .cancel()
-        )
-      case .uninstall:
-        return Alert(
-          title: Text("Uninstall Skill?"),
-          message: Text("Remove \(action.skill.displayName) from this machine?"),
-          primaryButton: .destructive(Text("Uninstall"), action: { vm.uninstall(id: action.skill.id) }),
-          secondaryButton: .cancel()
-        )
-      }
+      Alert(
+        title: Text("Move to Trash?"),
+        message: Text("Move \(action.skill.displayName) to Trash?"),
+        primaryButton: .destructive(Text("Move to Trash"), action: { vm.uninstall(id: action.skill.id) }),
+        secondaryButton: .cancel()
+      )
     }
     .task { await vm.load() }
   }
@@ -168,8 +161,8 @@ struct SkillsSettingsView: View {
                 vm.openInEditor(skill, using: editor)
               }
 #endif
-              Button("Reinstall") { confirmReinstall(skill) }
-              Button("Uninstall", role: .destructive) { confirmUninstall(skill) }
+              Button("Reveal in Finder") { revealInFinder(skill) }
+              Button("Move to Trash", role: .destructive) { confirmUninstall(skill) }
             }
           }
         }
@@ -190,7 +183,6 @@ struct SkillsSettingsView: View {
         SkillPackageExplorerView(
           skill: skill,
           onReveal: { revealInFinder(skill) },
-          onReinstall: { confirmReinstall(skill) },
           onUninstall: { confirmUninstall(skill) }
         )
         .id(skill.id)
@@ -223,24 +215,14 @@ struct SkillsSettingsView: View {
 #endif
   }
 
-  private func confirmReinstall(_ skill: SkillSummary) {
-    pendingAction = PendingSkillAction(skill: skill, kind: .reinstall)
-  }
-
   private func confirmUninstall(_ skill: SkillSummary) {
-    pendingAction = PendingSkillAction(skill: skill, kind: .uninstall)
+    pendingAction = PendingSkillAction(skill: skill)
   }
 }
 
 private struct PendingSkillAction: Identifiable {
-  enum Kind {
-    case reinstall
-    case uninstall
-  }
-
   let id = UUID()
   let skill: SkillSummary
-  let kind: Kind
 }
 
 private struct SkillsInstallSheet: View {
@@ -309,8 +291,15 @@ private struct SkillsInstallSheet: View {
       .frame(height: 64)
 
       HStack {
-        Button("Test") { vm.testInstall() }
-          .buttonStyle(.bordered)
+        Button {
+          vm.cancelInstall()
+          vm.prepareCreateSkill()
+        } label: {
+          Label("Template", systemImage: "doc.badge.plus")
+        }
+        .buttonStyle(.bordered)
+        .help("Create a new skill from template")
+
         Spacer()
         Button("Cancel") { vm.cancelInstall() }
         Button("Install") { vm.finishInstall() }
@@ -524,5 +513,54 @@ private struct SkillConflictResolutionSheet: View {
       }
     }
     .padding(16)
+  }
+}
+
+private struct SkillCreateSheet: View {
+  @ObservedObject var vm: SkillsLibraryViewModel
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Text("Create Skill from Template")
+        .font(.title3)
+        .fontWeight(.semibold)
+
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Skill Name")
+          .font(.subheadline)
+          .fontWeight(.medium)
+        TextField("e.g., data-analysis or custom-formatter", text: $vm.newSkillName)
+          .textFieldStyle(.roundedBorder)
+        Text("Name will be converted to lowercase with hyphens (kebab-case)")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Description")
+          .font(.subheadline)
+          .fontWeight(.medium)
+        TextField("Describe what this skill does and when to use it", text: $vm.newSkillDescription)
+          .textFieldStyle(.roundedBorder)
+      }
+
+      if let error = vm.createErrorMessage {
+        Text(error)
+          .font(.caption)
+          .foregroundStyle(.red)
+      }
+
+      Spacer(minLength: 0)
+
+      HStack {
+        Button("Cancel") { vm.cancelCreateSkill() }
+        Spacer()
+        Button("Create") { vm.createSkill() }
+          .buttonStyle(.borderedProminent)
+          .disabled(vm.newSkillName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      }
+    }
+    .padding(16)
+    .frame(minWidth: 480, minHeight: 280)
   }
 }
