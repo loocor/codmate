@@ -392,6 +392,13 @@ final class SessionPreferencesStore: ObservableObject {
     return fileManager.isExecutableFile(atPath: url.path) ? url : nil
   }
 
+  func preferredExecutablePath(for kind: SessionSource.Kind) -> String {
+    if let override = resolvedCommandOverrideURL(for: kind) {
+      return override.path
+    }
+    return kind.cliExecutableName
+  }
+
   /// Get the real user home directory (not sandbox container)
   nonisolated static func getRealUserHomeURL() -> URL {
     #if canImport(Darwin)

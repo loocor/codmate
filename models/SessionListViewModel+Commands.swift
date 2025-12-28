@@ -27,10 +27,11 @@ extension SessionListViewModel {
     }
 
     private func preferredExecutablePath(for kind: SessionSource.Kind) -> String {
-        if let override = preferences.resolvedCommandOverrideURL(for: kind) {
-            return override.path
-        }
-        return kind.cliExecutableName
+        preferences.preferredExecutablePath(for: kind)
+    }
+
+    private var commandGenerator: SessionCommandGenerator {
+        SessionCommandGenerator(actions: actions)
     }
 
     private func preferredExternalTerminalProfile() -> ExternalTerminalProfile? {
@@ -161,12 +162,39 @@ extension SessionListViewModel {
     func buildResumeCommands(session: SessionSummary) -> String {
         let cwd = resolvedWorkingDirectory(for: session)
         let codexHome = codexHomeOverride(for: session)
-        return actions.buildResumeCommandLines(
+        return commandGenerator.embeddedResume(
             session: session,
             executableURL: preferredExecutableURL(for: session.source),
             options: preferences.resumeOptions,
             workingDirectory: cwd,
             codexHome: codexHome
+        )
+    }
+
+    func buildEmbeddedNewSessionCommands(
+        session: SessionSummary,
+        initialPrompt: String? = nil
+    ) -> String {
+        let project = projectIdForSession(session.id).flatMap { pid in
+            projects.first(where: { $0.id == pid })
+        }
+        let codexHome = codexHomeOverride(for: session)
+        return commandGenerator.embeddedNew(
+            session: session,
+            project: project,
+            executableURL: preferredExecutableURL(for: session.source),
+            options: preferences.resumeOptions,
+            initialPrompt: initialPrompt,
+            codexHome: codexHome
+        )
+    }
+
+    func buildEmbeddedNewProjectCommands(project: Project) -> String {
+        commandGenerator.embeddedNewProject(
+            project: project,
+            executableURL: preferredExecutableURL(for: .codexLocal),
+            options: preferences.resumeOptions,
+            codexHome: codexHomeOverride(for: project)
         )
     }
 
@@ -183,10 +211,9 @@ extension SessionListViewModel {
     }
 
     func buildResumeCLIInvocation(session: SessionSummary) -> String {
-        let execName = preferredExecutablePath(for: session.source.baseKind)
-        return actions.buildResumeCLIInvocation(
+        return commandGenerator.inlineResume(
             session: session,
-            executablePath: execName,
+            executablePath: preferredExecutablePath(for: session.source.baseKind),
             options: preferences.resumeOptions,
             codexHome: codexHomeOverride(for: session)
         )
@@ -202,31 +229,16 @@ extension SessionListViewModel {
     }
 
     func buildResumeCLIInvocationRespectingProject(session: SessionSummary) -> String {
-        if session.isRemote,
-           let remote = actions.remoteResumeInvocationForTerminal(
-                session: session,
-                options: preferences.resumeOptions
-            ) {
-            return remote
+        let project = projectIdForSession(session.id).flatMap { pid in
+            projects.first(where: { $0.id == pid })
         }
-        if session.source == .codexLocal,
-            let pid = projectIdForSession(session.id),
-            let p = projects.first(where: { $0.id == pid }),
-            p.profile != nil || (p.profileId?.isEmpty == false)
-        {
-            return actions.buildResumeUsingProjectProfileCLIInvocation(
-                session: session,
-                project: p,
-                executablePath: preferredExecutablePath(for: .codex),
-                options: preferences.resumeOptions,
-                codexHome: codexHomeOverride(for: p)
-            )
-        }
-        return actions.buildResumeCLIInvocation(
+        let codexHome = project.map { codexHomeOverride(for: $0) } ?? codexHomeOverride(for: session)
+        return commandGenerator.inlineResume(
             session: session,
+            project: project,
             executablePath: preferredExecutablePath(for: session.source.baseKind),
             options: preferences.resumeOptions,
-            codexHome: codexHomeOverride(for: session)
+            codexHome: codexHome
         )
     }
 
@@ -240,10 +252,10 @@ extension SessionListViewModel {
     }
 
     func buildNewSessionCLIInvocation(session: SessionSummary) -> String {
-        actions.buildNewSessionCLIInvocation(
+        commandGenerator.inlineNew(
             session: session,
-            options: preferences.resumeOptions,
             executablePath: preferredExecutablePath(for: session.source.baseKind),
+            options: preferences.resumeOptions,
             codexHome: codexHomeOverride(for: session)
         )
     }
@@ -258,11 +270,27 @@ extension SessionListViewModel {
     }
 
     func buildNewProjectCLIInvocation(project: Project) -> String {
-        actions.buildNewProjectCLIInvocation(
+        commandGenerator.inlineNewProject(
             project: project,
-            options: preferences.resumeOptions,
             executablePath: preferredExecutablePath(for: .codex),
+            options: preferences.resumeOptions,
             codexHome: codexHomeOverride(for: project)
+        )
+    }
+
+    func buildClaudeProjectInvocation(project: Project) -> String {
+        commandGenerator.projectClaudeInvocation(
+            project: project,
+            executablePath: preferredExecutablePath(for: .claude),
+            options: preferences.resumeOptions,
+            fallbackModel: preferences.claudeFallbackModel
+        )
+    }
+
+    func buildGeminiProjectInvocation() -> String {
+        commandGenerator.projectGeminiInvocation(
+            executablePath: preferredExecutablePath(for: .gemini),
+            options: preferences.resumeOptions
         )
     }
 
@@ -325,11 +353,7 @@ extension SessionListViewModel {
 
         if !profile.isNone {
             let cmd = profile.supportsCommandResolved
-                ? actions.buildNewProjectCLIInvocation(
-                    project: project,
-                    options: preferences.resumeOptions,
-                    codexHome: codexHomeOverride(for: project)
-                )
+                ? buildNewProjectCLIInvocation(project: project)
                 : nil
 
             if profile.isTerminal {
@@ -359,34 +383,17 @@ extension SessionListViewModel {
         session: SessionSummary,
         initialPrompt: String? = nil
     ) -> String {
-        if session.isRemote,
-           let remote = actions.remoteNewInvocationForTerminal(
-                session: session,
-                options: preferences.resumeOptions,
-                initialPrompt: initialPrompt
-            ) {
-            return remote
+        let project = projectIdForSession(session.id).flatMap { pid in
+            projects.first(where: { $0.id == pid })
         }
-        if session.source == .codexLocal,
-            let pid = projectIdForSession(session.id),
-            let p = projects.first(where: { $0.id == pid }),
-            p.profile != nil || (p.profileId?.isEmpty == false)
-        {
-            return actions.buildNewSessionUsingProjectProfileCLIInvocation(
-                session: session,
-                project: p,
-                options: preferences.resumeOptions,
-                initialPrompt: initialPrompt,
-                executablePath: preferredExecutablePath(for: session.source.baseKind),
-                codexHome: codexHomeOverride(for: p)
-            )
-        }
-        return actions.buildNewSessionCLIInvocation(
+        let codexHome = project.map { codexHomeOverride(for: $0) } ?? codexHomeOverride(for: session)
+        return commandGenerator.inlineNew(
             session: session,
+            project: project,
+            executablePath: preferredExecutablePath(for: session.source.baseKind),
             options: preferences.resumeOptions,
             initialPrompt: initialPrompt,
-            executablePath: preferredExecutablePath(for: session.source.baseKind),
-            codexHome: codexHomeOverride(for: session)
+            codexHome: codexHome
         )
     }
 
@@ -491,12 +498,14 @@ extension SessionListViewModel {
                 codexHome: codexHomeOverride(for: project)
             )
         } else {
-            let cmd = actions.buildNewSessionCLIInvocation(
+            let codexHome = project.map { codexHomeOverride(for: $0) } ?? codexHomeOverride(for: session)
+            let cmd = commandGenerator.inlineNew(
                 session: session,
+                project: project,
+                executablePath: preferredExecutablePath(for: session.source.baseKind),
                 options: preferences.resumeOptions,
                 initialPrompt: initialPrompt,
-                executablePath: preferredExecutablePath(for: session.source.baseKind),
-                codexHome: codexHomeOverride(for: session)
+                codexHome: codexHome
             )
             let pb = NSPasteboard.general
             pb.clearContents()

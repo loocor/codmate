@@ -348,14 +348,6 @@ private extension ContentView {
     return output
   }
 
-  func shellQuoteIfNeeded(_ v: String) -> String {
-    if v.isEmpty { return "''" }
-    if v.contains(where: { $0.isWhitespace || $0 == "'" || $0 == "\"" }) {
-      return "'" + v.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-    return v
-  }
-
   // Build split menu items for project-level New actions
   func buildProjectNewMenuItems(for project: Project) -> [SplitMenuItem] {
     var items: [SplitMenuItem] = []
@@ -647,71 +639,12 @@ private extension ContentView {
 
   // Build a Claude invocation honoring project/default model and runtime flags
   func buildClaudeProjectInvocation(for project: Project) -> String {
-    var parts: [String] = ["claude"]
-    let opt = viewModel.preferences.resumeOptions
-
-    // Verbose / Debug
-    if opt.claudeVerbose { parts.append("--verbose") }
-    if opt.claudeDebug {
-      parts.append("-d")
-      if let f = opt.claudeDebugFilter, !f.isEmpty { parts.append(shellQuoteIfNeeded(f)) }
-    }
-    // Permission mode and safety switches
-    if let pm = opt.claudePermissionMode, pm != .default {
-      parts.append(contentsOf: ["--permission-mode", shellQuoteIfNeeded(pm.rawValue)])
-    }
-    if opt.claudeSkipPermissions { parts.append("--dangerously-skip-permissions") }
-    if opt.claudeAllowSkipPermissions { parts.append("--allow-dangerously-skip-permissions") }
-
-    // Allowed/Disallowed tools
-    if let allow = opt.claudeAllowedTools, !allow.isEmpty {
-      parts.append(contentsOf: ["--allowed-tools", shellQuoteIfNeeded(allow)])
-    }
-    if let disallow = opt.claudeDisallowedTools, !disallow.isEmpty {
-      parts.append(contentsOf: ["--disallowed-tools", shellQuoteIfNeeded(disallow)])
-    }
-    // Add dirs (split by comma/whitespace)
-    if let add = opt.claudeAddDirs, !add.isEmpty {
-      let items = add.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map(String.init)
-        .filter { !$0.isEmpty }
-      for d in items { parts.append(contentsOf: ["--add-dir", shellQuoteIfNeeded(d)]) }
-    }
-
-    // IDE / Strict MCP
-    if opt.claudeIDE { parts.append("--ide") }
-    if opt.claudeStrictMCP { parts.append("--strict-mcp-config") }
-
-    // Fallback model
-    if let fb = opt.claudeFallbackModel, !fb.isEmpty {
-      parts.append(contentsOf: ["--fallback-model", shellQuoteIfNeeded(fb)])
-    }
-
-    // Effective model: prefer project profile model, else preferences fallback
-    let effectiveModel = (project.profile?.model ?? viewModel.preferences.claudeFallbackModel)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    if !effectiveModel.isEmpty {
-      parts.append("--model")
-      parts.append(shellQuoteIfNeeded(effectiveModel))
-    }
-
-    return parts.joined(separator: " ")
+    viewModel.buildClaudeProjectInvocation(project: project)
   }
 
   // Build a Gemini invocation honoring resume options.
   func buildGeminiProjectInvocation(for project: Project) -> String {
-    let execPath =
-      viewModel.preferences.resolvedCommandOverrideURL(for: .gemini)?.path
-      ?? SessionSource.Kind.gemini.cliExecutableName
-    let options = viewModel.preferences.resumeOptions
-    let config = viewModel.actions.geminiRuntimeConfiguration(options: options)
-    var parts: [String] = [shellQuoteIfNeeded(execPath)]
-    parts.append(contentsOf: config.flags.map(shellQuoteIfNeeded))
-    let cmd = parts.joined(separator: " ")
-    let envLines = viewModel.actions.geminiEnvironmentExportLines(environment: config.environment)
-    if envLines.isEmpty {
-      return cmd
-    }
-    return (envLines + [cmd]).joined(separator: "\n")
+    viewModel.buildGeminiProjectInvocation()
   }
 }
 

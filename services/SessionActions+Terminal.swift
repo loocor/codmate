@@ -24,7 +24,7 @@ extension SessionActions {
         return true
         #else
         let scriptText = {
-            let lines = buildResumeCommandLines(
+            let lines = buildEmbeddedResumeCommandLines(
                 session: session,
                 executableURL: executableURL,
                 options: options,
@@ -70,7 +70,7 @@ extension SessionActions {
         return true
         #else
         let scriptText = {
-            let lines = buildNewSessionCommandLines(
+            let lines = buildEmbeddedNewSessionCommandLines(
                 session: session, executableURL: executableURL, options: options, codexHome: codexHome
             )
             .replacingOccurrences(of: "\n", with: "; ")

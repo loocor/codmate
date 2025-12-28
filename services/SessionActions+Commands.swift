@@ -430,6 +430,15 @@ extension SessionActions {
         options: ResumeOptions
     ) -> [String] {
         var parts: [String] = ["--resume", session.id]
+        parts.append(contentsOf: claudeRuntimeArguments(options: options, fallbackModel: options.claudeFallbackModel))
+        return parts
+    }
+
+    private func claudeRuntimeArguments(
+        options: ResumeOptions,
+        fallbackModel: String?
+    ) -> [String] {
+        var parts: [String] = []
         if options.claudeVerbose { parts.append("--verbose") }
         if options.claudeDebug {
             parts.append("-d")
@@ -452,7 +461,7 @@ extension SessionActions {
         }
         if options.claudeIDE { parts.append("--ide") }
         if options.claudeStrictMCP { parts.append("--strict-mcp-config") }
-        if let fb = options.claudeFallbackModel, !fb.isEmpty {
+        if let fb = fallbackModel, !fb.isEmpty {
             parts.append(contentsOf: ["--fallback-model", fb])
         }
         return parts
@@ -694,6 +703,136 @@ extension SessionActions {
         #endif
     }
 
+    // Embedded terminal: avoid PATH=... inline to keep command display clean.
+    func buildEmbeddedResumeCommandLines(
+        session: SessionSummary,
+        executableURL: URL,
+        options: ResumeOptions,
+        workingDirectory: String? = nil,
+        codexHome: String? = nil
+    ) -> String {
+        #if APPSTORE
+        return buildResumeCommandLines(
+            session: session,
+            executableURL: executableURL,
+            options: options,
+            workingDirectory: workingDirectory,
+            codexHome: codexHome
+        )
+        #else
+        if session.isRemote, let host = session.remoteHost {
+            let sshContext = resolvedSSHContext(for: host)
+            let remote = buildRemoteResumeShellCommand(
+                session: session,
+                options: options
+            )
+            return sshInvocation(
+                host: host,
+                remoteCommand: remote,
+                resolvedArguments: sshContext
+            ) + "\n"
+        }
+        let cwd = self.workingDirectory(for: session, override: workingDirectory)
+        let cd = "cd " + shellEscapedPath(cwd)
+        var exportLines = embeddedExportLines(for: session.source)
+        if session.source.baseKind == .gemini {
+            let envLines = geminiEnvironmentExportLines(
+                environment: geminiRuntimeConfiguration(options: options).environment)
+            exportLines.append(contentsOf: envLines)
+        }
+        let exports = exportLines.joined(separator: "; ")
+        let execPath = resolvedExecutablePath(
+            for: session.source.baseKind,
+            executableURL: executableURL
+        )
+        let resume = buildResumeCLIInvocation(
+            session: session, executablePath: execPath, options: options, codexHome: codexHome)
+        return cd + "\n" + exports + "\n" + resume + "\n"
+        #endif
+    }
+
+    func buildEmbeddedNewSessionCommandLines(
+        session: SessionSummary,
+        executableURL: URL,
+        options: ResumeOptions,
+        initialPrompt: String? = nil,
+        codexHome: String? = nil
+    ) -> String {
+        #if APPSTORE
+        return buildNewSessionCommandLines(
+            session: session,
+            executableURL: executableURL,
+            options: options,
+            codexHome: codexHome
+        )
+        #else
+        if session.isRemote, let host = session.remoteHost {
+            let sshContext = resolvedSSHContext(for: host)
+            let remote = buildRemoteNewShellCommand(
+                session: session,
+                options: options,
+                initialPrompt: initialPrompt
+            )
+            return sshInvocation(
+                host: host,
+                remoteCommand: remote,
+                resolvedArguments: sshContext
+            ) + "\n"
+        }
+        let cwd =
+            FileManager.default.fileExists(atPath: session.cwd)
+            ? session.cwd : session.fileURL.deletingLastPathComponent().path
+        let cd = "cd " + shellEscapedPath(cwd)
+        var exportLines: [String] = []
+        if session.source.baseKind == .gemini {
+            exportLines = embeddedExportLines(for: session.source)
+            let envLines = geminiEnvironmentExportLines(
+                environment: geminiRuntimeConfiguration(options: options).environment)
+            exportLines.append(contentsOf: envLines)
+        }
+        let exports = exportLines.isEmpty ? nil : exportLines.joined(separator: "; ")
+        let execPath = resolvedExecutablePath(
+            for: session.source.baseKind,
+            executableURL: executableURL
+        )
+        let invocation = buildNewSessionCLIInvocation(
+            session: session,
+            options: options,
+            initialPrompt: initialPrompt,
+            executablePath: execPath,
+            codexHome: codexHome
+        )
+        var lines = [cd]
+        if let exports { lines.append(exports) }
+        lines.append(invocation)
+        return lines.joined(separator: "\n") + "\n"
+        #endif
+    }
+
+    func buildEmbeddedNewProjectCommandLines(
+        project: Project,
+        executableURL: URL,
+        options: ResumeOptions,
+        codexHome: String? = nil
+    ) -> String {
+        let cdLine: String? = {
+            if let dir = project.directory,
+                !dir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                return "cd " + shellEscapedPath(dir)
+            }
+            return nil
+        }()
+        let execPath = resolvedExecutablePath(for: .codex, executableURL: executableURL)
+        let invocation = buildNewProjectCLIInvocation(
+            project: project, options: options, executablePath: execPath, codexHome: codexHome)
+        if let cd = cdLine {
+            return cd + "\n" + invocation + "\n"
+        } else {
+            return invocation + "\n"
+        }
+    }
+
     func buildNewSessionCommandLines(
         session: SessionSummary, executableURL: URL, options: ResumeOptions, codexHome: String? = nil
     ) -> String {
@@ -747,38 +886,12 @@ extension SessionActions {
     func buildExternalNewSessionCommands(
         session: SessionSummary, executableURL: URL, options: ResumeOptions, codexHome: String? = nil
     ) -> String {
-        if session.isRemote, let host = session.remoteHost {
-            let sshContext = resolvedSSHContext(for: host)
-            let remote = buildRemoteNewShellCommand(
-                session: session,
-                options: options,
-                initialPrompt: nil
-            )
-            return sshInvocation(
-                host: host,
-                remoteCommand: remote,
-                resolvedArguments: sshContext
-            ) + "\n"
-        }
-        let cwd =
-            FileManager.default.fileExists(atPath: session.cwd)
-            ? session.cwd : session.fileURL.deletingLastPathComponent().path
-        let cd = "cd " + shellEscapedPath(cwd)
-        let execPath = resolvedExecutablePath(
-            for: session.source.baseKind,
-            executableURL: executableURL
+        buildEmbeddedNewSessionCommandLines(
+            session: session,
+            executableURL: executableURL,
+            options: options,
+            codexHome: codexHome
         )
-        let newCommand = buildNewSessionCLIInvocation(
-            session: session, options: options, executablePath: execPath, codexHome: codexHome)
-        var lines = [cd]
-        if session.source.baseKind == .gemini {
-            lines.append(contentsOf: embeddedExportLines(for: session.source))
-            let envLines = geminiEnvironmentExportLines(
-                environment: geminiRuntimeConfiguration(options: options).environment)
-            lines.append(contentsOf: envLines)
-        }
-        lines.append(newCommand)
-        return lines.joined(separator: "\n") + "\n"
     }
 
     // Simplified two-line command for external terminals
@@ -789,35 +902,13 @@ extension SessionActions {
         workingDirectory: String? = nil,
         codexHome: String? = nil
     ) -> String {
-        if session.isRemote, let host = session.remoteHost {
-            let sshContext = resolvedSSHContext(for: host)
-            let remote = buildRemoteResumeShellCommand(
-                session: session,
-                options: options
-            )
-            return sshInvocation(
-                host: host,
-                remoteCommand: remote,
-                resolvedArguments: sshContext
-            ) + "\n"
-        }
-        let cwd = self.workingDirectory(for: session, override: workingDirectory)
-        let cd = "cd " + shellEscapedPath(cwd)
-        let execPath = resolvedExecutablePath(
-            for: session.source.baseKind,
-            executableURL: executableURL
+        buildEmbeddedResumeCommandLines(
+            session: session,
+            executableURL: executableURL,
+            options: options,
+            workingDirectory: workingDirectory,
+            codexHome: codexHome
         )
-        let resume = buildResumeCLIInvocation(
-            session: session, executablePath: execPath, options: options, codexHome: codexHome)
-        var lines = [cd]
-        if session.source.baseKind == .gemini {
-            lines.append(contentsOf: embeddedExportLines(for: session.source))
-            let envLines = geminiEnvironmentExportLines(
-                environment: geminiRuntimeConfiguration(options: options).environment)
-            lines.append(contentsOf: envLines)
-        }
-        lines.append(resume)
-        return lines.joined(separator: "\n") + "\n"
     }
 
     // MARK: - Warp-optimized clipboard commands
@@ -935,6 +1026,25 @@ extension SessionActions {
             lines.append(contentsOf: envLines)
         }
         lines.append(newCommand)
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    func buildWarpNewProjectCommands(
+        project: Project,
+        executableURL: URL,
+        options: ResumeOptions,
+        titleHint: String? = nil,
+        codexHome: String? = nil
+    ) -> String {
+        let base = titleHint ?? WarpTitleBuilder.newSessionLabel(
+            scope: project.name,
+            task: nil
+        )
+        let title = warpTitleCommentLine(base)
+        let execPath = resolvedExecutablePath(for: .codex, executableURL: executableURL)
+        let cmd = buildNewProjectCLIInvocation(
+            project: project, options: options, executablePath: execPath, codexHome: codexHome)
+        let lines = [title, cmd].compactMap { $0 }
         return lines.joined(separator: "\n") + "\n"
     }
 
@@ -1083,6 +1193,36 @@ extension SessionActions {
         return applyCodexHomePrefix(cmd, codexHome: codexHome, source: .codex)
     }
 
+    func buildClaudeProjectCLIInvocation(
+        executablePath: String,
+        options: ResumeOptions,
+        model: String?
+    ) -> String {
+        var parts: [String] = [shellQuoteIfNeeded(executablePath)]
+        parts.append(contentsOf: claudeRuntimeArguments(options: options, fallbackModel: options.claudeFallbackModel)
+            .map { shellQuoteIfNeeded($0) })
+        if let m = model?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty {
+            parts.append("--model")
+            parts.append(shellQuoteIfNeeded(m))
+        }
+        return parts.joined(separator: " ")
+    }
+
+    func buildGeminiCLIInvocation(
+        executablePath: String,
+        options: ResumeOptions
+    ) -> String {
+        let config = geminiRuntimeConfiguration(options: options)
+        var parts: [String] = [shellQuoteIfNeeded(executablePath)]
+        parts.append(contentsOf: config.flags.map(shellQuoteIfNeeded))
+        let cmd = parts.joined(separator: " ")
+        let envLines = geminiEnvironmentExportLines(environment: config.environment)
+        if envLines.isEmpty {
+            return cmd
+        }
+        return (envLines + [cmd]).joined(separator: "\n")
+    }
+
     func buildNewProjectCommandLines(
         project: Project,
         executableURL: URL,
@@ -1138,23 +1278,12 @@ extension SessionActions {
         options: ResumeOptions,
         codexHome: String? = nil
     ) -> String {
-        let cdLine: String? = {
-            if let dir = project.directory,
-                !dir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
-                return "cd " + shellEscapedPath(dir)
-            }
-            return nil
-        }()
-        let execPath = resolvedExecutablePath(for: .codex, executableURL: executableURL)
-        let cmd = buildNewProjectCLIInvocation(
-            project: project, options: options, executablePath: execPath, codexHome: codexHome)
-        if let cd = cdLine {
-            // Standard external New Session: emit `cd` + bare CLI invocation only.
-            return cd + "\n" + cmd + "\n"
-        } else {
-            return cmd + "\n"
-        }
+        buildEmbeddedNewProjectCommandLines(
+            project: project,
+            executableURL: executableURL,
+            options: options,
+            codexHome: codexHome
+        )
     }
 
     func copyNewProjectCommands(
@@ -1166,16 +1295,13 @@ extension SessionActions {
     ) {
         let commands: String
         if simplifiedForExternal, destinationApp?.usesWarpCommands == true {
-            let base = titleHint ?? WarpTitleBuilder.newSessionLabel(
-                scope: project.name,
-                task: nil
+            commands = buildWarpNewProjectCommands(
+                project: project,
+                executableURL: executableURL,
+                options: options,
+                titleHint: titleHint,
+                codexHome: codexHome
             )
-            let title = warpTitleCommentLine(base)
-            let execPath = resolvedExecutablePath(for: .codex, executableURL: executableURL)
-            let cmd = buildNewProjectCLIInvocation(
-                project: project, options: options, executablePath: execPath, codexHome: codexHome)
-            let lines = [title, cmd].compactMap { $0 }
-            commands = lines.joined(separator: "\n") + "\n"
         } else {
             commands =
                 simplifiedForExternal
@@ -1197,7 +1323,7 @@ extension SessionActions {
         codexHome: String? = nil
     ) -> Bool {
         let scriptText = {
-            let lines = buildNewProjectCommandLines(
+            let lines = buildEmbeddedNewProjectCommandLines(
                 project: project, executableURL: executableURL, options: options, codexHome: codexHome
             )
             .replacingOccurrences(of: "\n", with: "; ")

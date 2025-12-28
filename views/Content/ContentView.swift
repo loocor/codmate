@@ -537,18 +537,16 @@ struct ContentView: View {
     let cwd =
       FileManager.default.fileExists(atPath: target.cwd)
       ? target.cwd : target.fileURL.deletingLastPathComponent().path
-    // 构造带 Task 上下文的 CLI 调用
-    let invocation = viewModel.buildNewSessionCLIInvocationRespectingProject(
+    let commandLines = viewModel.buildEmbeddedNewSessionCommands(
       session: target,
       initialPrompt: prompt
     )
-    let cd = "cd " + shellEscapeForCD(cwd)
     let preclear = "printf '\\033[?1049h\\033[H\\033[2J'"
 
-    // 使用虚拟 anchor id 以便后续 rekey 到真实新会话。
+    // Use a virtual anchor id to avoid hijacking an existing session's running state
     let anchorId = "new-anchor:task:\(task.id.uuidString):\(Int(Date().timeIntervalSince1970)))"
     embeddedInitialCommands[anchorId] =
-      preclear + "\n" + cd + "\n" + invocation + "\n"
+      preclear + "\n" + commandLines
     runningSessionIDs.insert(anchorId)
     selectedTerminalKey = anchorId
     sessionDetailTabs[anchorId] = .terminal
@@ -708,7 +706,7 @@ struct ContentView: View {
       return nil
     }
     let overrideURL = preferences.resolvedCommandOverrideURL(for: session.source.baseKind)
-    let exe = overrideURL?.path ?? session.source.baseKind.cliExecutableName
+    let exe = preferences.preferredExecutablePath(for: session.source.baseKind)
     #if canImport(SwiftTerm)
       if let overrideURL {
         guard FileManager.default.isExecutableFile(atPath: overrideURL.path) else {
@@ -746,7 +744,7 @@ struct ContentView: View {
     // As a preview, run `codex` without args in the project directory if we can infer it.
     if let pending = pendingEmbeddedRekeys.first(where: { $0.anchorId == anchorId }) {
       let overrideURL = preferences.resolvedCommandOverrideURL(for: .codex)
-      let exe = overrideURL?.path ?? "codex"
+      let exe = preferences.preferredExecutablePath(for: .codex)
       #if canImport(SwiftTerm)
         if let overrideURL {
           guard FileManager.default.isExecutableFile(atPath: overrideURL.path) else {
@@ -805,8 +803,7 @@ struct ContentView: View {
           }
         }
       }
-      let cd = "cd " + shellEscapeForCD(cwd)
-      let invocation = viewModel.buildNewSessionCLIInvocationRespectingProject(session: target)
+      let commandLines = viewModel.buildEmbeddedNewSessionCommands(session: target)
       // Enter alternate screen and clear for a truly clean view (cursor home);
       // avoids reflow artifacts and isolates scrollback while the new session runs.
       let preclear = "printf '\\033[?1049h\\033[H\\033[2J'"
@@ -814,7 +811,7 @@ struct ContentView: View {
       // Use virtual anchor id to avoid hijacking an existing session's running state
       let anchorId = "new-anchor:detail:\(target.id):\(Int(Date().timeIntervalSince1970)))"
       embeddedInitialCommands[anchorId] =
-        preclear + "\n" + cd + "\n" + invocation + "\n"
+        preclear + "\n" + commandLines
       runningSessionIDs.insert(anchorId)
       selectedTerminalKey = anchorId
       sessionDetailTabs[anchorId] = .terminal
@@ -871,16 +868,14 @@ struct ContentView: View {
           }
         }
       }
-      let cd = "cd " + shellEscapeForCD(dir)
-      let invocation = viewModel.buildNewProjectCLIInvocation(project: project)
-      let command = invocation
+      let commandLines = viewModel.buildEmbeddedNewProjectCommands(project: project)
       let preclear = "printf '\\033[?1049h\\033[H\\033[2J'"
 
       // Always use a virtual anchor for project-level New
       let anchorId = "new-anchor:project:\(project.id):\(Int(Date().timeIntervalSince1970)))"
-      NSLog("📌 [ContentView] Embedded New anchor=%@ command=%@", anchorId, command)
+      NSLog("📌 [ContentView] Embedded New anchor=%@ command=%@", anchorId, commandLines)
       embeddedInitialCommands[anchorId] =
-        preclear + "\n" + cd + "\n" + invocation + "\n"
+        preclear + "\n" + commandLines
       runningSessionIDs.insert(anchorId)
       selectedTerminalKey = anchorId
       sessionDetailTabs[anchorId] = .terminal

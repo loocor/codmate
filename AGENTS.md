@@ -76,6 +76,7 @@ Coding Guidelines
 CLI Integration (codex)
 - Prefer invoking via `/usr/bin/env codex` (or `claude`) so resolution happens on system `PATH`.
 - Allow optional user-specified command path overrides; use the override when valid, otherwise fall back to PATH resolution.
+- New/Resume command strings must use the bare CLI name unless the user explicitly set a CLI Command Path override; only then emit an absolute path.
 - Always set `PATH` to include `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin` before launching for robustness.
 - `resume` runs with `currentDirectoryURL` = original session `cwd` when it exists (fallback: log file directory).
 - New command options exposed in Settings › Command:
