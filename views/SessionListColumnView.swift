@@ -798,7 +798,7 @@ extension SessionListColumnView {
     let dir = workingDirectory(for: target)
 
     if profile.id == "codmate.embedded" {
-      _ = viewModel.openNewSession(session: target)
+      EmbeddedSessionNotification.postEmbeddedNewSession(sessionId: target.id, source: source)
       return
     }
 

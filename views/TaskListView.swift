@@ -1047,7 +1047,7 @@ struct TaskListView: View {
     let dir = target.cwd
 
     if profile.id == "codmate.embedded" {
-      _ = viewModel.openNewSession(session: target)
+      EmbeddedSessionNotification.postEmbeddedNewSession(sessionId: target.id, source: source)
       return
     }
 

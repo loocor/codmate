@@ -562,9 +562,24 @@ private struct ProjectTreeNodeView: View {
 
     func launchItems(for source: SessionSource) -> [SplitMenuItem] {
       let key = sourceKey(source)
-      return externalTerminalMenuItems(idPrefix: key) { profile in
+      var items = externalTerminalMenuItems(idPrefix: key) { profile in
         launchNewSession(for: anchor, using: source, profile: profile)
       }
+      if vm.preferences.isEmbeddedTerminalEnabled {
+        let embedded = embeddedTerminalProfile()
+        items.insert(
+          SplitMenuItem(
+            id: "\(key)-\(embedded.id)",
+            kind: .action(
+              title: embedded.displayTitle,
+              systemImage: "macwindow",
+              run: { launchNewSession(for: anchor, using: source, profile: embedded) }
+            )
+          ),
+          at: 0
+        )
+      }
+      return items
     }
 
     func remoteSource(for base: ProjectSessionSource, host: String) -> SessionSource {
@@ -635,6 +650,11 @@ private struct ProjectTreeNodeView: View {
     let vm = self.viewModel
     vm.recordIntentForDetailNew(anchor: target)
     let dir = target.cwd
+
+    if profile.id == "codmate.embedded" {
+      EmbeddedSessionNotification.postEmbeddedNewSession(sessionId: target.id, source: source)
+      return
+    }
     guard vm.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
     else { return }
     if profile.usesWarpCommands {

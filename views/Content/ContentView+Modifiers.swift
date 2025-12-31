@@ -332,6 +332,13 @@ extension ContentView {
                 note.userInfo?["projectId"] as? String ?? "<nil>")
         }
       }
+      .onReceive(NotificationCenter.default.publisher(for: .codMateStartEmbeddedNewSession)) { note in
+        guard let sessionId = note.userInfo?[EmbeddedSessionNotification.sessionIdKey] as? String else { return }
+        let source = EmbeddedSessionNotification.decodeSource(from: note.userInfo)
+        if let summary = summaryLookup[sessionId] ?? viewModel.sessionSummary(for: sessionId) {
+          startEmbeddedNew(for: summary, using: source)
+        }
+      }
       .onReceive(NotificationCenter.default.publisher(for: .codMateOpenNewProject)) { note in
         handleDockNewProjectRequest(userInfo: note.userInfo)
       }

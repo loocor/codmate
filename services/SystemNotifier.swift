@@ -91,6 +91,7 @@ nonisolated extension SystemNotifier: UNUserNotificationCenterDelegate {
 extension Notification.Name {
   static let codMateAgentCompleted = Notification.Name("CodMate.AgentCompleted")
   static let codMateStartEmbeddedNewProject = Notification.Name("CodMate.StartEmbeddedNewProject")
+  static let codMateStartEmbeddedNewSession = Notification.Name("CodMate.StartEmbeddedNewSession")
   static let codMateToggleSidebar = Notification.Name("CodMate.ToggleSidebar")
   static let codMateToggleList = Notification.Name("CodMate.ToggleList")
   static let codMateRepoAuthorizationChanged = Notification.Name("CodMate.RepoAuthorizationChanged")
