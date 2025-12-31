@@ -184,4 +184,26 @@ extension Array where Element == ConversationTurn {
             )
         }
     }
+
+    /// Extract all user message texts (trimmed, non-empty)
+    func extractUserMessages() -> [String] {
+        compactMap { turn in
+            turn.userMessage?.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+    }
+
+    /// Extract the last assistant message text (from the last turn with assistant outputs)
+    func extractLastAssistantMessage() -> String? {
+        guard let lastTurn = self.last(where: { !$0.outputs.isEmpty }) else {
+            return nil
+        }
+
+        // Extract only text from assistant messages (visibilityKind == .assistant)
+        let assistantTexts = lastTurn.outputs
+            .filter { $0.visibilityKind == .assistant }
+            .compactMap { $0.text?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        return assistantTexts.isEmpty ? nil : assistantTexts.joined(separator: "\n\n")
+    }
 }
