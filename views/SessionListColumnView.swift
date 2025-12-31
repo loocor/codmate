@@ -26,10 +26,8 @@ struct SessionListColumnView: View {
   @EnvironmentObject private var viewModel: SessionListViewModel
   @Environment(\.colorScheme) private var colorScheme
   @State private var showNewProjectSheet = false
-  @State private var showNewTaskSheet = false
-  @State private var newTaskTitle = ""
-  @State private var newTaskDescription = ""
   @State private var draftTaskFromSession: CodMateTask? = nil
+  @State private var taskEditingMode: EditTaskSheet.Mode = .edit
   @State private var newProjectPrefill: ProjectEditorSheet.Prefill? = nil
   @State private var newProjectAssignIDs: [String] = []
   @State private var lastClickedID: String? = nil
@@ -56,46 +54,23 @@ struct SessionListColumnView: View {
       )
       .environmentObject(viewModel)
     }
-    .sheet(isPresented: $showNewTaskSheet) {
-      if let projectId = selectedProject()?.id, let workspaceVM = viewModel.workspaceVM {
-        NewTaskSheet(
-          projectId: projectId,
-          title: $newTaskTitle,
-          description: $newTaskDescription,
-          onCreate: {
+    .sheet(item: $draftTaskFromSession) { task in
+      if let workspaceVM = viewModel.workspaceVM {
+        EditTaskSheet(
+          task: task,
+          mode: taskEditingMode,
+          workspaceVM: workspaceVM,
+          onSave: { updatedTask in
             Task {
-              await workspaceVM.createTask(
-                title: newTaskTitle,
-                description: newTaskDescription,
-                projectId: projectId
-              )
-              newTaskTitle = ""
-              newTaskDescription = ""
-              showNewTaskSheet = false
+              await workspaceVM.updateTask(updatedTask)
+              draftTaskFromSession = nil
             }
           },
           onCancel: {
-            showNewTaskSheet = false
+            draftTaskFromSession = nil
           }
         )
       }
-    }
-    .sheet(item: $draftTaskFromSession) { task in
-      EditTaskSheet(
-        task: task,
-        mode: .new,
-        onSave: { updatedTask in
-          Task {
-            if let workspaceVM = viewModel.workspaceVM {
-              await workspaceVM.updateTask(updatedTask)
-            }
-            draftTaskFromSession = nil
-          }
-        },
-        onCancel: {
-          draftTaskFromSession = nil
-        }
-      )
     }
     .background(
       GeometryReader { geo in
@@ -577,9 +552,8 @@ extension SessionListColumnView {
         newSessionMenu(for: project, anchor: anchor)
         if viewModel.workspaceVM != nil {
           Button {
-            newTaskTitle = ""
-            newTaskDescription = ""
-            showNewTaskSheet = true
+            taskEditingMode = .new
+            draftTaskFromSession = CodMateTask(title: "", description: nil, projectId: selectedProject()?.id ?? "")
           } label: {
             Label("New Task…", systemImage: "checklist")
           }

@@ -19,9 +19,6 @@ struct TaskListView: View {
   var isAwaitingFollowup: ((SessionSummary) -> Bool)? = nil
   var onPrimarySelect: ((SessionSummary) -> Void)? = nil
   var onNewSessionWithTaskContext: ((CodMateTask, SessionSummary, SessionSource, ExternalTerminalProfile) -> Void)? = nil
-  @State private var showNewTaskSheet = false
-  @State private var newTaskTitle = ""
-  @State private var newTaskDescription = ""
   @State private var editingTask: CodMateTask? = nil
   @Environment(\.colorScheme) private var colorScheme
   @State private var draggedSession: SessionSummary? = nil
@@ -78,34 +75,11 @@ struct TaskListView: View {
       .listStyle(.inset)
       .contextMenu { taskListBackgroundContextMenu() }
     }
-    .sheet(isPresented: $showNewTaskSheet) {
-      if let projectId = currentProjectId {
-        NewTaskSheet(
-          projectId: projectId,
-          title: $newTaskTitle,
-          description: $newTaskDescription,
-          onCreate: {
-            Task {
-              await workspaceVM.createTask(
-                title: newTaskTitle,
-                description: newTaskDescription,
-                projectId: projectId
-              )
-              newTaskTitle = ""
-              newTaskDescription = ""
-              showNewTaskSheet = false
-            }
-          },
-          onCancel: {
-            showNewTaskSheet = false
-          }
-        )
-      }
-    }
     .sheet(item: $editingTask) { task in
       EditTaskSheet(
         task: task,
         mode: editingMode,
+        workspaceVM: workspaceVM,
         onSave: { updatedTask in
           Task {
             await workspaceVM.updateTask(updatedTask)
@@ -435,24 +409,11 @@ struct TaskListView: View {
 
         // Content area
         VStack(alignment: .leading, spacing: 4) {
-          // Title with status icon and collapse indicator
-          HStack(spacing: 6) {
-            Text(taskWithSessions.task.effectiveTitle)
-              .font(.headline)
-              .lineLimit(1)
-
-            Image(systemName: taskWithSessions.task.status.icon)
-              .font(.caption)
-              .foregroundColor(statusColor(taskWithSessions.task.status))
-
-            // Collapse state indicator
-            Image(systemName: "chevron.right")
-              .rotationEffect(
-                .degrees(collapsedTaskIDs.contains(taskWithSessions.task.id) ? 0 : 90)
-              )
-              .font(.caption2.bold())
-              .foregroundStyle(.tertiary)
-          }
+          // Title only - status and collapse indicator removed
+          Text(taskWithSessions.task.effectiveTitle)
+            .font(.headline)
+            .lineLimit(1)
+            .truncationMode(.tail)
 
           // Metadata row
           HStack(spacing: 8) {
@@ -485,21 +446,27 @@ struct TaskListView: View {
           .foregroundStyle(.secondary)
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        .padding(.trailing, 32)
 
         Spacer(minLength: 0)
       }
       .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
       .padding(.vertical, 8)
       .overlay(alignment: .topTrailing) {
-        // Top-right action button: only one glyph (…, no extra arrow)
+        // Top-right collapse/expand button
         Button {
-          editingTask = taskWithSessions.task
+          if collapsedTaskIDs.contains(taskWithSessions.task.id) {
+            collapsedTaskIDs.remove(taskWithSessions.task.id)
+          } else {
+            collapsedTaskIDs.insert(taskWithSessions.task.id)
+          }
         } label: {
-          Image(systemName: "ellipsis.circle")
+          Image(systemName: collapsedTaskIDs.contains(taskWithSessions.task.id) ? "chevron.down" : "chevron.up")
             .foregroundStyle(Color.secondary)
-            .font(.system(size: 16))
+            .font(.system(size: 14, weight: .semibold))
         }
         .buttonStyle(.borderless)
+        .padding(.leading, 8)
         .padding(.trailing, 8)
         .padding(.top, 8)
       }
@@ -516,13 +483,6 @@ struct TaskListView: View {
       .onTapGesture(count: 2) {
         editingMode = .edit
         editingTask = taskWithSessions.task
-      }
-      .onTapGesture {
-        if collapsedTaskIDs.contains(taskWithSessions.task.id) {
-          collapsedTaskIDs.remove(taskWithSessions.task.id)
-        } else {
-          collapsedTaskIDs.insert(taskWithSessions.task.id)
-        }
       }
       .contextMenu {
         if let project = projectForTask(taskWithSessions.task) {
@@ -852,9 +812,8 @@ struct TaskListView: View {
         Label("New Session…", systemImage: "plus")
       }
       Button {
-        newTaskTitle = ""
-        newTaskDescription = ""
-        showNewTaskSheet = true
+        editingMode = .new
+        editingTask = CodMateTask(title: "", description: nil, projectId: currentProjectId ?? "")
       } label: {
         Label("New Task…", systemImage: "checklist")
       }
@@ -1137,48 +1096,7 @@ extension TaskListView {
   }
 }
 
-// MARK: - New Task Sheet
-struct NewTaskSheet: View {
-  let projectId: String
-  @Binding var title: String
-  @Binding var description: String
-  let onCreate: () -> Void
-  let onCancel: () -> Void
-
-  var body: some View {
-    VStack(spacing: 16) {
-      Text("New Task")
-        .font(.title2)
-        .fontWeight(.bold)
-
-      TextField("Task Title", text: $title)
-        .textFieldStyle(.roundedBorder)
-
-      VStack(alignment: .leading, spacing: 4) {
-        Text("Description (Optional)")
-          .font(.caption)
-          .foregroundColor(.secondary)
-
-        TextEditor(text: $description)
-          .frame(height: 100)
-          .border(Color.gray.opacity(0.3), width: 1)
-      }
-
-      HStack {
-        Button("Cancel", action: onCancel)
-          .keyboardShortcut(.cancelAction)
-
-        Spacer()
-
-        Button("Create", action: onCreate)
-          .keyboardShortcut(.defaultAction)
-          .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-      }
-    }
-    .padding()
-    .frame(width: 400)
-  }
-}
+// MARK: - New Task Sheet (Removed - now using EditTaskSheet with mode: .new)
 
 // MARK: - Edit Task Sheet
 struct EditTaskSheet: View {
@@ -1194,15 +1112,24 @@ struct EditTaskSheet: View {
   @State private var status: TaskStatus
   let onSave: (CodMateTask) -> Void
   let onCancel: () -> Void
+  @FocusState private var focusedField: Field?
+  @ObservedObject var workspaceVM: ProjectWorkspaceViewModel
+
+  enum Field {
+    case title
+    case description
+  }
 
   init(
     task: CodMateTask,
     mode: Mode = .edit,
+    workspaceVM: ProjectWorkspaceViewModel,
     onSave: @escaping (CodMateTask) -> Void,
     onCancel: @escaping () -> Void
   ) {
     self.task = task
     self.mode = mode
+    self.workspaceVM = workspaceVM
     self._title = State(initialValue: task.title)
     self._description = State(initialValue: task.description ?? "")
     self._status = State(initialValue: task.status)
@@ -1211,22 +1138,67 @@ struct EditTaskSheet: View {
   }
 
   var body: some View {
-    VStack(spacing: 16) {
-      Text(mode == .new ? "New Task" : "Edit Task")
-        .font(.title2)
-        .fontWeight(.bold)
+    let hasAnyContent = !workspaceVM.getSessionsForTask(task.id).isEmpty
+      || !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      || !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+    VStack(alignment: .leading, spacing: 16) {
+      HStack {
+        Text(mode == .new ? "New Task" : "Edit Task")
+          .font(.title3).bold()
+        Spacer()
+
+        // Generate button (icon only, transparent background)
+        // Show if there are sessions OR any content (title/description)
+        if hasAnyContent {
+          Button(action: {
+            Task { @MainActor in
+              await workspaceVM.generateTitleAndDescription(for: task, currentTitle: title, currentDescription: description, force: false)
+              // After generation, update local state
+              if let generatedTitle = workspaceVM.generatedTaskTitle {
+                title = generatedTitle
+              }
+              if let generatedDescription = workspaceVM.generatedTaskDescription {
+                description = generatedDescription
+              }
+              // Clear generated content
+              workspaceVM.generatedTaskTitle = nil
+              workspaceVM.generatedTaskDescription = nil
+            }
+          }) {
+            if workspaceVM.isGeneratingTitleDescription && workspaceVM.generatingTaskId == task.id {
+              ProgressView()
+                .controlSize(.small)
+                .frame(width: 16, height: 16)
+            } else {
+              Image(systemName: "sparkles")
+                .font(.system(size: 16))
+                .foregroundStyle(.secondary)
+            }
+          }
+          .buttonStyle(.plain)
+          .help("Generate title and description using AI")
+          .disabled(workspaceVM.isGeneratingTitleDescription && workspaceVM.generatingTaskId == task.id)
+        }
+      }
 
       TextField("Task Title", text: $title)
         .textFieldStyle(.roundedBorder)
+        .focused($focusedField, equals: .title)
 
-      VStack(alignment: .leading, spacing: 4) {
-        Text("Description")
-          .font(.caption)
-          .foregroundColor(.secondary)
-
+      VStack(alignment: .leading, spacing: 8) {
+        Text("Description (optional)").font(.subheadline)
         TextEditor(text: $description)
-          .frame(height: 100)
-          .border(Color.gray.opacity(0.3), width: 1)
+          .font(.body)
+          .codmatePlainTextEditorStyleIfAvailable()
+          .scrollContentBackground(.hidden)
+          .frame(minHeight: 120)
+          .padding(8)
+          .background(
+            RoundedRectangle(cornerRadius: 6)
+              .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+          )
+          .focused($focusedField, equals: .description)
       }
 
       Picker("Status", selection: $status) {
@@ -1252,8 +1224,12 @@ struct EditTaskSheet: View {
         .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       }
     }
-    .padding()
-    .frame(width: 400)
+    .padding(20)
+    .frame(minWidth: 520)
+    .onAppear {
+      // Set focus to title field when view appears
+      focusedField = .title
+    }
   }
 }
 

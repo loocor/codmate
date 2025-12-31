@@ -6,6 +6,14 @@ class ProjectWorkspaceViewModel: ObservableObject {
     @Published var selectedMode: ProjectWorkspaceMode = .tasks
     @Published var tasks: [CodMateTask] = []
 
+    // Task title/description generation state
+    @Published var isGeneratingTitleDescription: Bool = false
+    @Published var generatingTaskId: UUID? = nil
+
+    // Temporary edit state for generated content
+    @Published var generatedTaskTitle: String? = nil
+    @Published var generatedTaskDescription: String? = nil
+
     private let tasksStore: TasksStore
     private let sessionListViewModel: SessionListViewModel
     private let contextTreeshaker = ContextTreeshaker()

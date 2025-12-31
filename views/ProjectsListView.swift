@@ -128,21 +128,22 @@ struct ProjectsListView: View {
       .environmentObject(viewModel)
     }
     .sheet(item: $draftTaskForNew) { task in
-      EditTaskSheet(
-        task: task,
-        mode: .new,
-        onSave: { updatedTask in
-          Task {
-            if let workspaceVM = viewModel.workspaceVM {
+      if let workspaceVM = viewModel.workspaceVM {
+        EditTaskSheet(
+          task: task,
+          mode: .new,
+          workspaceVM: workspaceVM,
+          onSave: { updatedTask in
+            Task {
               await workspaceVM.updateTask(updatedTask)
+              draftTaskForNew = nil
             }
+          },
+          onCancel: {
             draftTaskForNew = nil
           }
-        },
-        onCancel: {
-          draftTaskForNew = nil
-        }
-      )
+        )
+      }
     }
     .sheet(isPresented: $showAutoAssignSheet) {
       AutoAssignSheet(isPresented: $showAutoAssignSheet)
