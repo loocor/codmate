@@ -245,9 +245,9 @@ actor RemoteSessionMirror {
     }
 
     private func buildSCPArguments(for host: SSHHost, remotePath: String, localPath: String) -> [String] {
-        var args = buildBaseSSHOptions(for: host)
+        var args = buildBaseSCPOptions(for: host)
         args += ["-q", "-p"]
-        args.append("\(connectionTarget(for: host)):\(remotePath)")
+        args.append("\(scpConnectionTarget(for: host)):\(remotePath)")
         args.append(localPath)
         return args
     }
@@ -275,6 +275,29 @@ actor RemoteSessionMirror {
         return args
     }
 
+    private func buildBaseSCPOptions(for host: SSHHost) -> [String] {
+        // SCP has different option syntax than SSH:
+        // - No -l flag (user goes in target: user@host:path)
+        // - Port uses -P (uppercase) instead of -p
+        var args = Self.sshDefaultOptions
+        if let port = host.port {
+            args += ["-P", String(port)]
+        }
+        if let identity = host.identityFile, !identity.isEmpty {
+            args += ["-i", identity]
+        }
+        if let proxyJump = host.proxyJump, !proxyJump.isEmpty {
+            args += ["-o", "ProxyJump=\(proxyJump)"]
+        }
+        if let proxyCommand = host.proxyCommand, !proxyCommand.isEmpty {
+            args += ["-o", "ProxyCommand=\(proxyCommand)"]
+        }
+        if let forwardAgent = host.forwardAgent {
+            args += ["-o", "ForwardAgent=\(forwardAgent ? "yes" : "no")"]
+        }
+        return args
+    }
+
     private func buildRsyncSSHCommand(for host: SSHHost) -> String {
         let parts = [Self.sshExecutable] + buildBaseSSHOptions(for: host)
         return parts.map(shellEscaped).joined(separator: " ")
@@ -282,6 +305,17 @@ actor RemoteSessionMirror {
 
     private func connectionTarget(for host: SSHHost) -> String {
         host.hostname ?? host.alias
+    }
+
+    private func scpConnectionTarget(for host: SSHHost) -> String {
+        // SCP requires user@host format (doesn't support -l flag)
+        let hostname = host.hostname ?? host.alias
+        // If hostname already contains @, don't add user prefix to avoid user@user@host
+        guard !hostname.contains("@") else { return hostname }
+        if let user = host.user, !user.isEmpty {
+            return "\(user)@\(hostname)"
+        }
+        return hostname
     }
 
     private func shellEscaped(_ argument: String) -> String {
@@ -294,7 +328,10 @@ actor RemoteSessionMirror {
     private func buildFindCommand(base: String, searchPaths: [String]) -> String {
         let quotedBase = doubleQuoted(base)
         let pathArgs = searchPaths.map { doubleQuoted($0) }.joined(separator: " ")
-        return "cd \(quotedBase) && (find \(pathArgs) -type f -name '*.jsonl' -printf '%p|%s|%T@\\n' || true)"
+        // Use /bin/sh -c to ensure POSIX shell execution regardless of remote login shell (e.g., fish)
+        // Use double quotes for find arguments to avoid nested single-quote escaping complexity
+        let innerCommand = "cd \(quotedBase) && { find \(pathArgs) -type f -name \"*.jsonl\" -printf \"%p|%s|%T@\\n\" 2>/dev/null || true; }"
+        return "/bin/sh -c '\(innerCommand.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     private func needsDownload(localURL: URL, remoteSize: UInt64, remoteTimestamp: TimeInterval) -> Bool {
