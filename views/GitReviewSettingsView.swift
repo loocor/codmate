@@ -8,6 +8,7 @@ struct GitReviewSettingsView: View {
   @State private var providersList: [ProvidersRegistryService.Provider] = []
   @State private var modelId: String? = nil
   @State private var modelList: [String] = []
+  @State private var builtInModels: [String: [String]] = [:]
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -62,15 +63,28 @@ struct GitReviewSettingsView: View {
                     let models = modelsForCurrentProvider()
                     modelList = models
                     // Reset model when provider changed
-                    modelId =
+                    let nextModel =
                       models.contains(preferences.commitModelId ?? "")
                       ? preferences.commitModelId : nil
+                    modelId = nextModel
+                    if nextModel == nil {
+                      preferences.commitModelId = nil
+                    }
                   }
                 )
               ) {
                 Text("Auto").tag("(auto)")
-                ForEach(providersList, id: \.id) { p in
-                  Text((p.name?.isEmpty == false ? p.name! : p.id)).tag(p.id)
+                Section("Built-in") {
+                  ForEach(LocalServerBuiltInProvider.allCases) { p in
+                    Text(p.displayName).tag(p.id)
+                  }
+                }
+                if !providersList.isEmpty {
+                  Section("Providers") {
+                    ForEach(providersList, id: \.id) { p in
+                      Text((p.name?.isEmpty == false ? p.name! : p.id)).tag(p.id)
+                    }
+                  }
                 }
               }
               .labelsHidden()
@@ -125,6 +139,7 @@ struct GitReviewSettingsView: View {
         // Only show user-added providers to avoid confusion
         let list = await ProvidersRegistryService().listProviders()
         providersList = list
+        await refreshBuiltInModels()
         modelList = modelsForCurrentProvider()
         modelId = preferences.commitModelId
       }
@@ -137,11 +152,45 @@ struct GitReviewSettingsView: View {
   }
 
   private func modelsForCurrentProvider() -> [String] {
+    if let builtin = LocalServerBuiltInProvider.from(providerId: providerId) {
+      return builtInModels[builtin.id] ?? []
+    }
     guard let pid = providerId, let p = providersList.first(where: { $0.id == pid }) else {
       return []
     }
     let ids = (p.catalog?.models ?? []).map { $0.vendorModelId }
     return ids
+  }
+
+  private func refreshBuiltInModels() async {
+    let models = await CLIProxyService.shared.fetchLocalModels()
+    builtInModels = mapLocalModels(models)
+  }
+
+  private func mapLocalModels(_ models: [CLIProxyService.LocalModel]) -> [String: [String]] {
+    var result: [String: [String]] = [:]
+    for provider in LocalServerBuiltInProvider.allCases {
+      result[provider.id] = []
+    }
+    for model in models {
+      if let provider = builtInProvider(for: model.owned_by) {
+        var list = result[provider.id] ?? []
+        if !list.contains(model.id) {
+          list.append(model.id)
+        }
+        result[provider.id] = list
+      }
+    }
+    return result
+  }
+
+  private func builtInProvider(for ownedBy: String?) -> LocalServerBuiltInProvider? {
+    for provider in LocalServerBuiltInProvider.allCases {
+      if provider.matchesOwnedBy(ownedBy) {
+        return provider
+      }
+    }
+    return nil
   }
 }
 

@@ -114,7 +114,27 @@ actor LLMHTTPService {
         preferred: PreferredEngine,
         providerId: String?
     ) -> (provider: ProvidersRegistryService.Provider, connector: ProvidersRegistryService.Connector, baseURL: String, headers: [String:String], consumerKey: String)? {
-        
+        if let builtin = LocalServerBuiltInProvider.from(providerId: providerId) {
+            let port = Self.localServerPort()
+            let base = "http://127.0.0.1:\(port)/v1"
+            let vConnector = ProvidersRegistryService.Connector(
+                baseURL: base,
+                wireAPI: "chat"
+            )
+            let vProvider = ProvidersRegistryService.Provider(
+                id: builtin.id,
+                name: builtin.displayName,
+                class: "openai-compatible",
+                managedByCodMate: true,
+                connectors: ["internal": vConnector]
+            )
+            var headers: [String:String] = [:]
+            if let key = Self.loadLocalServerAPIKey(), !key.isEmpty {
+                headers["Authorization"] = key.hasPrefix("Bearer ") ? key : "Bearer \(key)"
+            }
+            return (vProvider, vConnector, base, headers, "internal")
+        }
+
         // If local proxy is enabled for internal AI, override selection
         let defaults = UserDefaults.standard
         if defaults.bool(forKey: "codmate.localserver.reroute") {
@@ -175,6 +195,46 @@ actor LLMHTTPService {
         case .auto:
             return resolve(.codex) ?? resolve(.claudeCode)
         }
+    }
+
+    private static func localServerPort() -> Int {
+        let port = UserDefaults.standard.integer(forKey: "codmate.localserver.port")
+        return port > 0 ? port : 8080
+    }
+
+    private static func localServerConfigPath() -> String {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let codMateDir = appSupport.appendingPathComponent("CodMate")
+        return codMateDir.appendingPathComponent("config.yaml").path
+    }
+
+    private static func loadLocalServerAPIKey() -> String? {
+        guard let content = try? String(contentsOfFile: localServerConfigPath(), encoding: .utf8) else { return nil }
+        var inKeys = false
+        for line in content.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("api-keys:") {
+                inKeys = true
+                continue
+            }
+            if inKeys {
+                if trimmed.hasPrefix("-") {
+                    var value = trimmed
+                    if let range = value.range(of: "-") {
+                        value = String(value[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                    }
+                    if value.hasPrefix("\"") && value.hasSuffix("\"") {
+                        value.removeFirst()
+                        value.removeLast()
+                    }
+                    return value.trimmingCharacters(in: .whitespaces)
+                }
+                if !trimmed.isEmpty {
+                    inKeys = false
+                }
+            }
+        }
+        return nil
     }
 
     // MARK: - OpenAI compatible

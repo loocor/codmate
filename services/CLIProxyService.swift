@@ -21,6 +21,15 @@ final class CLIProxyService: ObservableObject {
         let provider: UsageProviderKind
         let message: String
     }
+
+    struct LocalModelList: Decodable {
+        let data: [LocalModel]
+    }
+
+    struct LocalModel: Decodable, Hashable {
+        let id: String
+        let owned_by: String?
+    }
     
     // Log streaming
     @Published var logs: String = ""
@@ -393,6 +402,22 @@ final class CLIProxyService: ObservableObject {
             }
         }
         return nil
+    }
+
+    func fetchLocalModels() async -> [LocalModel] {
+        guard let url = URL(string: "http://127.0.0.1:\(port)/v1/models") else { return [] }
+        var request = URLRequest(url: url)
+        if let key = loadPublicAPIKey(), !key.isEmpty {
+            let bearer = key.hasPrefix("Bearer ") ? key : "Bearer \(key)"
+            request.setValue(bearer, forHTTPHeaderField: "Authorization")
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+            return (try? JSONDecoder().decode(LocalModelList.self, from: data))?.data ?? []
+        } catch {
+            return []
+        }
     }
 
     func updatePublicAPIKey(_ key: String) {
