@@ -9,6 +9,7 @@ struct GeminiUsageAPIClient {
     case missingAccessToken
     case credentialExpired(Date)
     case projectNotFound
+    case unsupportedAuthType(String)
     case requestFailed(Int)
     case emptyResponse
     case decodingFailed
@@ -30,6 +31,8 @@ struct GeminiUsageAPIClient {
         return "Gemini credential expired on \(formatter.string(from: date))."
       case .projectNotFound:
         return "Gemini project ID not found. For personal Google accounts, try running gemini CLI to complete onboarding. For workspace accounts, set GOOGLE_CLOUD_PROJECT."
+      case .unsupportedAuthType(let authType):
+        return "Gemini \(authType) auth not supported. Use Google account (OAuth) instead."
       case .requestFailed(let code):
         return "Gemini usage API returned status \(code)."
       case .emptyResponse:
@@ -46,20 +49,23 @@ struct GeminiUsageAPIClient {
       let refreshToken: String?
       let expiresAt: TimeInterval?
       let tokenType: String?
+      let idToken: String?
 
       enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
         case expiresAt = "expiresAt"  // Try camelCase first
         case tokenType = "token_type"
+        case idToken = "id_token"
       }
 
       // Memberwise initializer (needed because we have custom init(from:))
-      init(accessToken: String, refreshToken: String?, expiresAt: TimeInterval?, tokenType: String?) {
+      init(accessToken: String, refreshToken: String?, expiresAt: TimeInterval?, tokenType: String?, idToken: String?) {
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.expiresAt = expiresAt
         self.tokenType = tokenType
+        self.idToken = idToken
       }
 
       init(from decoder: Decoder) throws {
@@ -67,6 +73,7 @@ struct GeminiUsageAPIClient {
         accessToken = try container.decode(String.self, forKey: .accessToken)
         refreshToken = try? container.decode(String.self, forKey: .refreshToken)
         tokenType = try? container.decode(String.self, forKey: .tokenType)
+        idToken = try? container.decode(String.self, forKey: .idToken)
 
         // Handle both expiresAt (camelCase) and expiry_date (snake_case)
         if let expiresAt = try? container.decode(TimeInterval.self, forKey: .expiresAt) {
@@ -171,6 +178,17 @@ struct GeminiUsageAPIClient {
   }
 
   func fetchUsageStatus(now: Date = Date()) async throws -> GeminiUsageStatus {
+    let home = SessionPreferencesStore.getRealUserHomeURL()
+    let authType = currentAuthType(homeDirectory: home)
+    switch authType {
+    case .apiKey:
+      throw ClientError.unsupportedAuthType("API key")
+    case .vertexAI:
+      throw ClientError.unsupportedAuthType("Vertex AI")
+    case .oauthPersonal, .unknown:
+      break
+    }
+
     var credential = try fetchCredential()
 
     // Check token expiration and auto-refresh if needed
@@ -203,14 +221,25 @@ struct GeminiUsageAPIClient {
     guard !credential.token.accessToken.isEmpty else { throw ClientError.missingAccessToken }
     let token = credential.token.accessToken
 
-    guard let projectId = try await resolveProjectId(token: token) else {
-      throw ClientError.projectNotFound
+    let projectId = try await resolveProjectId(token: token)
+    if projectId == nil {
+      NSLog("[GeminiUsage] No project ID detected; continuing without project")
     }
     let buckets = try await retrieveQuota(token: token, projectId: projectId)
 
-    // Detect plan: try Drive storage quota first, fall back to model access
-    let planType = await detectPlanFromStorage(token: token)
-      ?? detectPlanFromModels(buckets)
+    let claims = extractClaimsFromToken(credential.token.idToken)
+    let userTier = await fetchUserTier(token: token)
+    var planType: String?
+    switch userTier {
+    case .standard:
+      planType = await detectPlanFromStorage(token: token) ?? "Pro"
+    case .free:
+      planType = claims.hostedDomain != nil ? "Workspace" : "Free"
+    case .legacy:
+      planType = "Legacy"
+    case .none:
+      planType = await detectPlanFromStorage(token: token) ?? detectPlanFromModels(buckets)
+    }
 
     let status = GeminiUsageStatus(
       updatedAt: now,
@@ -224,46 +253,20 @@ struct GeminiUsageAPIClient {
   // MARK: - Credential loading
 
   private func fetchCredential() throws -> CredentialEnvelope {
-    if let keychain = try fetchCredentialFromKeychain() {
-      return keychain
-    }
     if let file = fetchCredentialFromPlaintextFile() {
       return file
     }
     throw ClientError.credentialNotFound
   }
 
-  private func fetchCredentialFromKeychain() throws -> CredentialEnvelope? {
-    let query: [String: Any] = [
-      kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: "gemini-cli-oauth",
-      kSecAttrAccount as String: "main-account",
-      kSecMatchLimit as String: kSecMatchLimitOne,
-      kSecReturnData as String: true
-    ]
-
-    var item: CFTypeRef?
-    let status = SecItemCopyMatching(query as CFDictionary, &item)
-
-    if status == errSecItemNotFound { return nil }
-    guard status == errSecSuccess else { throw ClientError.keychainAccess(status) }
-    guard let data = item as? Data else { throw ClientError.malformedCredential }
-
-    do {
-      let envelope = try JSONDecoder().decode(CredentialEnvelope.self, from: data)
-      return envelope
-    } catch {
-      throw ClientError.malformedCredential
-    }
-  }
-
   private func fetchCredentialFromPlaintextFile() -> CredentialEnvelope? {
     let fm = FileManager.default
     let home = SessionPreferencesStore.getRealUserHomeURL()
+    // Prioritize standard Gemini CLI credentials file
     let paths = [
+      home.appendingPathComponent(".gemini/oauth_creds.json"),
       home.appendingPathComponent(".gemini/mcp-oauth-tokens-v2.json"),
-      home.appendingPathComponent(".gemini/mcp-oauth-tokens.json"),
-      home.appendingPathComponent(".gemini/oauth_creds.json")
+      home.appendingPathComponent(".gemini/mcp-oauth-tokens.json")
     ]
 
     for url in paths {
@@ -282,7 +285,8 @@ struct GeminiUsageAPIClient {
             accessToken: token,
             refreshToken: legacy.refresh_token,
             expiresAt: expires,
-            tokenType: "Bearer"
+            tokenType: "Bearer",
+            idToken: legacy.id_token
           )
           return CredentialEnvelope(serverName: "legacy", token: tokenObj, updatedAt: nil)
         }
@@ -297,106 +301,10 @@ struct GeminiUsageAPIClient {
     let envProject = ProcessInfo.processInfo.environment["GOOGLE_CLOUD_PROJECT"]
       ?? ProcessInfo.processInfo.environment["GOOGLE_CLOUD_PROJECT_ID"]
 
-    // Step 1: Call loadCodeAssist to check user status
-    guard let url = URL(string: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
-    else {
-      return envProject
+    if let discovered = try? await discoverGeminiProjectId(token: token) {
+      return discovered
     }
-
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    request.timeoutInterval = 10
-
-    var metadata: [String: String] = [
-      "ideType": "IDE_UNSPECIFIED",
-      "platform": "PLATFORM_UNSPECIFIED",
-      "pluginType": "GEMINI"
-    ]
-    if let env = envProject, !env.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      metadata["duetProject"] = env
-    }
-
-    var body: [String: Any] = ["metadata": metadata]
-    if let env = envProject, !env.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      body["cloudaicompanionProject"] = env
-    }
-    request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-    let (data, response) = try await URLSession.shared.data(for: request)
-    guard let http = response as? HTTPURLResponse else { return envProject }
-    guard (200..<300).contains(http.statusCode) else {
-      throw ClientError.requestFailed(http.statusCode)
-    }
-
-    // Debug: Log raw response
-    if let rawJSON = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-      NSLog("[GeminiUsage] loadCodeAssist response: \(rawJSON)")
-    }
-
-    guard let loadResult = try? JSONDecoder().decode(LoadCodeAssistResponse.self, from: data) else {
-      NSLog("[GeminiUsage] Failed to decode loadCodeAssist response")
-      return envProject
-    }
-
-    // Step 2: Check if user is already onboarded (has currentTier)
-    if let currentTier = loadResult.currentTier {
-      NSLog("[GeminiUsage] User already onboarded with tier: \(currentTier.id ?? "unknown")")
-      // User is already onboarded
-      if let project = loadResult.cloudaicompanionProject, !project.isEmpty {
-        NSLog("[GeminiUsage] Found project from loadCodeAssist: \(project)")
-        return project
-      }
-      // Has tier but no project - use env var or throw error
-      if let env = envProject, !env.isEmpty {
-        NSLog("[GeminiUsage] Using project from environment: \(env)")
-        return env
-      }
-      // For some tiers (like free-tier), project might be assigned later
-      // Continue to onboard flow
-      NSLog("[GeminiUsage] No project found, will attempt onboarding")
-    }
-
-    // Step 3: New user needs to be onboarded
-    guard let allowedTiers = loadResult.allowedTiers,
-          !allowedTiers.isEmpty else {
-      NSLog("[GeminiUsage] No allowed tiers found in response")
-      // No tiers available - fallback to env or throw
-      if let env = envProject, !env.isEmpty {
-        return env
-      }
-      throw ClientError.projectNotFound
-    }
-
-    // Find default tier
-    guard let defaultTier = allowedTiers.first(where: { $0.isDefault == true }) ?? allowedTiers.first,
-          let tierId = defaultTier.id else {
-      NSLog("[GeminiUsage] No default tier found")
-      throw ClientError.projectNotFound
-    }
-
-    NSLog("[GeminiUsage] Starting onboarding for tier: \(tierId)")
-
-    // Step 4: Call onboardUser
-    let isFree = tierId == "free-tier"
-    let projectId = try await onboardUser(
-      token: token,
-      tierId: tierId,
-      cloudaicompanionProject: isFree ? nil : envProject
-    )
-
-    if let project = projectId, !project.isEmpty {
-      return project
-    }
-
-    // Fallback to env var
-    if let env = envProject, !env.isEmpty {
-      return env
-    }
-
-    throw ClientError.projectNotFound
+    return envProject
   }
 
   private func onboardUser(
@@ -621,16 +529,17 @@ struct GeminiUsageAPIClient {
       accessToken: newAccessToken,
       refreshToken: refreshToken,  // refresh_token stays the same
       expiresAt: newExpiresAt,
-      tokenType: json["token_type"] as? String
+      tokenType: json["token_type"] as? String,
+      idToken: json["id_token"] as? String
     )
   }
 
 
   private func updateStoredCredentials(_ refreshResponse: [String: Any]) throws {
     let credsPaths = [
+      "~/.gemini/oauth_creds.json",
       "~/.gemini/mcp-oauth-tokens-v2.json",
       "~/.gemini/mcp-oauth-tokens.json",
-      "~/.gemini/oauth_creds.json",
     ]
 
     for path in credsPaths {
@@ -818,5 +727,126 @@ struct GeminiUsageAPIClient {
       bucket.modelId?.lowercased().contains("pro") == true
     }
     return hasProModels ? "AI Pro" : nil
+  }
+
+  // MARK: - Auth type & project discovery (CodexBar-aligned)
+
+  private enum GeminiAuthType: String {
+    case oauthPersonal = "oauth-personal"
+    case apiKey = "api-key"
+    case vertexAI = "vertex-ai"
+    case unknown
+  }
+
+  private enum GeminiUserTierId: String {
+    case free = "free-tier"
+    case legacy = "legacy-tier"
+    case standard = "standard-tier"
+  }
+
+  private func currentAuthType(homeDirectory: URL) -> GeminiAuthType {
+    let settingsURL = homeDirectory.appendingPathComponent(".gemini/settings.json")
+    guard let data = try? Data(contentsOf: settingsURL),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let security = json["security"] as? [String: Any],
+          let auth = security["auth"] as? [String: Any],
+          let selectedType = auth["selectedType"] as? String
+    else {
+      return .unknown
+    }
+    return GeminiAuthType(rawValue: selectedType) ?? .unknown
+  }
+
+  private func discoverGeminiProjectId(token: String) async throws -> String? {
+    guard let url = URL(string: "https://cloudresourcemanager.googleapis.com/v1/projects") else {
+      return nil
+    }
+
+    var request = URLRequest(url: url)
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    request.timeoutInterval = 10
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let projects = json["projects"] as? [[String: Any]]
+    else {
+      return nil
+    }
+
+    for project in projects {
+      guard let projectId = project["projectId"] as? String else { continue }
+      if projectId.hasPrefix("gen-lang-client") {
+        return projectId
+      }
+      if let labels = project["labels"] as? [String: String],
+         labels["generative-language"] != nil {
+        return projectId
+      }
+    }
+
+    return nil
+  }
+
+  private func fetchUserTier(token: String) async -> GeminiUserTierId? {
+    guard let url = URL(string: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist") else {
+      return nil
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = Data("{\"metadata\":{\"ideType\":\"GEMINI_CLI\",\"pluginType\":\"GEMINI\"}}".utf8)
+    request.timeoutInterval = 10
+
+    let data: Data
+    let response: URLResponse
+    do {
+      (data, response) = try await URLSession.shared.data(for: request)
+    } catch {
+      return nil
+    }
+
+    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let currentTier = json["currentTier"] as? [String: Any],
+          let tierId = currentTier["id"] as? String
+    else {
+      return nil
+    }
+    return GeminiUserTierId(rawValue: tierId)
+  }
+
+  private struct TokenClaims {
+    let email: String?
+    let hostedDomain: String?
+  }
+
+  private func extractClaimsFromToken(_ idToken: String?) -> TokenClaims {
+    guard let token = idToken else { return TokenClaims(email: nil, hostedDomain: nil) }
+    let parts = token.components(separatedBy: ".")
+    guard parts.count >= 2 else { return TokenClaims(email: nil, hostedDomain: nil) }
+
+    var payload = parts[1]
+      .replacingOccurrences(of: "-", with: "+")
+      .replacingOccurrences(of: "_", with: "/")
+    let remainder = payload.count % 4
+    if remainder > 0 {
+      payload += String(repeating: "=", count: 4 - remainder)
+    }
+
+    guard let data = Data(base64Encoded: payload, options: .ignoreUnknownCharacters),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      return TokenClaims(email: nil, hostedDomain: nil)
+    }
+
+    return TokenClaims(
+      email: json["email"] as? String,
+      hostedDomain: json["hd"] as? String
+    )
   }
 }

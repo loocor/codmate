@@ -3667,6 +3667,12 @@ extension SessionListViewModel {
         requiresReauth: true,
         action: .refresh
       )
+    case .unsupportedAuthType(let authType):
+      return GeminiUsageErrorDescriptor(
+        message: "Gemini \(authType) auth is not supported. Please log in with Google.",
+        requiresReauth: true,
+        action: .refresh
+      )
     case .requestFailed(let code):
       let needsLogin = code == 401 || code == 403
       return GeminiUsageErrorDescriptor(
