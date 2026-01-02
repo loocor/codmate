@@ -1,16 +1,54 @@
 import SwiftUI
+import AppKit
+import Network
 
 struct ProvidersSettingsView: View {
+  @ObservedObject var preferences: SessionPreferencesStore
   @StateObject private var vm = ProvidersVM()
+  @StateObject private var proxyService = CLIProxyService.shared
   @State private var pendingDeleteId: String?
   @State private var pendingDeleteName: String?
+  @State private var oauthInfoProvider: LocalAuthProvider?
+  @State private var oauthStatus: [LocalAuthProvider: Bool] = [:]
+  @State private var oauthLoginInProgress: LocalAuthProvider?
+  @State private var oauthAutoStartFailed: Bool = false
+  @State private var localModels: [CLIProxyService.LocalModel] = []
+  @State private var localIP: String = "127.0.0.1"
+  @State private var publicAPIKey: String = ""
+
+  private let minPublicKeyLength = 20
 
   var body: some View {
-    settingsScroll {
-      VStack(alignment: .leading, spacing: 20) {
-        header
-        providersList
+    VStack(alignment: .leading, spacing: 12) {
+      header
+      Group {
+        if #available(macOS 15.0, *) {
+          TabView {
+            Tab("Providers", systemImage: "server.rack") {
+              SettingsTabContent {
+                providersList
+              }
+            }
+            Tab("ReRoute", systemImage: "arrow.triangle.2.circlepath") {
+              SettingsTabContent {
+                proxyCapabilitiesSection
+              }
+            }
+          }
+        } else {
+          TabView {
+            SettingsTabContent {
+              providersList
+            }
+            .tabItem { Label("Providers", systemImage: "server.rack") }
+            SettingsTabContent {
+              proxyCapabilitiesSection
+            }
+            .tabItem { Label("ReRoute", systemImage: "arrow.triangle.2.circlepath") }
+          }
+        }
       }
+      .controlSize(.regular)
       .padding(.bottom, 16)
     }
     .sheet(
@@ -25,10 +63,73 @@ struct ProvidersSettingsView: View {
         }
       )
     ) { ProviderEditorSheet(vm: vm) }
+    .sheet(item: $oauthInfoProvider) { provider in
+      OAuthProviderInfoSheet(
+        provider: provider,
+        isLoggedIn: oauthStatus[provider] == true,
+        models: modelsForOAuthProvider(provider),
+        onLogin: { startOAuthLogin(provider) },
+        onLogout: {
+          proxyService.logout(provider: provider)
+          refreshOAuthStatus()
+        }
+      )
+    }
+    .sheet(item: $proxyService.loginPrompt) { prompt in
+      LoginPromptSheet(
+        prompt: prompt,
+        onSubmit: { input in
+          proxyService.submitLoginInput(input)
+          proxyService.loginPrompt = nil
+        },
+        onCancel: {
+          proxyService.loginPrompt = nil
+        },
+        onStop: {
+          proxyService.cancelLogin()
+          proxyService.loginPrompt = nil
+        }
+      )
+    }
     .codmatePresentationSizingIfAvailable()
     .task {
       await vm.loadAll()
       await vm.loadTemplates()
+      getLocalIPAddress()
+      loadPublicKey()
+      refreshOAuthStatus()
+      await refreshLocalModels()
+      ensureServiceRunningIfNeeded()
+    }
+    .onChange(of: preferences.localServerEnabled) { enabled in
+      if enabled {
+        ensureServiceRunningIfNeeded(force: true)
+      }
+    }
+    .onChange(of: preferences.localServerReroute) { enabled in
+      if enabled {
+        ensureServiceRunningIfNeeded(force: true)
+      }
+    }
+    .onChange(of: preferences.localServerReroute3P) { enabled in
+      if enabled {
+        ensureServiceRunningIfNeeded(force: true)
+      }
+      Task {
+        if enabled {
+          await proxyService.syncThirdPartyProviders()
+        }
+        await refreshLocalModels()
+      }
+    }
+    .onChange(of: preferences.oauthProvidersEnabled) { _ in
+      refreshOAuthStatus()
+      Task { await refreshLocalModels() }
+      ensureServiceRunningIfNeeded()
+    }
+    .onChange(of: proxyService.isRunning) { running in
+      if running { oauthAutoStartFailed = false }
+      Task { await refreshLocalModels() }
     }
     .confirmationDialog(
       "Delete Provider",
@@ -63,107 +164,379 @@ struct ProvidersSettingsView: View {
       Text("Providers")
         .font(.title2)
         .fontWeight(.bold)
-      Text("Manage global providers and Codex/Claude bindings")
+      Text("Manage API key and OAuth providers for Codex and Claude Code.")
         .font(.subheadline)
         .foregroundColor(.secondary)
     }
   }
 
   private var providersList: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack {
-        Spacer()
-        Menu {
-          if vm.templates.isEmpty {
-            Text("No templates found")
-          } else {
-            ForEach(vm.templates, id: \.id) { t in
-              Button(t.name?.isEmpty == false ? t.name! : t.id) { vm.startFromTemplate(t) }
+    VStack(alignment: .leading, spacing: 20) {
+      VStack(alignment: .leading, spacing: 10) {
+        Text("OAuth").font(.headline).fontWeight(.semibold)
+        settingsCard {
+          VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(LocalAuthProvider.allCases.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }.enumerated()), id: \.element) { index, provider in
+              if index > 0 {
+                Divider()
+                  .padding(.vertical, 4)
+              }
+              HStack(alignment: .center, spacing: 0) {
+                HStack(alignment: .center, spacing: 8) {
+                  LocalAuthProviderIconView(provider: provider, size: 16, cornerRadius: 4)
+                  Text(provider.displayName)
+                    .font(.body.weight(.medium))
+                }
+                .frame(minWidth: 140, alignment: .leading)
+
+                Spacer(minLength: 16)
+
+                oauthStatusBadge(provider)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button {
+                  if oauthStatus[provider] == true {
+                    Task {
+                      ensureServiceRunningIfNeeded(force: true)
+                      await refreshLocalModels()
+                      await MainActor.run { oauthInfoProvider = provider }
+                    }
+                  } else {
+                    startOAuthLogin(provider)
+                  }
+                } label: {
+                  Image(systemName: oauthStatus[provider] == true ? "info.circle" : "person.crop.circle.badge.plus")
+                    .font(.body)
+                }
+                .buttonStyle(.borderless)
+                .help(oauthStatus[provider] == true ? "View models and manage session" : "Sign in")
+              }
+              .padding(.vertical, 10)
             }
-            Divider()
           }
-          Button("Other…") { vm.startNewProvider() }
-        } label: {
-          Label("Add", systemImage: "plus")
         }
       }
 
-      if vm.providers.isEmpty {
-        VStack(spacing: 12) {
-          Image(systemName: "server.rack")
-            .font(.system(size: 48))
-            .foregroundStyle(.secondary)
-          Text("No Providers")
-            .font(.title3)
-            .fontWeight(.medium)
-          Text("Click Add to create a provider")
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .frame(minHeight: 200)
-        .padding(.horizontal, -8)
-      } else {
-        List(selection: $vm.selectedId) {
-          ForEach(vm.providers, id: \.id) { p in
-            HStack(alignment: .center, spacing: 0) {
-
-              HStack(alignment: .center, spacing: 8) {
-                Image(
-                  systemName: vm.activeCodexProviderId == p.id
-                    ? "largecircle.fill.circle" : "circle"
-                )
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 20)
-                Text(p.name?.isEmpty == false ? p.name! : p.id)
-                  .font(.body.weight(.medium))
+      VStack(alignment: .leading, spacing: 10) {
+        HStack {
+          Text("API Key").font(.headline).fontWeight(.semibold)
+          Spacer()
+          Menu {
+            Section("API Key") {
+              if vm.templates.isEmpty {
+                Text("No templates found")
+              } else {
+                ForEach(vm.templates, id: \.id) { t in
+                  Button(t.name?.isEmpty == false ? t.name! : t.id) { vm.startFromTemplate(t) }
+                }
+                Divider()
               }
-              .frame(minWidth: 120, alignment: .leading)
-
-              Spacer(minLength: 16)
-
-              VStack(alignment: .leading, spacing: 2) {
-                endpointBlock(
-                  label: "Codex",
-                  value: p.connectors[ProvidersRegistryService.Consumer.codex.rawValue]?.baseURL
-                )
-                endpointBlock(
-                  label: "Claude",
-                  value: p.connectors[ProvidersRegistryService.Consumer.claudeCode.rawValue]?
-                    .baseURL
-                )
-              }
-              .frame(maxWidth: .infinity, alignment: .leading)
-
-              Button {
-                vm.selectedId = p.id
-                vm.showEditor = true
-              } label: {
-                Image(systemName: "pencil")
-                  .font(.body)
-              }
-              .buttonStyle(.borderless)
-              .help("Edit provider")
+              Button("Other…") { vm.startNewProvider() }
             }
-            .padding(.vertical, 4)
-            .tag(p.id as String?)
-            .contextMenu {
-              Button("Edit…") {
-                vm.showEditor = true
-                vm.selectedId = p.id
+          } label: {
+            Label("Add", systemImage: "plus")
+          }
+        }
+        if !vm.providers.isEmpty {
+          settingsCard {
+            ScrollView {
+              VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(vm.providers.enumerated()), id: \.element.id) { index, p in
+                  if index > 0 {
+                    Divider()
+                      .padding(.vertical, 4)
+                  }
+                  HStack(alignment: .center, spacing: 0) {
+                    HStack(alignment: .center, spacing: 8) {
+                      APIKeyProviderIconView(
+                        provider: p,
+                        size: 16,
+                        cornerRadius: 4,
+                        isSelected: vm.activeCodexProviderId == p.id
+                      )
+                      .frame(width: 20)
+                      Text(p.name?.isEmpty == false ? p.name! : p.id)
+                        .font(.body.weight(.medium))
+                    }
+                    .frame(minWidth: 140, alignment: .leading)
+
+                    Spacer(minLength: 16)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                      endpointBlock(
+                        label: "Codex",
+                        value: p.connectors[ProvidersRegistryService.Consumer.codex.rawValue]?.baseURL
+                      )
+                      endpointBlock(
+                        label: "Claude",
+                        value: p.connectors[ProvidersRegistryService.Consumer.claudeCode.rawValue]?
+                          .baseURL
+                      )
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Button {
+                      vm.selectedId = p.id
+                      vm.showEditor = true
+                    } label: {
+                      Image(systemName: "pencil")
+                        .font(.body)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Edit provider")
+                  }
+                  .padding(.vertical, 4)
+                  .contextMenu {
+                    Button("Edit…") {
+                      vm.showEditor = true
+                      vm.selectedId = p.id
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                      pendingDeleteId = p.id
+                      pendingDeleteName = p.name?.isEmpty == false ? p.name : p.id
+                    } label: {
+                      Text("Delete")
+                    }
+                  }
+                }
               }
-              Divider()
-              Button(role: .destructive) {
-                pendingDeleteId = p.id
-                pendingDeleteName = p.name?.isEmpty == false ? p.name : p.id
-              } label: {
-                Text("Delete")
+            }
+          }
+        } else {
+          settingsCard {
+            VStack(spacing: 12) {
+              Image(systemName: "key")
+                .font(.system(size: 32))
+                .foregroundStyle(.secondary)
+              Text("No API Key Providers")
+                .font(.subheadline)
+                .fontWeight(.medium)
+              Text("Click Add to configure an API key provider")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 120)
+            .padding(.vertical, 20)
+          }
+        }
+      }
+    }
+  }
+
+  private var proxyCapabilitiesSection: some View {
+    VStack(alignment: .leading, spacing: 20) {
+      // 1. Reroute Control
+      VStack(alignment: .leading, spacing: 10) {
+        Text("Reroute Control").font(.headline).fontWeight(.semibold)
+        settingsCard {
+          Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+            GridRow {
+              VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                  Image(systemName: "bolt.horizontal")
+                    .frame(width: 16, alignment: .leading)
+                  Text("CLI Proxy API")
+                    .font(.subheadline).fontWeight(.medium)
+                }
+                Text("Service status for OAuth and reroute")
+                  .font(.caption).foregroundColor(.secondary)
+                  .padding(.leading, 22)
+              }
+              HStack(spacing: 8) {
+                statusPill(proxyService.isRunning ? "Running" : "Stopped",
+                           active: proxyService.isRunning)
+                Button("Restart") { restartProxyService() }
+                  .buttonStyle(.bordered)
+                if showDebugControls {
+                  Button("Start") { startProxyService() }
+                    .buttonStyle(.bordered)
+                  Button("Stop") { proxyService.stop() }
+                    .buttonStyle(.bordered)
+                    .disabled(!proxyService.isRunning)
+                }
+              }
+              .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+
+            gridDivider
+            GridRow {
+              VStack(alignment: .leading, spacing: 2) {
+                Label("ReRoute API Key Providers", systemImage: "arrow.triangle.2.circlepath")
+                  .font(.subheadline).fontWeight(.medium)
+                Text("Route API key providers through CLI Proxy API so models match proxy results.")
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              Toggle("", isOn: $preferences.localServerReroute3P)
+                .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+          }
+        }
+      }
+
+      // 2. Public Access
+      VStack(alignment: .leading, spacing: 10) {
+        Text("Public Access").font(.headline).fontWeight(.semibold)
+        settingsCard {
+          Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+            GridRow {
+              VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                  Image(systemName: "network")
+                    .frame(width: 16, alignment: .leading)
+                  Text("Public Access")
+                    .font(.subheadline).fontWeight(.medium)
+                }
+                Text("Expose a unified API endpoint for all providers")
+                  .font(.caption).foregroundColor(.secondary)
+                  .padding(.leading, 22)
+              }
+              Toggle("", isOn: $preferences.localServerEnabled)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+
+            if preferences.localServerEnabled {
+              gridDivider
+              GridRow {
+                VStack(alignment: .leading, spacing: 0) {
+                  HStack(spacing: 6) {
+                    Image(systemName: "link")
+                      .frame(width: 16, alignment: .leading)
+                    Text("Public URL")
+                      .font(.subheadline).fontWeight(.medium)
+                  }
+                  Text("Publicly accessible server URL")
+                    .font(.caption).foregroundColor(.secondary)
+                    .padding(.leading, 22)
+                }
+                HStack(spacing: 4) {
+                  Text("http://\(localIP):")
+                    .font(.system(.caption, design: .monospaced))
+                  TextField("Port", value: $preferences.localServerPort, formatter: NumberFormatter())
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(width: 80)
+                  Button(action: {
+                    copyToClipboard("http://\(localIP):\(String(preferences.localServerPort))")
+                  }) {
+                    Image(systemName: "doc.on.doc")
+                  }
+                  .buttonStyle(.plain)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+              }
+
+              gridDivider
+              GridRow {
+                VStack(alignment: .leading, spacing: 0) {
+                  HStack(spacing: 6) {
+                    Image(systemName: "key")
+                      .frame(width: 16, alignment: .leading)
+                    Text("Public Key")
+                      .font(.subheadline).fontWeight(.medium)
+                  }
+                  Text("API key for public access authentication")
+                    .font(.caption).foregroundColor(.secondary)
+                    .padding(.leading, 22)
+                }
+                VStack(alignment: .trailing, spacing: 4) {
+                  HStack(spacing: 6) {
+                    Button(action: regeneratePublicKey) {
+                      Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    HStack(spacing: 4) {
+                      TextField("Key", text: $publicAPIKey)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.caption, design: .monospaced))
+                        .onChange(of: publicAPIKey) { newValue in
+                          let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                          guard trimmed.count >= minPublicKeyLength else { return }
+                          proxyService.updatePublicAPIKey(trimmed)
+                        }
+                      Button(action: { copyToClipboard(publicAPIKey) }) {
+                        Image(systemName: "doc.on.doc")
+                      }
+                      .buttonStyle(.plain)
+                    }
+                    .frame(width: 320)
+                  }
+                  if publicAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).count < minPublicKeyLength {
+                    Text("Minimum \(minPublicKeyLength) characters")
+                      .font(.caption)
+                      .foregroundColor(.red)
+                  }
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
               }
             }
           }
         }
-        .frame(minHeight: 200)
-        .padding(.horizontal, -8)
+      }
+
+      // 3. Config Reference
+      VStack(alignment: .leading, spacing: 10) {
+        Text("Config Reference").font(.headline).fontWeight(.semibold)
+        settingsCard {
+          Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+            GridRow {
+              VStack(alignment: .leading, spacing: 2) {
+                Label("GitHub Repository", systemImage: "square.stack.3d.up")
+                  .font(.subheadline).fontWeight(.medium)
+                Text("CLIProxyAPI source code repository")
+                  .font(.caption).foregroundColor(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              HStack(spacing: 6) {
+                Link(destination: URL(string: "https://github.com/router-for-me/CLIProxyAPI")!) {
+                  HStack(spacing: 6) {
+                    Text("https://github.com/router-for-me/CLIProxyAPI")
+                      .font(.system(.caption, design: .monospaced))
+                      .foregroundColor(.secondary)
+                    Image(systemName: "arrow.up.right.square")
+                      .font(.system(size: 12))
+                      .foregroundColor(.secondary)
+                      .opacity(0.6)
+                  }
+                }
+              }
+              .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+
+            gridDivider
+
+            GridRow {
+              VStack(alignment: .leading, spacing: 2) {
+                Label("Documentation", systemImage: "book")
+                  .font(.subheadline).fontWeight(.medium)
+                Text("CLIProxyAPI official documentation")
+                  .font(.caption).foregroundColor(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              HStack(spacing: 6) {
+                Link(destination: URL(string: "https://help.router-for.me/")!) {
+                  HStack(spacing: 6) {
+                    Text("https://help.router-for.me/")
+                      .font(.system(.caption, design: .monospaced))
+                      .foregroundColor(.secondary)
+                    Image(systemName: "arrow.up.right.square")
+                      .font(.system(size: 12))
+                      .foregroundColor(.secondary)
+                      .opacity(0.6)
+                  }
+                }
+              }
+              .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+          }
+        }
       }
     }
   }
@@ -183,23 +556,224 @@ struct ProvidersSettingsView: View {
     }
   }
 
-  // MARK: - Helper Views
-
-  @ViewBuilder
-  private func settingsScroll<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-    let scroll = ScrollView {
-      content()
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .padding(.top, 24)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 32)
+  private func startOAuthLogin(_ provider: LocalAuthProvider) {
+    guard oauthLoginInProgress == nil else { return }
+    if proxyService.hasAuthToken(for: provider) {
+      preferences.oauthProvidersEnabled.insert(provider.rawValue)
+      refreshOAuthStatus()
+      ensureServiceRunningIfNeeded(force: true)
+      return
     }
-    if #available(macOS 14.0, *) {
-      scroll.scrollClipDisabled()
-    } else {
-      scroll
+    oauthLoginInProgress = provider
+    Task {
+      defer {
+        Task { @MainActor in
+          oauthLoginInProgress = nil
+          refreshOAuthStatus()
+        }
+      }
+      do {
+        try await proxyService.login(provider: provider)
+        _ = await MainActor.run {
+          preferences.oauthProvidersEnabled.insert(provider.rawValue)
+        }
+        await refreshLocalModels()
+        ensureServiceRunningIfNeeded(force: true)
+      } catch {
+        if error is CancellationError { return }
+      }
     }
   }
+
+  @ViewBuilder
+  private func oauthMenuLabel(_ provider: LocalAuthProvider) -> some View {
+    HStack(spacing: 6) {
+      LocalAuthProviderIconView(provider: provider, size: 14, cornerRadius: 3)
+        .frame(width: 16, height: 16, alignment: .center)
+        .clipped()
+      Text(provider.displayName)
+    }
+  }
+
+  @ViewBuilder
+  private func providersSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(title)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      VStack(alignment: .leading, spacing: 6) {
+        content()
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func oauthStatusBadge(_ provider: LocalAuthProvider) -> some View {
+    if oauthLoginInProgress == provider {
+      HStack(spacing: 6) {
+        ProgressView().controlSize(.small)
+        Text("Logging in…").font(.caption)
+      }
+      .foregroundStyle(.secondary)
+    } else if oauthStatus[provider] == true {
+      Text("Logged in").font(.caption)
+    } else {
+      Text("Not logged in").font(.caption)
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private func refreshOAuthStatus() {
+    var next: [LocalAuthProvider: Bool] = [:]
+    for provider in LocalAuthProvider.allCases {
+      next[provider] = proxyService.hasAuthToken(for: provider)
+    }
+    oauthStatus = next
+  }
+
+  private func ensureServiceRunningIfNeeded(force: Bool = false) {
+    let hasLoggedInOAuth = oauthStatus.values.contains(true)
+    let shouldEnsure =
+      force
+      || hasLoggedInOAuth
+      || preferences.localServerEnabled
+      || preferences.localServerReroute
+      || preferences.localServerReroute3P
+    guard shouldEnsure else { return }
+    guard !proxyService.isRunning else { return }
+    oauthAutoStartFailed = false
+    Task {
+      do {
+        try await proxyService.start()
+        await MainActor.run { oauthAutoStartFailed = false }
+      } catch {
+        await MainActor.run { oauthAutoStartFailed = true }
+      }
+    }
+  }
+
+  private func restartProxyService() {
+    Task {
+      if proxyService.isRunning {
+        proxyService.stop()
+        try? await Task.sleep(nanoseconds: 500_000_000)
+      }
+      try? await proxyService.start()
+    }
+  }
+
+  private func startProxyService() {
+    Task { try? await proxyService.start() }
+  }
+
+  private var showDebugControls: Bool {
+    !proxyService.isRunning && oauthAutoStartFailed
+  }
+
+  private func statusPill(_ text: String, active: Bool) -> some View {
+    Text(text)
+      .font(.caption)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 3)
+      .background(active ? Color.green.opacity(0.15) : Color.secondary.opacity(0.12))
+      .foregroundStyle(active ? Color.green : Color.secondary)
+      .clipShape(Capsule())
+  }
+
+  private func refreshLocalModels() async {
+    localModels = await proxyService.fetchLocalModels()
+  }
+
+
+  private func modelsForOAuthProvider(_ provider: LocalAuthProvider) -> [String] {
+    guard let target = builtInProvider(for: provider) else { return [] }
+    var seen: Set<String> = []
+    var ids: [String] = []
+    for model in localModels {
+      if builtInProvider(for: model) == target {
+        if !seen.contains(model.id) {
+          seen.insert(model.id)
+          ids.append(model.id)
+        }
+      }
+    }
+    return ids.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+  }
+
+  private func builtInProvider(for provider: LocalAuthProvider) -> LocalServerBuiltInProvider? {
+    switch provider {
+    case .codex: return .openai
+    case .claude: return .anthropic
+    case .gemini: return .gemini
+    case .antigravity: return .antigravity
+    case .qwen: return .qwen
+    }
+  }
+
+  private func builtInProvider(for model: CLIProxyService.LocalModel) -> LocalServerBuiltInProvider? {
+    let hint = model.provider ?? model.source ?? model.owned_by
+    if let hint, let provider = LocalServerBuiltInProvider.allCases.first(where: { $0.matchesOwnedBy(hint) }) {
+      return provider
+    }
+    let modelId = model.id
+    if let provider = LocalServerBuiltInProvider.allCases.first(where: { $0.matchesModelId(modelId) }) {
+      return provider
+    }
+    return nil
+  }
+
+  private var gridDivider: some View {
+    Divider()
+  }
+
+  private func getLocalIPAddress() {
+    var address: String?
+    var ifaddr: UnsafeMutablePointer<ifaddrs>?
+    if getifaddrs(&ifaddr) == 0 {
+      var ptr = ifaddr
+      while ptr != nil {
+        defer { ptr = ptr?.pointee.ifa_next }
+
+        let interface = ptr?.pointee
+        let addrFamily = interface?.ifa_addr.pointee.sa_family
+        if addrFamily == UInt8(AF_INET) {
+          let name = String(cString: (interface?.ifa_name)!)
+          if name == "en0" || name.starts(with: "en") {
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(interface?.ifa_addr, socklen_t((interface?.ifa_addr.pointee.sa_len)!), &hostname, socklen_t(hostname.count), nil, socklen_t(0), NI_NUMERICHOST)
+            address = String(cString: hostname)
+          }
+        }
+      }
+      freeifaddrs(ifaddr)
+    }
+
+    localIP = address ?? "127.0.0.1"
+  }
+
+  private func loadPublicKey() {
+    if let key = proxyService.loadPublicAPIKey(), !key.isEmpty {
+      publicAPIKey = key
+    } else {
+      let generated = proxyService.generatePublicAPIKey(minLength: minPublicKeyLength)
+      publicAPIKey = generated
+      proxyService.updatePublicAPIKey(generated)
+    }
+  }
+
+  private func regeneratePublicKey() {
+    let generated = proxyService.generatePublicAPIKey(minLength: minPublicKeyLength)
+    publicAPIKey = generated
+    proxyService.updatePublicAPIKey(generated)
+  }
+
+  private func copyToClipboard(_ text: String) {
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(text, forType: .string)
+  }
+
+  // MARK: - Helper Views
 
   @ViewBuilder
   private func settingsCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
@@ -512,6 +1086,120 @@ private struct ProviderEditorSheet: View {
   }
 
 }
+
+private struct OAuthProviderInfoSheet: View {
+  let provider: LocalAuthProvider
+  let isLoggedIn: Bool
+  let models: [String]
+  let onLogin: () -> Void
+  let onLogout: () -> Void
+  @Environment(\.dismiss) private var dismiss
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(spacing: 10) {
+        LocalAuthProviderIconView(provider: provider, size: 20, cornerRadius: 4)
+        Text(provider.displayName)
+          .font(.headline)
+        Spacer()
+        Text(isLoggedIn ? "Logged in" : "Not logged in")
+          .font(.caption)
+          .foregroundStyle(isLoggedIn ? Color.green : Color.secondary)
+      }
+
+      if isLoggedIn {
+        if models.isEmpty {
+          Text("No models detected yet. Make sure CLI Proxy API is running.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else {
+          VStack(alignment: .leading, spacing: 6) {
+            Text("Available Models")
+              .font(.subheadline)
+              .fontWeight(.medium)
+            ScrollView {
+              VStack(alignment: .leading, spacing: 4) {
+                ForEach(models, id: \.self) { model in
+                  Text(model)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                }
+              }
+              .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 200)
+          }
+        }
+      } else {
+        Text("Sign in to view available models for this provider.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+
+      Divider()
+
+      HStack {
+        Button("Close") { dismiss() }
+          .buttonStyle(.plain)
+        Spacer()
+        if isLoggedIn {
+          Button("Sign Out") { onLogout() }
+            .buttonStyle(.bordered)
+        } else {
+          Button("Upstream Login") { onLogin() }
+            .buttonStyle(.borderedProminent)
+        }
+      }
+    }
+    .padding(16)
+    .frame(width: 460)
+  }
+}
+
+private struct LoginPromptSheet: View {
+  let prompt: CLIProxyService.LoginPrompt
+  let onSubmit: (String) -> Void
+  let onCancel: () -> Void
+  let onStop: () -> Void
+
+  @State private var input: String = ""
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("\(prompt.provider.displayName) Login")
+        .font(.headline)
+      Text(prompt.message)
+        .font(.subheadline)
+        .foregroundColor(.secondary)
+      if prompt.provider == .codex {
+        Text("If the browser already shows “Authentication Successful”, you can keep waiting—no paste needed.")
+          .font(.caption)
+          .foregroundColor(.secondary)
+      }
+      TextField("Paste here", text: $input)
+        .textFieldStyle(.roundedBorder)
+        .font(.system(.body, design: .monospaced))
+      HStack {
+        Button("Paste") { pasteFromClipboard() }
+        Spacer()
+        Button("Keep Waiting") { onCancel() }
+        Button("Stop Login") { onStop() }
+        Button("Submit") { onSubmit(input.trimmingCharacters(in: .whitespacesAndNewlines)) }
+          .buttonStyle(.borderedProminent)
+      }
+    }
+    .padding(16)
+    .frame(width: 420)
+  }
+
+  private func pasteFromClipboard() {
+    let pasteboard = NSPasteboard.general
+    if let value = pasteboard.string(forType: .string) {
+      input = value
+    }
+  }
+}
+
 // MARK: - ViewModel (Codex-first)
 @MainActor
 final class ProvidersVM: ObservableObject {

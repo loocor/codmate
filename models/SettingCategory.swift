@@ -9,7 +9,6 @@ enum SettingCategory: String, CaseIterable, Identifiable {
   case gemini
   case remoteHosts
   case gitReview
-  case localServer
   case claudeCode
   case advanced
   case mcpServer
@@ -18,7 +17,7 @@ enum SettingCategory: String, CaseIterable, Identifiable {
   // Customize displayed order and allow hiding categories without breaking enums elsewhere.
   // Remote Hosts appears as a top-level settings page alongside Codex.
   static var allCases: [SettingCategory] {
-    [.general, .terminal, .providers, .gitReview, .mcpServer, .localServer, .remoteHosts, .codex, .gemini, .claudeCode, .advanced, .about]
+    [.general, .terminal, .providers, .gitReview, .mcpServer, .remoteHosts, .codex, .gemini, .claudeCode, .advanced, .about]
   }
 
   var id: String { rawValue }
@@ -33,7 +32,6 @@ enum SettingCategory: String, CaseIterable, Identifiable {
     case .gemini: return "Gemini"
     case .remoteHosts: return "Remote Hosts"
     case .gitReview: return "Git Review"
-    case .localServer: return "Local AI Server"
     case .claudeCode: return "Claude Code"
     case .advanced: return "Advanced"
     case .mcpServer: return "Extensions"
@@ -52,7 +50,6 @@ enum SettingCategory: String, CaseIterable, Identifiable {
     case .remoteHosts: return "antenna.radiowaves.left.and.right"
     case .advanced: return "gearshape.2"
     case .gitReview: return "square.and.pencil"
-    case .localServer: return "network.badge.shield.half.filled"
     case .claudeCode: return "chevron.left.slash.chevron.right"
     case .mcpServer: return "puzzlepiece.extension"
     case .about: return "info.circle"
@@ -69,7 +66,6 @@ enum SettingCategory: String, CaseIterable, Identifiable {
     case .gemini: return "Gemini CLI configuration"
     case .remoteHosts: return "Remote SSH host configuration"
     case .gitReview: return "Git changes viewer and commit generation"
-    case .localServer: return "Unified proxy for AI capabilities"
     case .claudeCode: return "Claude Code configuration"
     case .advanced: return "Paths and deep diagnostics"
     case .mcpServer: return "Manage MCP servers and Skills"

@@ -153,7 +153,7 @@ struct SettingsView: View {
     case .command:
       commandSettings
     case .providers:
-      ProvidersSettingsView()
+      providersSettings
     case .codex:
       codexSettings
     case .gemini:
@@ -162,8 +162,6 @@ struct SettingsView: View {
       RemoteHostsSettingsPane(preferences: preferences)
     case .gitReview:
       gitReviewSettings
-    case .localServer:
-      LocalServerSettingsView(preferences: preferences)
     case .claudeCode:
       claudeCodeSettings
     case .advanced:
@@ -192,11 +190,13 @@ struct SettingsView: View {
           settingsCard {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
               GridRow {
-                VStack(alignment: .leading, spacing: 0) {
-                  Text("Confirm before quit")
+                VStack(alignment: .leading, spacing: 2) {
+                  Label("Confirm before quit", systemImage: "exclamationmark.triangle")
                     .font(.subheadline).fontWeight(.medium)
                   Text("Show confirmation dialog when quitting the app")
-                    .font(.caption).foregroundColor(.secondary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
                 Toggle("", isOn: $preferences.confirmBeforeQuit)
                   .labelsHidden()
@@ -209,11 +209,13 @@ struct SettingsView: View {
               gridDivider
 
               GridRow {
-                VStack(alignment: .leading, spacing: 0) {
-                  Text("Launch at login")
+                VStack(alignment: .leading, spacing: 2) {
+                  Label("Launch at login", systemImage: "power")
                     .font(.subheadline).fontWeight(.medium)
                   Text("Automatically start CodMate when you log in")
-                    .font(.caption).foregroundColor(.secondary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
                 Toggle("", isOn: $preferences.launchAtLogin)
                   .labelsHidden()
@@ -563,6 +565,13 @@ struct SettingsView: View {
     }
   }
 
+  private var providersSettings: some View {
+    settingsScroll {
+      ProvidersSettingsView(preferences: preferences)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+  }
+
   // MARK: - Advanced
   private var advancedSettings: some View {
     settingsScroll {
@@ -657,37 +666,20 @@ struct SettingsView: View {
           }
 
           VStack(alignment: .leading, spacing: 10) {
-            // Two-column grid for aligned controls (no card)
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 18) {
-              // Row: Embedded terminal toggle
-              GridRow {
-                VStack(alignment: .leading, spacing: 0) {
-                  Text("Run in embedded terminal")
-                    .font(.subheadline).fontWeight(.medium)
-                  Text("Use the built-in terminal instead of an external one")
-                    .font(.caption).foregroundColor(.secondary)
-                }
-                Toggle("", isOn: $preferences.defaultResumeUseEmbeddedTerminal)
-                  .labelsHidden()
-                  .toggleStyle(.switch)
-                  .controlSize(.small)
-                  .frame(maxWidth: .infinity, alignment: .trailing)
-                  .gridColumnAlignment(.trailing)
-                  .disabled(AppDistribution.isAppStore || AppSandbox.isEnabled)
-              }
-
-              gridDivider
-
-              if AppSandbox.isEnabled {
-                // Row: Use CLI console (no shell)
+            Text("Embedded Terminal").font(.headline).fontWeight(.semibold)
+            settingsCard {
+              Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                // Row: Embedded terminal toggle
                 GridRow {
-                  VStack(alignment: .leading, spacing: 0) {
-                    Text("Use embedded CLI console (no shell)")
+                  VStack(alignment: .leading, spacing: 2) {
+                    Label("Run in embedded terminal", systemImage: "terminal")
                       .font(.subheadline).fontWeight(.medium)
-                    Text("Starts codex/claude directly")
-                      .font(.caption).foregroundColor(.secondary)
+                    Text("Use the built-in terminal instead of an external one")
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                      .fixedSize(horizontal: false, vertical: true)
                   }
-                  Toggle("", isOn: $preferences.useEmbeddedCLIConsole)
+                  Toggle("", isOn: $preferences.defaultResumeUseEmbeddedTerminal)
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
@@ -697,107 +689,145 @@ struct SettingsView: View {
                 }
 
                 gridDivider
-              }
 
-              // Row: Font family & size (system font panel)
-              GridRow {
-                VStack(alignment: .leading, spacing: 0) {
-                  Text("Font & size")
-                    .font(.subheadline).fontWeight(.medium)
-                  Text("Opens the macOS font panel to pick a monospaced font.")
-                    .font(.caption).foregroundColor(.secondary)
+                if AppSandbox.isEnabled {
+                  // Row: Use CLI console (no shell)
+                  GridRow {
+                    VStack(alignment: .leading, spacing: 2) {
+                      Label("Use embedded CLI console (no shell)", systemImage: "text.terminal")
+                        .font(.subheadline).fontWeight(.medium)
+                      Text("Starts codex/claude directly")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Toggle("", isOn: $preferences.useEmbeddedCLIConsole)
+                      .labelsHidden()
+                      .toggleStyle(.switch)
+                      .controlSize(.small)
+                      .frame(maxWidth: .infinity, alignment: .trailing)
+                      .gridColumnAlignment(.trailing)
+                      .disabled(AppDistribution.isAppStore || AppSandbox.isEnabled)
+                  }
+
+                  gridDivider
                 }
-                FontPickerButton(
-                  fontName: $preferences.terminalFontName,
-                  fontSize: $preferences.terminalFontSize
-                )
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .gridColumnAlignment(.trailing)
-                .disabled(!preferences.defaultResumeUseEmbeddedTerminal)
-              }
 
-              gridDivider
-
-              // Row: Cursor style only
-              GridRow {
-                VStack(alignment: .leading, spacing: 0) {
-                  Text("Cursor style")
-                    .font(.subheadline).fontWeight(.medium)
-                  Text("Choose the caret shape shown inside the terminal.")
-                    .font(.caption).foregroundColor(.secondary)
-                }
-                Picker(
-                  "",
-                  selection: Binding(
-                    get: { preferences.terminalCursorStyleOption },
-                    set: { preferences.terminalCursorStyleOption = $0 }
+                // Row: Font family & size (system font panel)
+                GridRow {
+                  VStack(alignment: .leading, spacing: 2) {
+                    Label("Font & size", systemImage: "textformat")
+                      .font(.subheadline).fontWeight(.medium)
+                    Text("Opens the macOS font panel to pick a monospaced font.")
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                      .fixedSize(horizontal: false, vertical: true)
+                  }
+                  FontPickerButton(
+                    fontName: $preferences.terminalFontName,
+                    fontSize: $preferences.terminalFontSize
                   )
-                ) {
-                  ForEach(TerminalCursorStyleOption.allCases) { option in
-                    Text(option.title).tag(option)
-                  }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .gridColumnAlignment(.trailing)
-                .disabled(!preferences.defaultResumeUseEmbeddedTerminal)
-              }
-
-              gridDivider
-
-              GridRow {
-                VStack(alignment: .leading, spacing: 0) {
-                  Text("Auto open external terminal")
-                    .font(.subheadline).fontWeight(.medium)
-                  Text("CodMate helps open the terminal app for external sessions")
-                    .font(.caption).foregroundColor(.secondary)
-                }
-                let terminals = externalTerminalOrderedProfiles(includeNone: true)
-                Picker("", selection: $preferences.defaultResumeExternalAppId) {
-                  ForEach(terminals) { profile in
-                    Text(profile.displayTitle).tag(profile.id)
-                  }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .gridColumnAlignment(.trailing)
-                .gridCellAnchor(.trailing)
-              }
-
-              gridDivider
-
-              GridRow {
-                VStack(alignment: .leading, spacing: 0) {
-                  Text("Copy new or resume commands to clipboard")
-                    .font(.subheadline).fontWeight(.medium)
-                  Text("Automatically copy new or resume commands when starting sessions")
-                    .font(.caption).foregroundColor(.secondary)
-                }
-                Toggle("", isOn: $preferences.defaultResumeCopyToClipboard)
-                  .labelsHidden()
-                  .toggleStyle(.switch)
-                  .controlSize(.small)
                   .frame(maxWidth: .infinity, alignment: .trailing)
                   .gridColumnAlignment(.trailing)
-              }
-
-              gridDivider
-
-              GridRow {
-                VStack(alignment: .leading, spacing: 0) {
-                  Text("Prompt for Warp tab title")
-                    .font(.subheadline).fontWeight(.medium)
-                  Text("Show an input dialog before copying Warp commands")
-                    .font(.caption).foregroundColor(.secondary)
+                  .disabled(!preferences.defaultResumeUseEmbeddedTerminal)
                 }
-                Toggle("", isOn: $preferences.promptForWarpTitle)
+
+                gridDivider
+
+                // Row: Cursor style only
+                GridRow {
+                  VStack(alignment: .leading, spacing: 2) {
+                    Label("Cursor style", systemImage: "cursorarrow")
+                      .font(.subheadline).fontWeight(.medium)
+                    Text("Choose the caret shape shown inside the terminal.")
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                      .fixedSize(horizontal: false, vertical: true)
+                  }
+                  Picker(
+                    "",
+                    selection: Binding(
+                      get: { preferences.terminalCursorStyleOption },
+                      set: { preferences.terminalCursorStyleOption = $0 }
+                    )
+                  ) {
+                    ForEach(TerminalCursorStyleOption.allCases) { option in
+                      Text(option.title).tag(option)
+                    }
+                  }
                   .labelsHidden()
-                  .toggleStyle(.switch)
-                  .controlSize(.small)
+                  .pickerStyle(.menu)
                   .frame(maxWidth: .infinity, alignment: .trailing)
                   .gridColumnAlignment(.trailing)
+                  .disabled(!preferences.defaultResumeUseEmbeddedTerminal)
+                }
+              }
+            }
+          }
+
+          VStack(alignment: .leading, spacing: 10) {
+            Text("External Terminal").font(.headline).fontWeight(.semibold)
+            settingsCard {
+              Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                GridRow {
+                  VStack(alignment: .leading, spacing: 2) {
+                    Label("Auto open external terminal", systemImage: "arrow.up.right.square")
+                      .font(.subheadline).fontWeight(.medium)
+                    Text("CodMate helps open the terminal app for external sessions")
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                      .fixedSize(horizontal: false, vertical: true)
+                  }
+                  let terminals = externalTerminalOrderedProfiles(includeNone: true)
+                  Picker("", selection: $preferences.defaultResumeExternalAppId) {
+                    ForEach(terminals) { profile in
+                      Text(profile.displayTitle).tag(profile.id)
+                    }
+                  }
+                  .labelsHidden()
+                  .pickerStyle(.menu)
+                  .frame(maxWidth: .infinity, alignment: .trailing)
+                  .gridColumnAlignment(.trailing)
+                  .gridCellAnchor(.trailing)
+                }
+
+                gridDivider
+
+                GridRow {
+                  VStack(alignment: .leading, spacing: 2) {
+                    Label("Copy new or resume commands to clipboard", systemImage: "doc.on.clipboard")
+                      .font(.subheadline).fontWeight(.medium)
+                    Text("Automatically copy new or resume commands when starting sessions")
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                      .fixedSize(horizontal: false, vertical: true)
+                  }
+                  Toggle("", isOn: $preferences.defaultResumeCopyToClipboard)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .gridColumnAlignment(.trailing)
+                }
+
+                gridDivider
+
+                GridRow {
+                  VStack(alignment: .leading, spacing: 2) {
+                    Label("Prompt for Warp tab title", systemImage: "text.bubble")
+                      .font(.subheadline).fontWeight(.medium)
+                    Text("Show an input dialog before copying Warp commands")
+                      .font(.caption)
+                      .foregroundStyle(.secondary)
+                      .fixedSize(horizontal: false, vertical: true)
+                  }
+                  Toggle("", isOn: $preferences.promptForWarpTitle)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .gridColumnAlignment(.trailing)
+                }
               }
             }
           }
