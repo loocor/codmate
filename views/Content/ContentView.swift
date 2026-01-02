@@ -471,56 +471,106 @@ struct ContentView: View {
   /// This regenerates ~/.codmate/tasks/context-<taskId>.md before launching.
   func newSessionWithTaskContext(
     task: CodMateTask,
-    anchor: SessionSummary,
+    anchor: SessionSummary?,
     source: SessionSource,
     profile: ExternalTerminalProfile
   ) {
-    // Only support local sessions as anchors for now; remote sessions
-    // cannot reliably access the local ~/.codmate/tasks directory.
-    guard !anchor.isRemote else { return }
+    if let anchor = anchor {
+      // Only support local sessions as anchors for now; remote sessions
+      // cannot reliably access the local ~/.codmate/tasks directory.
+      guard !anchor.isRemote else { return }
+    }
 
     Task {
-      guard let workspaceVM = viewModel.workspaceVM else { return }
-      _ = await workspaceVM.syncTaskContext(taskId: task.id)
+      let prompt: String
+      let effectiveAnchor: SessionSummary
+      var projectOverride: Project? = nil
 
-      let taskIdString = task.id.uuidString
-      let pathHint = "~/.codmate/tasks/context-\(taskIdString).md"
-      let promptLines: [String] = [
-        "当前 Task 的共享上下文已整理并保存到本地文件：",
-        pathHint,
-        "",
-        "在回答本次问题前，如有需要，请先阅读该文件以了解任务历史记录和相关约束。",
-      ]
-      let prompt = promptLines.joined(separator: "\n")
+      if let anchor = anchor {
+          guard let workspaceVM = viewModel.workspaceVM else { return }
+          _ = await workspaceVM.syncTaskContext(taskId: task.id)
+
+          let taskIdString = task.id.uuidString
+          let pathHint = "~/.codmate/tasks/context-\(taskIdString).md"
+          let promptLines: [String] = [
+            "当前 Task 的共享上下文已整理并保存到本地文件：",
+            pathHint,
+            "",
+            "在回答本次问题前，如有需要，请先阅读该文件以了解任务历史记录和相关约束。",
+          ]
+          prompt = promptLines.joined(separator: "\n")
+          effectiveAnchor = anchor
+      } else {
+          // No anchor, find project and create dummy
+          guard let project = viewModel.projects.first(where: { $0.id == task.projectId }) else { return }
+          projectOverride = project
+          
+          let cwd = project.directory ?? NSHomeDirectory()
+          
+          effectiveAnchor = SessionSummary(
+            id: UUID().uuidString,
+            fileURL: URL(fileURLWithPath: "/dev/null"),
+            fileSizeBytes: 0,
+            startedAt: Date(),
+            endedAt: nil,
+            activeDuration: nil,
+            cliVersion: "",
+            cwd: cwd,
+            originator: "system",
+            instructions: nil,
+            model: nil,
+            approvalPolicy: nil,
+            userMessageCount: 0,
+            assistantMessageCount: 0,
+            toolInvocationCount: 0,
+            responseCounts: [:],
+            turnContextCount: 0,
+            totalTokens: 0,
+            eventCount: 0,
+            lineCount: 0,
+            lastUpdatedAt: Date(),
+            source: source,
+            remotePath: nil
+          )
+
+          var lines = ["Task: \(task.title)"]
+          if let desc = task.description, !desc.isEmpty {
+              lines.append("")
+              lines.append(desc)
+          }
+          prompt = lines.joined(separator: "\n")
+      }
 
       #if APPSTORE
         // App Store 版本不支持嵌入式终端，直接使用外部终端流程。
         launchNewSession(
-          for: anchor,
+          for: effectiveAnchor,
           using: source,
           profile: profile,
           initialPrompt: prompt,
-          warpTitle: task.effectiveTitle
+          warpTitle: task.effectiveTitle,
+          projectOverride: projectOverride
         )
       #else
         if profile.id == "codmate.embedded" {
           // 在内置终端中运行新的会话，并把 Task 上下文作为初始提示注入。
-          startEmbeddedNewWithPrompt(anchor: anchor, using: source, prompt: prompt, task: task)
+          startEmbeddedNewWithPrompt(anchor: effectiveAnchor, using: source, prompt: prompt, task: task, projectOverride: projectOverride)
         } else {
           // 使用选定的外部终端配置
           launchNewSession(
-            for: anchor,
+            for: effectiveAnchor,
             using: source,
             profile: profile,
             initialPrompt: prompt,
-            warpTitle: task.effectiveTitle
+            warpTitle: task.effectiveTitle,
+            projectOverride: projectOverride
           )
         }
       #endif
 
       await SystemNotifier.shared.notify(
         title: "CodMate",
-        body: "Command copied. Session starts with shared Task context."
+        body: anchor != nil ? "Command copied. Session starts with shared Task context." : "Command copied. Session starts with Task prompt."
       )
     }
   }
@@ -529,7 +579,8 @@ struct ContentView: View {
     anchor: SessionSummary,
     using source: SessionSource,
     prompt: String,
-    task: CodMateTask
+    task: CodMateTask,
+    projectOverride: Project? = nil
   ) {
     selectedDetailTab = .terminal
     sessionDetailTabs[anchor.id] = .terminal
@@ -539,7 +590,8 @@ struct ContentView: View {
       ? target.cwd : target.fileURL.deletingLastPathComponent().path
     let commandLines = viewModel.buildEmbeddedNewSessionCommands(
       session: target,
-      initialPrompt: prompt
+      initialPrompt: prompt,
+      projectOverride: projectOverride
     )
     let preclear = "printf '\\033[?1049h\\033[H\\033[2J'"
 
@@ -1024,7 +1076,8 @@ struct ContentView: View {
     using source: SessionSource,
     profile: ExternalTerminalProfile,
     initialPrompt: String? = nil,
-    warpTitle: String? = nil
+    warpTitle: String? = nil,
+    projectOverride: Project? = nil
   ) {
     let target = source == session.source ? session : session.overridingSource(source)
     viewModel.recordIntentForDetailNew(anchor: target)
@@ -1034,7 +1087,8 @@ struct ContentView: View {
       session: target,
       destinationApp: profile,
       initialPrompt: initialPrompt,
-      warpTitleOverride: warpTitle
+      warpTitleOverride: warpTitle,
+      projectOverride: projectOverride
     ) else { return }
 
     if profile.isNone {
@@ -1065,7 +1119,8 @@ struct ContentView: View {
           session: target,
           destinationApp: profile,
           initialPrompt: initialPrompt,
-          warpTitleOverride: warpTitle
+          warpTitleOverride: warpTitle,
+          projectOverride: projectOverride
         )
         _ = viewModel.openAppleTerminal(at: dir)
       #else
@@ -1073,7 +1128,7 @@ struct ContentView: View {
         if let prompt = initialPrompt {
            viewModel.openNewSessionRespectingProject(session: target, initialPrompt: prompt)
         } else if !viewModel.openNewSession(session: target) {
-          _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile)
+          _ = viewModel.copyNewSessionCommandsIfEnabled(session: target, destinationApp: profile, projectOverride: projectOverride)
           _ = viewModel.openAppleTerminal(at: dir)
           if viewModel.shouldCopyCommandsToClipboard {
             Task {
@@ -1092,13 +1147,15 @@ struct ContentView: View {
         session: target,
         destinationApp: profile,
         initialPrompt: initialPrompt,
-        warpTitleOverride: warpTitle
+        warpTitleOverride: warpTitle,
+        projectOverride: projectOverride
       )
     }
     let cmd = profile.supportsCommandResolved
       ? viewModel.buildNewSessionCLIInvocationRespectingProject(
           session: target,
-          initialPrompt: initialPrompt
+          initialPrompt: initialPrompt,
+          projectOverride: projectOverride
         )
       : nil
     viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)

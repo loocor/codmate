@@ -22,7 +22,7 @@ struct SessionListColumnView: View {
   // notify which item is the user's primary (last clicked) for detail focus
   var onPrimarySelect: ((SessionSummary) -> Void)? = nil
   // callback for launching new session with task context
-  var onNewSessionWithTaskContext: ((CodMateTask, SessionSummary, SessionSource, ExternalTerminalProfile) -> Void)? = nil
+  var onNewSessionWithTaskContext: ((CodMateTask, SessionSummary?, SessionSource, ExternalTerminalProfile) -> Void)? = nil
   @EnvironmentObject private var viewModel: SessionListViewModel
   @Environment(\.colorScheme) private var colorScheme
   @State private var showNewProjectSheet = false

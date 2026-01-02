@@ -18,7 +18,7 @@ struct TaskListView: View {
   var isUpdating: ((SessionSummary) -> Bool)? = nil
   var isAwaitingFollowup: ((SessionSummary) -> Bool)? = nil
   var onPrimarySelect: ((SessionSummary) -> Void)? = nil
-  var onNewSessionWithTaskContext: ((CodMateTask, SessionSummary, SessionSource, ExternalTerminalProfile) -> Void)? = nil
+  var onNewSessionWithTaskContext: ((CodMateTask, SessionSummary?, SessionSource, ExternalTerminalProfile) -> Void)? = nil
   @State private var editingTask: CodMateTask? = nil
   @Environment(\.colorScheme) private var colorScheme
   @State private var draggedSession: SessionSummary? = nil
@@ -487,7 +487,7 @@ struct TaskListView: View {
       .contextMenu {
         if let project = projectForTask(taskWithSessions.task) {
           let anchor = latestLocalSession(for: taskWithSessions)
-          let items = buildNewMenuItems(anchor: anchor) { anchor, source, profile in
+          let items = buildNewMenuItems(anchor: anchor, project: project) { anchor, source, profile in
             if let handler = onNewSessionWithTaskContext {
               handler(taskWithSessions.task, anchor, source, profile)
             }
@@ -914,10 +914,18 @@ struct TaskListView: View {
 
   private func buildNewMenuItems(
     anchor: SessionSummary?,
-    customAction: ((SessionSummary, SessionSource, ExternalTerminalProfile) -> Void)? = nil
+    project: Project? = nil,
+    customAction: ((SessionSummary?, SessionSource, ExternalTerminalProfile) -> Void)? = nil
   ) -> [SplitMenuItem] {
-    guard let anchor else { return [] }
-    let allowed = Set(viewModel.allowedSources(for: anchor))
+    guard anchor != nil || project != nil else { return [] }
+    let allowed: Set<ProjectSessionSource>
+    if let anchor {
+      allowed = Set(viewModel.allowedSources(for: anchor))
+    } else if let project {
+      allowed = project.sources.isEmpty ? ProjectSessionSource.allSet : project.sources
+    } else {
+      allowed = ProjectSessionSource.allSet
+    }
     let requestedOrder: [ProjectSessionSource] = [.claude, .codex, .gemini]
     let enabledRemoteHosts = viewModel.preferences.enabledRemoteHosts.sorted()
 
@@ -937,7 +945,7 @@ struct TaskListView: View {
       var items = externalTerminalMenuItems(idPrefix: key) { profile in
         if let customAction {
           customAction(anchor, source, profile)
-        } else {
+        } else if let anchor {
           onNewSession(with: anchor, using: source, profile: profile)
         }
       }
@@ -952,7 +960,7 @@ struct TaskListView: View {
               run: {
                 if let customAction {
                   customAction(anchor, source, embedded)
-                } else {
+                } else if let anchor {
                   onNewSession(with: anchor, using: source, profile: embedded)
                 }
               })
@@ -998,7 +1006,7 @@ struct TaskListView: View {
         ))
     }
 
-    if menuItems.isEmpty {
+    if menuItems.isEmpty, let anchor {
       let fallback = anchor.source
       menuItems.append(
         .init(

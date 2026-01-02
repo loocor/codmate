@@ -173,9 +173,10 @@ extension SessionListViewModel {
 
     func buildEmbeddedNewSessionCommands(
         session: SessionSummary,
-        initialPrompt: String? = nil
+        initialPrompt: String? = nil,
+        projectOverride: Project? = nil
     ) -> String {
-        let project = projectIdForSession(session.id).flatMap { pid in
+        let project = projectOverride ?? projectIdForSession(session.id).flatMap { pid in
             projects.first(where: { $0.id == pid })
         }
         let codexHome = codexHomeOverride(for: session)
@@ -381,9 +382,10 @@ extension SessionListViewModel {
     /// - Returns: Complete CLI command string.
     func buildNewSessionCLIInvocationRespectingProject(
         session: SessionSummary,
-        initialPrompt: String? = nil
+        initialPrompt: String? = nil,
+        projectOverride: Project? = nil
     ) -> String {
-        let project = projectIdForSession(session.id).flatMap { pid in
+        let project = projectOverride ?? projectIdForSession(session.id).flatMap { pid in
             projects.first(where: { $0.id == pid })
         }
         let codexHome = project.map { codexHomeOverride(for: $0) } ?? codexHomeOverride(for: session)
@@ -401,9 +403,10 @@ extension SessionListViewModel {
     func copyNewSessionCommandsRespectingProject(
         session: SessionSummary,
         destinationApp: ExternalTerminalProfile? = nil,
-        warpTitleOverride: String? = nil
+        warpTitleOverride: String? = nil,
+        projectOverride: Project? = nil
     ) -> Bool {
-        let project = projectIdForSession(session.id).flatMap { pid in
+        let project = projectOverride ?? projectIdForSession(session.id).flatMap { pid in
             projects.first(where: { $0.id == pid })
         }
         var warpHint: String? = nil
@@ -446,7 +449,8 @@ extension SessionListViewModel {
         session: SessionSummary,
         destinationApp: ExternalTerminalProfile? = nil,
         initialPrompt: String? = nil,
-        warpTitleOverride: String? = nil
+        warpTitleOverride: String? = nil,
+        projectOverride: Project? = nil
     ) -> Bool {
         guard preferences.defaultResumeCopyToClipboard else { return true }
         if let initialPrompt {
@@ -454,13 +458,15 @@ extension SessionListViewModel {
                 session: session,
                 destinationApp: destinationApp,
                 initialPrompt: initialPrompt,
-                warpTitleOverride: warpTitleOverride
+                warpTitleOverride: warpTitleOverride,
+                projectOverride: projectOverride
             )
         }
         return copyNewSessionCommandsRespectingProject(
             session: session,
             destinationApp: destinationApp,
-            warpTitleOverride: warpTitleOverride
+            warpTitleOverride: warpTitleOverride,
+            projectOverride: projectOverride
         )
     }
 
@@ -469,9 +475,10 @@ extension SessionListViewModel {
         session: SessionSummary,
         destinationApp: ExternalTerminalProfile? = nil,
         initialPrompt: String,
-        warpTitleOverride: String? = nil
+        warpTitleOverride: String? = nil,
+        projectOverride: Project? = nil
     ) -> Bool {
-        let project = projectIdForSession(session.id).flatMap { pid in
+        let project = projectOverride ?? projectIdForSession(session.id).flatMap { pid in
             projects.first(where: { $0.id == pid })
         }
         var warpHint: String? = nil
