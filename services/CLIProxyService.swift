@@ -285,26 +285,12 @@ final class CLIProxyService: ObservableObject {
 
         openedLoginURL = nil
 
+        // Qwen: Skip CLI --no-browser mode, use management OAuth directly
+        // The CLI device code flow has reliability issues with browser callback detection
         if provider == .qwen {
-            appendLog("Starting \(provider.displayName) login...\n")
-            do {
-                try await withTaskCancellationHandler {
-                    try await runCLI(arguments: ["-config", configPath, provider.loginFlag, "--no-browser"], loginProvider: provider)
-                } onCancel: {
-                    Task { @MainActor in
-                        self.cancelLogin()
-                    }
-                }
-                appendLog("\(provider.displayName) login finished.\n")
-                return
-            } catch is CancellationError {
-                appendLog("\(provider.displayName) login cancelled.\n")
-                throw CancellationError()
-            } catch {
-                appendLog("\(provider.displayName) CLI login failed. Trying management login...\n", isError: true)
-                try await loginViaManagement(provider: provider)
-                return
-            }
+            appendLog("Starting \(provider.displayName) login via management API...\n")
+            try await loginViaManagement(provider: provider)
+            return
         }
 
         let flag = provider.loginFlag
