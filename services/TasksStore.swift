@@ -9,6 +9,7 @@ struct TaskMeta: Codable, Hashable, Sendable {
     var id: UUID
     var title: String
     var description: String?
+    var taskType: TaskType
     var projectId: String
     var createdAt: Date
     var updatedAt: Date
@@ -18,11 +19,13 @@ struct TaskMeta: Codable, Hashable, Sendable {
     var sessionIds: [String]
     var status: TaskStatus
     var tags: [String]
+    var primaryProvider: ProjectSessionSource?
 
     init(from task: CodMateTask) {
         self.id = task.id
         self.title = task.title
         self.description = task.description
+        self.taskType = task.taskType
         self.projectId = task.projectId
         self.createdAt = task.createdAt
         self.updatedAt = task.updatedAt
@@ -32,6 +35,32 @@ struct TaskMeta: Codable, Hashable, Sendable {
         self.sessionIds = task.sessionIds
         self.status = task.status
         self.tags = task.tags
+        self.primaryProvider = task.primaryProvider
+    }
+
+    // Custom decoder to handle backward compatibility with old task data
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+
+        // Provide default value for taskType if not present (backward compatibility)
+        taskType = try container.decodeIfPresent(TaskType.self, forKey: .taskType) ?? .other
+
+        projectId = try container.decode(String.self, forKey: .projectId)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        sharedContext = try container.decode([ContextItem].self, forKey: .sharedContext)
+        agentsConfig = try container.decodeIfPresent(String.self, forKey: .agentsConfig)
+        memoryItems = try container.decode([String].self, forKey: .memoryItems)
+        sessionIds = try container.decode([String].self, forKey: .sessionIds)
+        status = try container.decode(TaskStatus.self, forKey: .status)
+        tags = try container.decode([String].self, forKey: .tags)
+
+        // primaryProvider is optional, so old data without it will have nil
+        primaryProvider = try container.decodeIfPresent(ProjectSessionSource.self, forKey: .primaryProvider)
     }
 
     func asTask() -> CodMateTask {
@@ -39,6 +68,7 @@ struct TaskMeta: Codable, Hashable, Sendable {
             id: id,
             title: title,
             description: description,
+            taskType: taskType,
             projectId: projectId,
             createdAt: createdAt,
             updatedAt: updatedAt,
@@ -47,7 +77,8 @@ struct TaskMeta: Codable, Hashable, Sendable {
             memoryItems: memoryItems,
             sessionIds: sessionIds,
             status: status,
-            tags: tags
+            tags: tags,
+            primaryProvider: primaryProvider
         )
     }
 }
@@ -77,6 +108,9 @@ actor TasksStore {
     private var tasks: [UUID: TaskMeta] = [:] // taskId -> meta
     private var sessionToTask: [String: UUID] = [:] // sessionId -> taskId
 
+    // Special "Others" task ID - consistent across sessions
+    static let othersTaskId = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+
     init(paths: Paths = .default(), fileManager: FileManager = .default) {
         self.fm = fileManager
         self.paths = paths
@@ -91,6 +125,7 @@ actor TasksStore {
         }
 
         // Load metadata
+        var loadedTasks: [UUID: TaskMeta] = [:]
         if let en = fm.enumerator(at: paths.metadataDir, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
             let dec = JSONDecoder()
             dec.dateDecodingStrategy = .iso8601
@@ -99,10 +134,40 @@ actor TasksStore {
                 if let data = try? Data(contentsOf: url),
                    let meta = try? dec.decode(TaskMeta.self, from: data)
                 {
-                    self.tasks[meta.id] = meta
+                    loadedTasks[meta.id] = meta
                 }
             }
         }
+        self.tasks = loadedTasks
+
+        // Ensure "Others" task exists (directly inline to avoid actor isolation issue in init)
+        if self.tasks[Self.othersTaskId] == nil {
+            let othersTask = CodMateTask(
+                id: Self.othersTaskId,
+                title: "Others",
+                description: "Automatically collected sessions without explicit task assignment",
+                taskType: .other,
+                projectId: "others",
+                status: .inProgress
+            )
+            let meta = TaskMeta(from: othersTask)
+            self.tasks[Self.othersTaskId] = meta
+
+            // Save to disk
+            let url = paths.metadataDir.appendingPathComponent(meta.id.uuidString + ".json")
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+            enc.dateEncodingStrategy = .iso8601
+            if let data = try? enc.encode(meta) {
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
+
+    // MARK: - Others Task Management
+
+    func assignToOthers(sessionId: String) {
+        assignSessions([sessionId], to: Self.othersTaskId)
     }
 
     // MARK: - Public API
@@ -126,6 +191,7 @@ actor TasksStore {
         var meta = tasks[task.id] ?? TaskMeta(from: task)
         meta.title = task.title
         meta.description = task.description
+        meta.taskType = task.taskType
         meta.projectId = task.projectId
         meta.sharedContext = task.sharedContext
         meta.agentsConfig = task.agentsConfig
@@ -133,6 +199,7 @@ actor TasksStore {
         meta.sessionIds = task.sessionIds
         meta.status = task.status
         meta.tags = task.tags
+        meta.primaryProvider = task.primaryProvider
         meta.updatedAt = Date()
         tasks[task.id] = meta
 

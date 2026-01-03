@@ -1,9 +1,64 @@
 import Foundation
 
+// MARK: - Task Type
+
+enum TaskType: String, Codable, CaseIterable, Identifiable, Sendable {
+    case feature = "feature"
+    case bugFix = "bug_fix"
+    case discussion = "discussion"
+    case refactor = "refactor"
+    case documentation = "documentation"
+    case other = "other"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .feature: return "Feature"
+        case .bugFix: return "Bug Fix"
+        case .discussion: return "Discussion"
+        case .refactor: return "Refactor"
+        case .documentation: return "Documentation"
+        case .other: return "Other"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .feature: return "star.fill"
+        case .bugFix: return "ladybug.fill"
+        case .discussion: return "bubble.left.and.bubble.right.fill"
+        case .refactor: return "arrow.triangle.2.circlepath"
+        case .documentation: return "doc.text.fill"
+        case .other: return "ellipsis.circle.fill"
+        }
+    }
+
+    var descriptionTemplate: String {
+        switch self {
+        case .feature:
+            return "Implement a new feature or functionality"
+        case .bugFix:
+            return "Fix a bug or resolve an issue"
+        case .discussion:
+            return "Discuss requirements, architecture, or approach"
+        case .refactor:
+            return "Refactor code to improve structure or performance"
+        case .documentation:
+            return "Write or update documentation"
+        case .other:
+            return "General task"
+        }
+    }
+}
+
+// MARK: - Task Status
+
 enum TaskStatus: String, Codable, CaseIterable, Identifiable, Sendable {
     case pending
     case inProgress = "in_progress"
     case completed
+    case canceled
     case archived
 
     var id: String { rawValue }
@@ -13,6 +68,7 @@ enum TaskStatus: String, Codable, CaseIterable, Identifiable, Sendable {
         case .pending: return "Pending"
         case .inProgress: return "In Progress"
         case .completed: return "Completed"
+        case .canceled: return "Canceled"
         case .archived: return "Archived"
         }
     }
@@ -22,6 +78,7 @@ enum TaskStatus: String, Codable, CaseIterable, Identifiable, Sendable {
         case .pending: return "circle"
         case .inProgress: return "circle.dotted"
         case .completed: return "checkmark.circle.fill"
+        case .canceled: return "xmark.circle.fill"
         case .archived: return "archivebox.fill"
         }
     }
@@ -61,6 +118,7 @@ struct CodMateTask: Identifiable, Hashable, Codable, Sendable {
     var id: UUID
     var title: String
     var description: String?
+    var taskType: TaskType
     var projectId: String
     var createdAt: Date
     var updatedAt: Date
@@ -77,10 +135,14 @@ struct CodMateTask: Identifiable, Hashable, Codable, Sendable {
     var status: TaskStatus
     var tags: [String]
 
+    // Primary provider for this task
+    var primaryProvider: ProjectSessionSource?
+
     init(
         id: UUID = UUID(),
         title: String,
         description: String? = nil,
+        taskType: TaskType = .other,
         projectId: String,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
@@ -89,11 +151,13 @@ struct CodMateTask: Identifiable, Hashable, Codable, Sendable {
         memoryItems: [String] = [],
         sessionIds: [String] = [],
         status: TaskStatus = .pending,
-        tags: [String] = []
+        tags: [String] = [],
+        primaryProvider: ProjectSessionSource? = nil
     ) {
         self.id = id
         self.title = title
         self.description = description
+        self.taskType = taskType
         self.projectId = projectId
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -103,6 +167,7 @@ struct CodMateTask: Identifiable, Hashable, Codable, Sendable {
         self.sessionIds = sessionIds
         self.status = status
         self.tags = tags
+        self.primaryProvider = primaryProvider
     }
 
     var effectiveTitle: String {

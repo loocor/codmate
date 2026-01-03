@@ -16,7 +16,7 @@ struct ProvidersSettingsView: View {
   @State private var localIP: String = "127.0.0.1"
   @State private var publicAPIKey: String = ""
 
-  private let minPublicKeyLength = 20
+  private let minPublicKeyLength = 36
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -369,10 +369,15 @@ struct ProvidersSettingsView: View {
                   .font(.caption)
                   .foregroundStyle(.secondary)
                   .fixedSize(horizontal: false, vertical: true)
+                Text("Temporarily disabled while we finalize this flow.")
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
               }
               Toggle("", isOn: $preferences.localServerReroute3P)
                 .labelsHidden().toggleStyle(.switch).controlSize(.small)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+                .disabled(true)
             }
           }
         }
@@ -752,17 +757,13 @@ struct ProvidersSettingsView: View {
   }
 
   private func loadPublicKey() {
-    if let key = proxyService.loadPublicAPIKey(), !key.isEmpty {
-      publicAPIKey = key
-    } else {
-      let generated = proxyService.generatePublicAPIKey(minLength: minPublicKeyLength)
-      publicAPIKey = generated
-      proxyService.updatePublicAPIKey(generated)
-    }
+    let key = proxyService.resolvePublicAPIKey()
+    publicAPIKey = key
+    proxyService.updatePublicAPIKey(key)
   }
 
   private func regeneratePublicKey() {
-    let generated = proxyService.generatePublicAPIKey(minLength: minPublicKeyLength)
+    let generated = proxyService.generatePublicAPIKey(length: minPublicKeyLength)
     publicAPIKey = generated
     proxyService.updatePublicAPIKey(generated)
   }

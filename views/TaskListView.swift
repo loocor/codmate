@@ -679,6 +679,7 @@ struct TaskListView: View {
     case .pending: return .gray
     case .inProgress: return .blue
     case .completed: return .green
+    case .canceled: return .red
     case .archived: return .orange
     }
   }
@@ -1444,6 +1445,7 @@ struct TaskSelectionSheet: View {
     case .pending: return .gray
     case .inProgress: return .blue
     case .completed: return .green
+    case .canceled: return .red
     case .archived: return .orange
     }
   }

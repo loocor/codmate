@@ -220,6 +220,7 @@ private enum SidebarMode: Hashable { case directories, projects }
     let actions = SidebarActions(
         selectAllProjects: {},
         requestNewProject: {},
+        requestNewTask: {},
         setDateDimension: { _ in },
         setMonthStart: { _ in },
         setSelectedDay: { _ in },
@@ -255,6 +256,7 @@ private enum SidebarMode: Hashable { case directories, projects }
     let actions = SidebarActions(
         selectAllProjects: {},
         requestNewProject: {},
+        requestNewTask: {},
         setDateDimension: { _ in },
         setMonthStart: { _ in },
         setSelectedDay: { _ in },
@@ -291,6 +293,7 @@ private enum SidebarMode: Hashable { case directories, projects }
     let actions = SidebarActions(
         selectAllProjects: {},
         requestNewProject: {},
+        requestNewTask: {},
         setDateDimension: { _ in },
         setMonthStart: { _ in },
         setSelectedDay: { _ in },
@@ -325,6 +328,7 @@ private enum SidebarMode: Hashable { case directories, projects }
     let actions = SidebarActions(
         selectAllProjects: {},
         requestNewProject: {},
+        requestNewTask: {},
         setDateDimension: { _ in },
         setMonthStart: { _ in },
         setSelectedDay: { _ in },
