@@ -3,18 +3,12 @@ import SwiftUI
 struct GitReviewSettingsView: View {
   @ObservedObject var preferences: SessionPreferencesStore
 
+  @StateObject private var providerCatalog = UnifiedProviderCatalogModel()
   @State private var draftTemplate: String = ""
   @State private var providerId: String? = nil
-  @State private var providersList: [ProvidersRegistryService.Provider] = []
   @State private var modelId: String? = nil
   @State private var modelList: [String] = []
-  @State private var builtInModels: [String: [String]] = [:]
-  @State private var reroutedProviderModels: [String: [String]] = [:]
-  @State private var reroutedProviderNames: [String: String] = [:]
-  @State private var showBuiltInProviders: Bool = false
-  @State private var showReroutedProviders: Bool = false
-
-  private let rerouteProviderPrefix = "local-reroute:"
+  @State private var lastProviderId: String? = nil
 
   var body: some View {
     VStack(alignment: .leading, spacing: 20) {
@@ -74,71 +68,28 @@ struct GitReviewSettingsView: View {
                   .fixedSize(horizontal: false, vertical: true)
               }
               HStack(spacing: 8) {
-                Picker(
-                  "",
-                  selection: Binding(
-                    get: { providerId ?? "(auto)" },
-                    set: { newVal in
-                      providerId = (newVal == "(auto)") ? nil : newVal
-                      preferences.commitProviderId = providerId
-                      // Update models list when provider changes
-                      let models = modelsForCurrentProvider()
-                      modelList = models
-                      // Reset model when provider changed
-                      let nextModel =
-                        models.contains(preferences.commitModelId ?? "")
-                        ? preferences.commitModelId : nil
-                      modelId = nextModel
-                      if nextModel == nil {
-                        preferences.commitModelId = nil
-                      }
-                    }
-                  )
-                ) {
-                  Text("Auto").tag("(auto)")
-                  if showBuiltInProviders {
-                    Section("OAuth Providers") {
-                      ForEach(LocalServerBuiltInProvider.allCases) { p in
-                        Text(p.displayName).tag(p.id)
-                      }
-                    }
-                  }
-                  if showReroutedProviders && !reroutedProviderModels.isEmpty {
-                    Section("ReRoute API Key Providers") {
-                      ForEach(sortedReroutedProviderIds, id: \.self) { pid in
-                        Text(reroutedProviderNames[pid] ?? pid).tag(pid)
-                      }
-                    }
-                  }
-                  if !preferences.localServerReroute3P && !providersList.isEmpty {
-                    Section("API Key Providers") {
-                      ForEach(providersList, id: \.id) { p in
-                        Text((p.name?.isEmpty == false ? p.name! : p.id)).tag(p.id)
-                      }
-                    }
+                UnifiedProviderPickerView(
+                  sections: providerCatalog.sections,
+                  models: modelList,
+                  modelSectionTitle: providerCatalog.sectionTitle(for: providerId),
+                  includeAuto: true,
+                  autoTitle: "Auto",
+                  includeDefaultModel: true,
+                  defaultModelTitle: "(default)",
+                  providerUnavailableHint: providerCatalog.availabilityHint(for: providerId),
+                  disableModels: providerId == nil || !providerCatalog.isProviderAvailable(providerId),
+                  providerId: $providerId,
+                  modelId: $modelId
+                )
+                .onChange(of: providerId) { _ in
+                  normalizeSelection()
+                  if providerId == nil {
+                    Task { await reloadCatalog(forceRefresh: true) }
                   }
                 }
-                .labelsHidden()
-                Picker(
-                  "",
-                  selection: Binding(
-                    get: { modelId ?? "(default)" },
-                    set: { newVal in
-                      modelId = (newVal == "(default)") ? nil : newVal
-                      preferences.commitModelId = modelId
-                    }
-                  )
-                ) {
-                  Text("(default)").tag("(default)")
-                  if let title = modelSectionTitle, !modelList.isEmpty {
-                    Section(title) {
-                      ForEach(modelList, id: \.self) { mid in Text(mid).tag(mid) }
-                    }
-                  } else {
-                    ForEach(modelList, id: \.self) { mid in Text(mid).tag(mid) }
-                  }
+                .onChange(of: modelId) { newVal in
+                  preferences.commitModelId = newVal
                 }
-                .labelsHidden()
               }
               .frame(maxWidth: .infinity, alignment: .trailing)
             }
@@ -178,35 +129,25 @@ struct GitReviewSettingsView: View {
     .onAppear {
       draftTemplate = preferences.commitPromptTemplate
       providerId = preferences.commitProviderId
-      updateProviderVisibility()
-      Task {
-        // Only show user-added providers to avoid confusion
-        let list = await ProvidersRegistryService().listProviders()
-        providersList = list
-        await refreshLocalModels()
-        normalizeCommitSelection()
-      }
+      modelId = preferences.commitModelId
+      Task { await reloadCatalog() }
     }
     .onChange(of: preferences.localServerReroute) { _ in
-      updateProviderVisibility()
-      normalizeCommitSelection()
+      Task { await reloadCatalog() }
     }
     .onChange(of: preferences.localServerReroute3P) { _ in
-      updateProviderVisibility()
       Task {
         if preferences.localServerReroute3P {
           await CLIProxyService.shared.syncThirdPartyProviders()
         }
-        await refreshLocalModels()
-        normalizeCommitSelection()
+        await reloadCatalog()
       }
     }
+    .onChange(of: preferences.oauthProvidersEnabled) { _ in
+      Task { await reloadCatalog() }
+    }
     .onChange(of: CLIProxyService.shared.isRunning) { _ in
-      updateProviderVisibility()
-      Task {
-        await refreshLocalModels()
-        normalizeCommitSelection()
-      }
+      Task { await reloadCatalog() }
     }
   }
 
@@ -225,149 +166,29 @@ struct GitReviewSettingsView: View {
     .cornerRadius(10)
   }
 
-  private func updateProviderVisibility() {
-    // Show providers only if service is running and reroute is enabled
-    let isServiceRunning = CLIProxyService.shared.isRunning
-    showBuiltInProviders = isServiceRunning && preferences.localServerReroute
-    showReroutedProviders = isServiceRunning && preferences.localServerReroute3P
+  private func reloadCatalog(forceRefresh: Bool = false) async {
+    await providerCatalog.reload(preferences: preferences, forceRefresh: forceRefresh)
+    normalizeSelection()
   }
 
-  private var modelSectionTitle: String? {
-    if LocalServerBuiltInProvider.from(providerId: providerId) != nil {
-      return "OAuth Providers"
-    }
-    if rerouteProviderName(from: providerId) != nil {
-      return "ReRoute API Key Providers"
-    }
-    if providerId != nil {
-      return "API Key Providers"
-    }
-    return nil
-  }
+  private func normalizeSelection() {
+    let normalized = providerCatalog.normalizeProviderId(providerId ?? preferences.commitProviderId)
+    providerId = normalized
+    preferences.commitProviderId = normalized
 
-  private func modelsForCurrentProvider() -> [String] {
-    if let builtin = LocalServerBuiltInProvider.from(providerId: providerId) {
-      return builtInModels[builtin.id] ?? []
-    }
-    if let pid = providerId, let models = reroutedProviderModels[pid] {
-      return models
-    }
-    guard let pid = providerId, let p = providersList.first(where: { $0.id == pid }) else {
-      return []
-    }
-    let ids = (p.catalog?.models ?? []).map { $0.vendorModelId }
-    return ids
-  }
-
-  private func refreshLocalModels() async {
-    let models = await CLIProxyService.shared.fetchLocalModels()
-    let mapped = mapLocalModels(models)
-    builtInModels = mapped.builtIns
-    reroutedProviderModels = mapped.rerouted
-    reroutedProviderNames = mapped.names
-  }
-
-  private func mapLocalModels(_ models: [CLIProxyService.LocalModel]) -> (builtIns: [String: [String]], rerouted: [String: [String]], names: [String: String]) {
-    var builtIns: [String: [String]] = [:]
-    var rerouted: [String: [String]] = [:]
-    var names: [String: String] = [:]
-    for provider in LocalServerBuiltInProvider.allCases {
-      builtIns[provider.id] = []
-    }
-    for model in models {
-      if let provider = builtInProvider(for: model) {
-        var list = builtIns[provider.id] ?? []
-        if !list.contains(model.id) {
-          list.append(model.id)
-        }
-        builtIns[provider.id] = list
-        continue
-      }
-      guard let label = rerouteProviderLabel(for: model) else { continue }
-      let pid = rerouteProviderId(for: label)
-      names[pid] = label
-      var list = rerouted[pid] ?? []
-      if !list.contains(model.id) {
-        list.append(model.id)
-      }
-      rerouted[pid] = list
-    }
-    return (builtIns, rerouted, names)
-  }
-
-  private func builtInProvider(for model: CLIProxyService.LocalModel) -> LocalServerBuiltInProvider? {
-    let hint = model.provider ?? model.source ?? model.owned_by
-    if let hint, let provider = LocalServerBuiltInProvider.allCases.first(where: { $0.matchesOwnedBy(hint) }) {
-      return provider
-    }
-    let modelId = model.id
-    if let provider = LocalServerBuiltInProvider.allCases.first(where: { $0.matchesModelId(modelId) }) {
-      return provider
-    }
-    return nil
-  }
-
-  private func rerouteProviderLabel(for model: CLIProxyService.LocalModel) -> String? {
-    let hint = model.provider ?? model.source ?? model.owned_by
-    let trimmed = hint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmed.isEmpty ? nil : trimmed
-  }
-
-  private func rerouteProviderId(for name: String) -> String {
-    return rerouteProviderPrefix + name
-  }
-
-  private func rerouteProviderName(from providerId: String?) -> String? {
-    guard let providerId, providerId.hasPrefix(rerouteProviderPrefix) else { return nil }
-    let name = String(providerId.dropFirst(rerouteProviderPrefix.count))
-    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? nil : trimmed
-  }
-
-  private var sortedReroutedProviderIds: [String] {
-    reroutedProviderModels.keys.sorted {
-      let a = reroutedProviderNames[$0] ?? $0
-      let b = reroutedProviderNames[$1] ?? $1
-      return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
-    }
-  }
-
-  private func normalizeCommitSelection() {
-    if let _ = LocalServerBuiltInProvider.from(providerId: providerId), !showBuiltInProviders {
-      providerId = nil
-      preferences.commitProviderId = nil
+    modelList = providerCatalog.models(for: providerId)
+    let providerChanged = lastProviderId != nil && lastProviderId != providerId
+    lastProviderId = providerId
+    if providerChanged {
       modelId = nil
       preferences.commitModelId = nil
+      return
     }
-
-    if let pid = providerId, rerouteProviderName(from: pid) != nil, !showReroutedProviders {
-      providerId = nil
-      preferences.commitProviderId = nil
-      modelId = nil
-      preferences.commitModelId = nil
+    guard !modelList.isEmpty else {
+      return
     }
-
-    if showReroutedProviders,
-       let pid = providerId,
-       providersList.contains(where: { $0.id == pid }) {
-      let rawName = providersList.first(where: { $0.id == pid })?.name
-      let name = (rawName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) ? rawName! : pid
-      let rerouteId = rerouteProviderId(for: name)
-      if reroutedProviderModels[rerouteId] != nil {
-        providerId = rerouteId
-        preferences.commitProviderId = rerouteId
-      } else {
-        providerId = nil
-        preferences.commitProviderId = nil
-      }
-      modelId = nil
-      preferences.commitModelId = nil
-    }
-
-    modelList = modelsForCurrentProvider()
-    let nextModel =
-      modelList.contains(preferences.commitModelId ?? "")
-      ? preferences.commitModelId : nil
+    let current = preferences.commitModelId
+    let nextModel = (current != nil && modelList.contains(current ?? "")) ? current : nil
     modelId = nextModel
     if nextModel == nil {
       preferences.commitModelId = nil

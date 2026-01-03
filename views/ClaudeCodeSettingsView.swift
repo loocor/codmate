@@ -5,6 +5,13 @@ import Combine
 struct ClaudeCodeSettingsView: View {
     @ObservedObject var vm: ClaudeCodeVM
     @ObservedObject var preferences: SessionPreferencesStore
+    @StateObject private var providerCatalog = UnifiedProviderCatalogModel()
+    @State private var providerModels: [String] = []
+    @State private var showModelMappingEditor = false
+    @State private var modelMappingProviderId: String?
+    @State private var modelMappingDefault: String?
+    @State private var modelMappingAliases: [String: String] = [:]
+    @State private var lastProviderId: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -47,157 +54,116 @@ struct ClaudeCodeSettingsView: View {
             }
             .padding(.bottom, 16)
         }
-        .task { await vm.loadAll() }
+        .task {
+            await vm.loadAll()
+            await vm.loadProxyDefaults(preferences: preferences)
+            await reloadProxyCatalog()
+        }
+        .onChange(of: preferences.localServerReroute) { _ in
+            Task { await reloadProxyCatalog() }
+        }
+        .onChange(of: preferences.localServerReroute3P) { _ in
+            Task { await reloadProxyCatalog() }
+        }
+        .onChange(of: preferences.oauthProvidersEnabled) { _ in
+            Task { await reloadProxyCatalog() }
+        }
+        .onChange(of: CLIProxyService.shared.isRunning) { _ in
+            Task { await reloadProxyCatalog() }
+        }
+        .sheet(isPresented: $showModelMappingEditor) {
+            ClaudeModelMappingSheet(
+                availableModels: providerModels,
+                defaultModel: modelMappingDefault,
+                aliases: modelMappingAliases,
+                onSave: { newDefault, newAliases in
+                    saveModelMappings(defaultModel: newDefault, aliases: newAliases)
+                },
+                onAutoFill: { selectedDefault in
+                    autoFillMappings(selectedDefault: selectedDefault)
+                }
+            )
+        }
     }
 
     // MARK: - Provider
     private var providerPane: some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
-                GridRow {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Label("Active Provider", systemImage: "server.rack")
-                            .font(.subheadline).fontWeight(.medium)
-                        Text("Anthropic-compatible endpoint configured in Providers.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Picker("", selection: $vm.activeProviderId) {
-                        Text("(Built-in)").tag(String?.none)
-                        ForEach(vm.providers, id: \.id) { p in
-                            Text(p.name?.isEmpty == false ? p.name! : p.id).tag(String?(p.id))
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .onChange(of: vm.activeProviderId) { _ in vm.scheduleApplyActiveProviderDebounced() }
+            GridRow {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Active Provider", systemImage: "server.rack")
+                        .font(.subheadline).fontWeight(.medium)
+                    Text("Choose an OAuth or API key provider via CLI Proxy API.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                // Default Model row (only for third‑party providers)
-                if vm.activeProviderId != nil {
-                    gridDivider
-                    GridRow {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Label("Default Model", systemImage: "cpu")
-                                .font(.subheadline).fontWeight(.medium)
-                            Text("Used by Claude Code when starting a session.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        let modelIds = vm.availableModels()
-                        if modelIds.isEmpty {
-                            Text("No models configured for this provider. Manage models in Providers.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .trailing)
-                        } else {
-                            Picker("", selection: $vm.aliasDefault) {
-                                ForEach(modelIds, id: \.self) { Text($0).tag($0) }
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .onChange(of: vm.aliasDefault) { newVal in vm.scheduleApplyDefaultAliasDebounced(newVal) }
-                        }
+                UnifiedProviderPickerView(
+                    sections: providerCatalog.sections,
+                    models: providerModels,
+                    modelSectionTitle: providerCatalog.sectionTitle(for: preferences.claudeProxyProviderId),
+                    includeAuto: true,
+                    autoTitle: "Auto (CLI built-in)",
+                    includeDefaultModel: true,
+                    defaultModelTitle: "(default)",
+                    providerUnavailableHint: providerCatalog.availabilityHint(
+                        for: preferences.claudeProxyProviderId),
+                    disableModels: preferences.claudeProxyProviderId == nil
+                        || !providerCatalog.isProviderAvailable(preferences.claudeProxyProviderId),
+                    showModelPicker: false,
+                    providerId: $preferences.claudeProxyProviderId,
+                    modelId: $preferences.claudeProxyModelId
+                )
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .onChange(of: preferences.claudeProxyProviderId) { _ in
+                    normalizeProxySelection()
+                    if preferences.claudeProxyProviderId == nil {
+                        Task { await reloadProxyCatalog(forceRefresh: true) }
                     }
-                    gridDivider
-                    // Alias rows (like Default Model style)
-                    GridRow {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Label("Haiku Alias", systemImage: "bolt")
-                                .font(.subheadline).fontWeight(.medium)
-                            Text("Optional; leave as Default to inherit.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        let options = vm.availableModels()
-                        Picker("", selection: $vm.aliasHaiku) {
-                            Text("Default").tag("")
-                            ForEach(options, id: \.self) { Text($0).tag($0) }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .onChange(of: vm.aliasHaiku) { _ in vm.scheduleSaveDebounced() }
-                    }
-                    gridDivider
-                    GridRow {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Label("Sonnet Alias", systemImage: "sparkles")
-                                .font(.subheadline).fontWeight(.medium)
-                            Text("Optional; leave as Default to inherit.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        let options = vm.availableModels()
-                        Picker("", selection: $vm.aliasSonnet) {
-                            Text("Default").tag("")
-                            ForEach(options, id: \.self) { Text($0).tag($0) }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .onChange(of: vm.aliasSonnet) { _ in vm.scheduleSaveDebounced() }
-                    }
-                    gridDivider
-                    GridRow {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Label("Opus Alias", systemImage: "star")
-                                .font(.subheadline).fontWeight(.medium)
-                            Text("Optional; leave as Default to inherit.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        let options = vm.availableModels()
-                        Picker("", selection: $vm.aliasOpus) {
-                            Text("Default").tag("")
-                            ForEach(options, id: \.self) { Text($0).tag($0) }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .onChange(of: vm.aliasOpus) { _ in vm.scheduleSaveDebounced() }
-                    }
+                    vm.scheduleApplyProxySelectionDebounced(
+                        providerId: preferences.claudeProxyProviderId,
+                        modelId: preferences.claudeProxyModelId,
+                        preferences: preferences
+                    )
                 }
-                if vm.activeProviderId == nil {
-                gridDivider
-                GridRow {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Label("Login Method", systemImage: "person.crop.circle")
-                            .font(.subheadline).fontWeight(.medium)
-                        Text("Use API Key for third-party endpoints; Claude Subscription uses 'claude login'.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    HStack {
-                        Picker("", selection: $vm.loginMethod) {
-                            Text("API Key").tag(ClaudeCodeVM.LoginMethod.api)
-                            Text("Claude Subscription").tag(ClaudeCodeVM.LoginMethod.subscription)
-                        }
-                        .pickerStyle(.segmented)
-                        .onChange(of: vm.loginMethod) { newVal in
-                            Task { await vm.setLoginMethod(newVal) }
-                        }
-                        .disabled(vm.activeProviderId != nil) // third-party must use API Key
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                .onChange(of: preferences.claudeProxyModelId) { _ in
+                    vm.scheduleApplyProxySelectionDebounced(
+                        providerId: preferences.claudeProxyProviderId,
+                        modelId: preferences.claudeProxyModelId,
+                        preferences: preferences
+                    )
                 }
-                }
-                // Inline warning for missing token in API Key mode (only for Built-in)
-                if vm.activeProviderId == nil && vm.tokenMissingForCurrentSelection() {
-                    GridRow {
-                        Text("")
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle").foregroundStyle(.yellow)
-                            Text("API token not found in environment; set ANTHROPIC_AUTH_TOKEN or your custom key.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                    }
-                }
-                // No inline provider edit link to keep the flow consistent
             }
+            gridDivider
+            GridRow {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("Model List", systemImage: "list.bullet")
+                        .font(.subheadline).fontWeight(.medium)
+                    Text("Pick a default model and map Claude tiers to model IDs.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                UnifiedProviderPickerView(
+                    sections: providerCatalog.sections,
+                    models: providerModels,
+                    modelSectionTitle: providerCatalog.sectionTitle(for: preferences.claudeProxyProviderId),
+                    includeAuto: false,
+                    autoTitle: "Auto (CLI built-in)",
+                    includeDefaultModel: true,
+                    defaultModelTitle: "(default)",
+                    providerUnavailableHint: nil,
+                    disableModels: preferences.claudeProxyProviderId == nil
+                        || !providerCatalog.isProviderAvailable(preferences.claudeProxyProviderId),
+                    showProviderPicker: false,
+                    onEditModels: canEditModelMappings ? { presentModelMappingEditor() } : nil,
+                    editModelsHelp: "Edit model mappings",
+                    providerId: $preferences.claudeProxyProviderId,
+                    modelId: $preferences.claudeProxyModelId
+                )
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
     }
 
     // MARK: - Models / Aliases
@@ -537,6 +503,93 @@ struct ClaudeCodeSettingsView: View {
         }
     }
 
+    private func reloadProxyCatalog(forceRefresh: Bool = false) async {
+        await providerCatalog.reload(preferences: preferences, forceRefresh: forceRefresh)
+        normalizeProxySelection()
+    }
+
+    private func normalizeProxySelection() {
+        let normalized = providerCatalog.normalizeProviderId(preferences.claudeProxyProviderId)
+        if normalized != preferences.claudeProxyProviderId {
+            preferences.claudeProxyProviderId = normalized
+        }
+        let providerChanged = lastProviderId != nil && lastProviderId != preferences.claudeProxyProviderId
+        lastProviderId = preferences.claudeProxyProviderId
+        guard let providerId = preferences.claudeProxyProviderId else {
+            providerModels = []
+            preferences.claudeProxyModelId = nil
+            return
+        }
+        providerModels = providerCatalog.models(for: providerId)
+        if providerChanged {
+            preferences.claudeProxyModelId = nil
+            return
+        }
+        guard !providerModels.isEmpty else {
+            return
+        }
+    }
+
+    private var canEditModelMappings: Bool {
+        preferences.claudeProxyProviderId != nil
+    }
+
+    private func presentModelMappingEditor() {
+        guard let providerId = preferences.claudeProxyProviderId else { return }
+        modelMappingProviderId = providerId
+        modelMappingDefault = preferences.claudeProxyModelId
+        modelMappingAliases = preferences.claudeProxyModelAliases[providerId] ?? [:]
+        showModelMappingEditor = true
+    }
+
+    private func saveModelMappings(defaultModel: String?, aliases: [String: String]) {
+        guard let providerId = modelMappingProviderId else { return }
+        preferences.claudeProxyModelId = defaultModel
+        var stored = preferences.claudeProxyModelAliases
+        if aliases.isEmpty {
+            stored.removeValue(forKey: providerId)
+        } else {
+            stored[providerId] = aliases
+        }
+        preferences.claudeProxyModelAliases = stored
+        vm.scheduleApplyProxySelectionDebounced(
+            providerId: preferences.claudeProxyProviderId,
+            modelId: preferences.claudeProxyModelId,
+            preferences: preferences
+        )
+    }
+
+    private func autoFillMappings(selectedDefault: String?) -> [String: String] {
+        let models = providerModels
+        let trimmedDefault = selectedDefault?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preferred = (trimmedDefault?.isEmpty == false) ? trimmedDefault : selectDefaultModel(from: models)
+        let opus = selectModel(from: models, tokens: ["opus"]) ?? preferred
+        let sonnet = selectModel(from: models, tokens: ["sonnet"]) ?? preferred
+        let haiku = selectModel(from: models, tokens: ["haiku", "flash", "lite", "mini"]) ?? preferred
+        var out: [String: String] = [:]
+        if let preferred { out["default"] = preferred }
+        if let opus { out["opus"] = opus }
+        if let sonnet { out["sonnet"] = sonnet }
+        if let haiku { out["haiku"] = haiku }
+        return out
+    }
+
+    private func selectDefaultModel(from models: [String]) -> String? {
+        if let match = selectModel(from: models, tokens: ["sonnet", "opus", "haiku"]) { return match }
+        if let match = selectModel(from: models, tokens: ["pro", "latest", "preview"]) { return match }
+        return models.first
+    }
+
+    private func selectModel(from models: [String], tokens: [String]) -> String? {
+        guard !models.isEmpty else { return nil }
+        for token in tokens {
+            if let match = models.first(where: { $0.localizedCaseInsensitiveContains(token) }) {
+                return match
+            }
+        }
+        return nil
+    }
+
     // aliasPicker removed
 }
 
@@ -589,6 +642,15 @@ extension ClaudeCodeVM {
         }
         // Aliases (only when a third‑party provider is selected)
         if activeProviderId != nil {
+            if !aliasOpus.trimmingCharacters(in: .whitespaces).isEmpty {
+                lines.append("export ANTHROPIC_DEFAULT_OPUS_MODEL=\(aliasOpus)")
+            }
+            if !aliasSonnet.trimmingCharacters(in: .whitespaces).isEmpty {
+                lines.append("export ANTHROPIC_DEFAULT_SONNET_MODEL=\(aliasSonnet)")
+            }
+            if !aliasHaiku.trimmingCharacters(in: .whitespaces).isEmpty {
+                lines.append("export ANTHROPIC_DEFAULT_HAIKU_MODEL=\(aliasHaiku)")
+            }
             if !aliasDefault.trimmingCharacters(in: .whitespaces).isEmpty {
                 lines.append("export ANTHROPIC_MODEL=\(aliasDefault)")
             }

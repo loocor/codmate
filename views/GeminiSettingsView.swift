@@ -3,6 +3,13 @@ import SwiftUI
 struct GeminiSettingsView: View {
   @ObservedObject var vm: GeminiVM
   @ObservedObject var preferences: SessionPreferencesStore
+  @StateObject private var providerCatalog = UnifiedProviderCatalogModel()
+  @State private var providerModels: [String] = []
+  @State private var showModelEditor = false
+  @State private var modelEditorProviderId: String?
+  @State private var modelEditorModels: [String] = []
+  @State private var modelEditorAutoModels: [String] = []
+  @State private var lastProviderId: String?
 
   private let docsURL = URL(string: "https://geminicli.com/docs/cli/settings/")!
 
@@ -12,6 +19,7 @@ struct GeminiSettingsView: View {
       Group {
         if #available(macOS 15.0, *) {
           TabView {
+            Tab("Provider", systemImage: "server.rack") { providerTab }
             Tab("General", systemImage: "gearshape") { generalTab }
             Tab("Runtime", systemImage: "gauge") { runtimeTab }
             Tab("Model", systemImage: "cpu") { modelTab }
@@ -20,6 +28,8 @@ struct GeminiSettingsView: View {
           }
         } else {
           TabView {
+            providerTab
+              .tabItem { Label("Provider", systemImage: "server.rack") }
             generalTab
               .tabItem { Label("General", systemImage: "gearshape") }
             runtimeTab
@@ -36,7 +46,32 @@ struct GeminiSettingsView: View {
       .controlSize(.regular)
     }
     .padding(.bottom, 16)
-    .task { await vm.loadIfNeeded() }
+    .task {
+      await vm.loadIfNeeded()
+      await reloadProxyCatalog()
+    }
+    .onChange(of: preferences.localServerReroute) { _ in
+      Task { await reloadProxyCatalog() }
+    }
+    .onChange(of: preferences.localServerReroute3P) { _ in
+      Task { await reloadProxyCatalog() }
+    }
+    .onChange(of: preferences.oauthProvidersEnabled) { _ in
+      Task { await reloadProxyCatalog() }
+    }
+    .onChange(of: CLIProxyService.shared.isRunning) { _ in
+      Task { await reloadProxyCatalog() }
+    }
+    .sheet(isPresented: $showModelEditor) {
+      ModelListEditorSheet(
+        title: "Gemini Provider Models",
+        description: "Choose which models appear for this provider. Leave empty to fall back to the default list.",
+        availableModels: modelEditorAutoModels,
+        models: modelEditorModels,
+        onSave: { saveModelOverrides($0) },
+        onReset: { clearModelOverrides() }
+      )
+    }
   }
 
   private var header: some View {
@@ -56,6 +91,74 @@ struct GeminiSettingsView: View {
       }
       .buttonStyle(.plain)
     }
+  }
+
+  private func reloadProxyCatalog(forceRefresh: Bool = false) async {
+    await providerCatalog.reload(preferences: preferences, forceRefresh: forceRefresh)
+    normalizeProxySelection()
+  }
+
+  private func normalizeProxySelection() {
+    let normalized = providerCatalog.normalizeProviderId(preferences.geminiProxyProviderId)
+    if normalized != preferences.geminiProxyProviderId {
+      preferences.geminiProxyProviderId = normalized
+    }
+    let providerChanged = lastProviderId != nil && lastProviderId != preferences.geminiProxyProviderId
+    lastProviderId = preferences.geminiProxyProviderId
+    guard let providerId = preferences.geminiProxyProviderId else {
+      providerModels = []
+      preferences.geminiProxyModelId = nil
+      return
+    }
+    let autoModels = providerCatalog.models(for: providerId)
+    if let override = preferences.geminiProxyModelOverrides[providerId], !override.isEmpty {
+      providerModels = override
+    } else {
+      providerModels = autoModels
+    }
+    if providerChanged {
+      preferences.geminiProxyModelId = nil
+      return
+    }
+    guard !providerModels.isEmpty else {
+      return
+    }
+  }
+
+  private var canEditModels: Bool {
+    preferences.geminiProxyProviderId != nil
+  }
+
+  private func presentModelEditor() {
+    guard let providerId = preferences.geminiProxyProviderId else { return }
+    modelEditorProviderId = providerId
+    modelEditorAutoModels = providerCatalog.models(for: providerId)
+    if let override = preferences.geminiProxyModelOverrides[providerId], !override.isEmpty {
+      modelEditorModels = override
+    } else {
+      modelEditorModels = modelEditorAutoModels
+    }
+    showModelEditor = true
+  }
+
+  private func saveModelOverrides(_ models: [String]) {
+    guard let providerId = modelEditorProviderId else { return }
+    var overrides = preferences.geminiProxyModelOverrides
+    if models.isEmpty {
+      overrides.removeValue(forKey: providerId)
+    } else {
+      overrides[providerId] = models
+    }
+    preferences.geminiProxyModelOverrides = overrides
+    normalizeProxySelection()
+  }
+
+  private func clearModelOverrides() {
+    guard let providerId = modelEditorProviderId else { return }
+    var overrides = preferences.geminiProxyModelOverrides
+    overrides.removeValue(forKey: providerId)
+    preferences.geminiProxyModelOverrides = overrides
+    normalizeProxySelection()
   }
 
   private var generalTab: some View {
@@ -154,6 +257,85 @@ struct GeminiSettingsView: View {
               .foregroundStyle(.red)
               .frame(maxWidth: .infinity, alignment: .trailing)
           }
+        }
+      }
+    }
+  }
+
+  private var providerTab: some View {
+    SettingsTabContent {
+      Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+        GridRow {
+          VStack(alignment: .leading, spacing: 2) {
+            Label("Active Provider", systemImage: "server.rack")
+              .font(.subheadline).fontWeight(.medium)
+            Text("Choose an OAuth or API key provider via CLI Proxy API.")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          UnifiedProviderPickerView(
+            sections: providerCatalog.sections,
+            models: providerModels,
+            modelSectionTitle: providerCatalog.sectionTitle(for: preferences.geminiProxyProviderId),
+            includeAuto: true,
+            autoTitle: "Auto (CLI built-in)",
+            includeDefaultModel: true,
+            defaultModelTitle: "(default)",
+            providerUnavailableHint: providerCatalog.availabilityHint(
+              for: preferences.geminiProxyProviderId),
+            disableModels: preferences.geminiProxyProviderId == nil
+              || !providerCatalog.isProviderAvailable(preferences.geminiProxyProviderId),
+            showModelPicker: false,
+            providerId: $preferences.geminiProxyProviderId,
+            modelId: $preferences.geminiProxyModelId
+          )
+          .frame(maxWidth: .infinity, alignment: .trailing)
+          .onChange(of: preferences.geminiProxyProviderId) { _ in
+            normalizeProxySelection()
+            if preferences.geminiProxyProviderId == nil {
+              Task { await reloadProxyCatalog(forceRefresh: true) }
+            }
+          }
+          .onChange(of: preferences.geminiProxyModelId) { _ in
+            // Stored for future use; Gemini CLI model selection stays in Model tab.
+          }
+        }
+        dividerRow
+        GridRow {
+          VStack(alignment: .leading, spacing: 2) {
+            Label("Model List", systemImage: "list.bullet")
+              .font(.subheadline).fontWeight(.medium)
+            Text("Pick a default model and manage the provider’s model list.")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          UnifiedProviderPickerView(
+            sections: providerCatalog.sections,
+            models: providerModels,
+            modelSectionTitle: providerCatalog.sectionTitle(for: preferences.geminiProxyProviderId),
+            includeAuto: false,
+            autoTitle: "Auto (CLI built-in)",
+            includeDefaultModel: true,
+            defaultModelTitle: "(default)",
+            providerUnavailableHint: nil,
+            disableModels: preferences.geminiProxyProviderId == nil
+              || !providerCatalog.isProviderAvailable(preferences.geminiProxyProviderId),
+            showProviderPicker: false,
+            onEditModels: canEditModels ? { presentModelEditor() } : nil,
+            editModelsHelp: "Edit model list",
+            providerId: $preferences.geminiProxyProviderId,
+            modelId: $preferences.geminiProxyModelId
+          )
+          .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        GridRow {
+          Text("")
+          Text("Gemini CLI model selection stays in the Model tab.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .trailing)
         }
       }
     }

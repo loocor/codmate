@@ -5,6 +5,13 @@ struct CodexSettingsView: View {
     @ObservedObject var preferences: SessionPreferencesStore
     @FocusState private var isEnvSetPairsFocused: Bool
     @State private var envSetPairsLastValue = ""
+    @StateObject private var providerCatalog = UnifiedProviderCatalogModel()
+    @State private var providerModels: [String] = []
+    @State private var showModelEditor = false
+    @State private var modelEditorProviderId: String?
+    @State private var modelEditorModels: [String] = []
+    @State private var modelEditorAutoModels: [String] = []
+    @State private var lastProviderId: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -61,6 +68,16 @@ struct CodexSettingsView: View {
             .controlSize(.regular)
             .padding(.bottom, 16)
         }
+        .sheet(isPresented: $showModelEditor) {
+            ModelListEditorSheet(
+                title: "Codex Provider Models",
+                description: "Choose which models appear for this provider. Leave empty to fall back to the default list.",
+                availableModels: modelEditorAutoModels,
+                models: modelEditorModels,
+                onSave: { saveModelOverrides($0) },
+                onReset: { clearModelOverrides() }
+            )
+        }
     }
 
     // MARK: - Provider Pane
@@ -71,66 +88,95 @@ struct CodexSettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Label("Active Provider", systemImage: "server.rack")
                             .font(.subheadline).fontWeight(.medium)
-                        Text("Choose built-in or a configured provider")
+                        Text("Choose an OAuth or API key provider via CLI Proxy API.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Picker("", selection: $codexVM.registryActiveProviderId) {
-                        Text("(Built-in)").tag(String?.none)
-                        ForEach(codexVM.registryProviders, id: \.id) { provider in
-                            Text(codexVM.registryDisplayName(for: provider))
-                                .tag(String?(provider.id))
-                        }
-                    }
-                    .labelsHidden()
+                    UnifiedProviderPickerView(
+                        sections: providerCatalog.sections,
+                        models: providerModels,
+                        modelSectionTitle: providerCatalog.sectionTitle(for: preferences.codexProxyProviderId),
+                        includeAuto: true,
+                        autoTitle: "Auto (CLI built-in)",
+                        includeDefaultModel: true,
+                        defaultModelTitle: "(default)",
+                        providerUnavailableHint: providerCatalog.availabilityHint(
+                            for: preferences.codexProxyProviderId),
+                        disableModels: preferences.codexProxyProviderId == nil
+                            || !providerCatalog.isProviderAvailable(preferences.codexProxyProviderId),
+                        showModelPicker: false,
+                        providerId: $preferences.codexProxyProviderId,
+                        modelId: $preferences.codexProxyModelId
+                    )
                     .frame(maxWidth: .infinity, alignment: .trailing)
-                    .onChange(of: codexVM.registryActiveProviderId) { _ in
-                        codexVM.scheduleApplyRegistryProviderSelectionDebounced()
+                    .onChange(of: preferences.codexProxyProviderId) { _ in
+                        normalizeProxySelection()
+                        if preferences.codexProxyProviderId == nil {
+                            Task { await reloadProxyCatalog(forceRefresh: true) }
+                        }
+                        codexVM.scheduleApplyProxySelectionDebounced(
+                            providerId: preferences.codexProxyProviderId,
+                            modelId: preferences.codexProxyModelId,
+                            preferences: preferences
+                        )
+                    }
+                    .onChange(of: preferences.codexProxyModelId) { _ in
+                        codexVM.scheduleApplyProxySelectionDebounced(
+                            providerId: preferences.codexProxyProviderId,
+                            modelId: preferences.codexProxyModelId,
+                            preferences: preferences
+                        )
                     }
                 }
                 gridDivider
                 GridRow {
                     VStack(alignment: .leading, spacing: 2) {
-                        Label("Model", systemImage: "cpu")
+                        Label("Model List", systemImage: "list.bullet")
                             .font(.subheadline).fontWeight(.medium)
-                        Text("Default model used by Codex CLI.")
+                        Text("Pick a default model and manage the provider’s model list.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if codexVM.registryActiveProviderId == nil {
-                        Picker("", selection: $codexVM.model) {
-                            ForEach(codexVM.builtinModels, id: \.self) { model in
-                                Text(model).tag(model)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .onChange(of: codexVM.model) { _ in codexVM.scheduleApplyModelDebounced() }
-                    } else {
-                        let modelIds = codexVM.modelsForActiveRegistryProvider()
-                        if modelIds.isEmpty {
-                            Text("No models configured for this provider. Add models in Providers → Models tab.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .trailing)
-                        } else {
-                            Picker("", selection: $codexVM.model) {
-                                ForEach(modelIds, id: \.self) { modelId in
-                                    Text(modelId).tag(modelId)
-                                }
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                            .onChange(of: codexVM.model) { _ in codexVM.scheduleApplyModelDebounced() }
-                        }
-                    }
+                    UnifiedProviderPickerView(
+                        sections: providerCatalog.sections,
+                        models: providerModels,
+                        modelSectionTitle: providerCatalog.sectionTitle(for: preferences.codexProxyProviderId),
+                        includeAuto: false,
+                        autoTitle: "Auto (CLI built-in)",
+                        includeDefaultModel: true,
+                        defaultModelTitle: "(default)",
+                        providerUnavailableHint: nil,
+                        disableModels: preferences.codexProxyProviderId == nil
+                            || !providerCatalog.isProviderAvailable(preferences.codexProxyProviderId),
+                        showProviderPicker: false,
+                        onEditModels: canEditModels ? { presentModelEditor() } : nil,
+                        editModelsHelp: "Edit model list",
+                        providerId: $preferences.codexProxyProviderId,
+                        modelId: $preferences.codexProxyModelId
+                    )
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 // Base URL and API Key Env rows are hidden to reduce redundancy
             }
         }
-        .task { await codexVM.loadRegistryBindings() }
+        .task {
+            await codexVM.loadProxyDefaults(preferences: preferences)
+            await reloadProxyCatalog()
+        }
+        .onChange(of: preferences.localServerReroute) { _ in
+            Task { await reloadProxyCatalog() }
+        }
+        .onChange(of: preferences.localServerReroute3P) { _ in
+            Task { await reloadProxyCatalog() }
+        }
+        .onChange(of: preferences.oauthProvidersEnabled) { _ in
+            Task { await reloadProxyCatalog() }
+        }
+        .onChange(of: CLIProxyService.shared.isRunning) { _ in
+            Task { await reloadProxyCatalog() }
+        }
     }
 
     // MARK: - Runtime Pane
@@ -591,6 +637,74 @@ struct CodexSettingsView: View {
     // MARK: - Helper Views
 
     // codexTabContent has been replaced by the shared SettingsTabContent component
+
+    private func reloadProxyCatalog(forceRefresh: Bool = false) async {
+        await providerCatalog.reload(preferences: preferences, forceRefresh: forceRefresh)
+        normalizeProxySelection()
+    }
+
+    private func normalizeProxySelection() {
+        let normalized = providerCatalog.normalizeProviderId(preferences.codexProxyProviderId)
+        if normalized != preferences.codexProxyProviderId {
+            preferences.codexProxyProviderId = normalized
+        }
+        let providerChanged = lastProviderId != nil && lastProviderId != preferences.codexProxyProviderId
+        lastProviderId = preferences.codexProxyProviderId
+        guard let providerId = preferences.codexProxyProviderId else {
+            providerModels = []
+            preferences.codexProxyModelId = nil
+            return
+        }
+        let autoModels = providerCatalog.models(for: providerId)
+        if let override = preferences.codexProxyModelOverrides[providerId], !override.isEmpty {
+            providerModels = override
+        } else {
+            providerModels = autoModels
+        }
+        if providerChanged {
+            preferences.codexProxyModelId = nil
+            return
+        }
+        guard !providerModels.isEmpty else {
+            return
+        }
+    }
+
+    private var canEditModels: Bool {
+        preferences.codexProxyProviderId != nil
+    }
+
+    private func presentModelEditor() {
+        guard let providerId = preferences.codexProxyProviderId else { return }
+        modelEditorProviderId = providerId
+        modelEditorAutoModels = providerCatalog.models(for: providerId)
+        if let override = preferences.codexProxyModelOverrides[providerId], !override.isEmpty {
+            modelEditorModels = override
+        } else {
+            modelEditorModels = modelEditorAutoModels
+        }
+        showModelEditor = true
+    }
+
+    private func saveModelOverrides(_ models: [String]) {
+        guard let providerId = modelEditorProviderId else { return }
+        var overrides = preferences.codexProxyModelOverrides
+        if models.isEmpty {
+            overrides.removeValue(forKey: providerId)
+        } else {
+            overrides[providerId] = models
+        }
+        preferences.codexProxyModelOverrides = overrides
+        normalizeProxySelection()
+    }
+
+    private func clearModelOverrides() {
+        guard let providerId = modelEditorProviderId else { return }
+        var overrides = preferences.codexProxyModelOverrides
+        overrides.removeValue(forKey: providerId)
+        preferences.codexProxyModelOverrides = overrides
+        normalizeProxySelection()
+    }
 
     @ViewBuilder
     private var gridDivider: some View {
