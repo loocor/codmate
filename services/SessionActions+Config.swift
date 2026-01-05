@@ -122,4 +122,22 @@ extension SessionActions {
         let lower = text.lowercased()
         return lower.hasPrefix("gpt-") || lower.hasPrefix("gpt5")
     }
+
+    // TODO: Enhance model identification strategy. Currently using simple string prefix matching
+    // to filter incompatible models when switching between providers (e.g. Auto vs Proxy).
+    func resolveInlineModel(provider: String?, candidate: String?) -> String? {
+        guard let model = candidate, !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        
+        let p = provider?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        
+        if p.isEmpty {
+            // Auto/Built-in provider: only allow known builtin models (gpt-*), discard incompatible ones (e.g. gemini/claude)
+            return isLikelyBuiltinCodexModel(model) ? model : nil
+        } else if p == "codmate-proxy" {
+            // Proxy provider: suppress builtin models to avoid conflicts, pass through others
+            return isLikelyBuiltinCodexModel(model) ? nil : model
+        }
+        
+        return model
+    }
 }

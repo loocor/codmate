@@ -8,9 +8,9 @@ struct ProvidersSettingsView: View {
   @StateObject private var proxyService = CLIProxyService.shared
   @State private var pendingDeleteId: String?
   @State private var pendingDeleteName: String?
+  @State private var pendingDeleteAccount: CLIProxyService.OAuthAccount?
   @State private var oauthInfoProvider: LocalAuthProvider?
-  @State private var oauthStatus: [LocalAuthProvider: Bool] = [:]
-  @State private var oauthLoginInProgress: LocalAuthProvider?
+  @State private var oauthLoginProvider: LocalAuthProvider?
   @State private var oauthAutoStartFailed: Bool = false
   @State private var localModels: [CLIProxyService.LocalModel] = []
   @State private var localIP: String = "127.0.0.1"
@@ -34,6 +34,11 @@ struct ProvidersSettingsView: View {
                 proxyCapabilitiesSection
               }
             }
+            Tab("Advanced", systemImage: "gearshape.2") {
+              SettingsTabContent {
+                cliProxyAdvancedSection
+              }
+            }
           }
         } else {
           TabView {
@@ -45,6 +50,10 @@ struct ProvidersSettingsView: View {
               proxyCapabilitiesSection
             }
             .tabItem { Label("ReRoute", systemImage: "arrow.triangle.2.circlepath") }
+            SettingsTabContent {
+              cliProxyAdvancedSection
+            }
+            .tabItem { Label("Advanced", systemImage: "gearshape.2") }
           }
         }
       }
@@ -64,18 +73,40 @@ struct ProvidersSettingsView: View {
       )
     ) { ProviderEditorSheet(vm: vm) }
     .sheet(item: $oauthInfoProvider) { provider in
+      let accounts = proxyService.listOAuthAccounts().filter { $0.provider == provider }
       OAuthProviderInfoSheet(
         provider: provider,
-        isLoggedIn: oauthStatus[provider] == true,
-        models: modelsForOAuthProvider(provider),
-        onLogin: { startOAuthLogin(provider) },
-        onLogout: {
-          proxyService.logout(provider: provider)
+        isLoggedIn: !accounts.isEmpty,
+        accounts: accounts,
+        initialModels: modelsForOAuthProvider(provider),
+        onLogin: { oauthLoginProvider = provider },
+        onLogout: { account in
+          proxyService.deleteOAuthAccount(account)
           refreshOAuthStatus()
         }
       )
     }
-    .sheet(item: $proxyService.loginPrompt) { prompt in
+    .sheet(item: $oauthLoginProvider) { provider in
+      OAuthLoginSheet(
+        provider: provider,
+        onDone: {
+          oauthLoginProvider = nil
+          Task {
+            await vm.refreshOAuthAccounts()
+            await refreshLocalModels()
+            ensureServiceRunningIfNeeded(force: true)
+          }
+        },
+        onCancel: {
+          proxyService.cancelLogin()
+          oauthLoginProvider = nil
+        }
+      )
+    }
+    .sheet(item: Binding(
+      get: { proxyService.loginPrompt != nil && oauthLoginProvider != nil ? proxyService.loginPrompt : nil },
+      set: { _ in proxyService.loginPrompt = nil }
+    )) { prompt in
       LoginPromptSheet(
         prompt: prompt,
         onSubmit: { input in
@@ -157,11 +188,32 @@ struct ProvidersSettingsView: View {
         Text("Are you sure you want to delete this provider? This action cannot be undone.")
       }
     }
+    .confirmationDialog(
+      "Sign Out",
+      isPresented: Binding(
+        get: { pendingDeleteAccount != nil },
+        set: { if !$0 { pendingDeleteAccount = nil } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("Sign Out", role: .destructive) {
+        if let account = pendingDeleteAccount {
+          Task { await vm.deleteOAuthAccount(account) }
+        }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      if let email = pendingDeleteAccount?.email {
+        Text("Are you sure you want to sign out \"\(email)\"? Credentials will be removed.")
+      } else {
+        Text("Are you sure you want to sign out? Credentials will be removed.")
+      }
+    }
   }
 
   private var header: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text("Providers")
+      Text("Providers Settings")
         .font(.title2)
         .fontWeight(.bold)
       Text("Manage API key and OAuth providers for Codex and Claude Code.")
@@ -170,83 +222,145 @@ struct ProvidersSettingsView: View {
     }
   }
 
+  // Computed properties for sorted providers
+  private var sortedOAuthProviders: [LocalAuthProvider] {
+    LocalAuthProvider.allCases.sorted {
+      $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+    }
+  }
+
+  private var sortedTemplates: [ProvidersRegistryService.Provider] {
+    vm.templates.sorted {
+      let name0 = ($0.name?.isEmpty == false ? $0.name! : $0.id).lowercased()
+      let name1 = ($1.name?.isEmpty == false ? $1.name! : $1.id).lowercased()
+      return name0.localizedCaseInsensitiveCompare(name1) == .orderedAscending
+    }
+  }
+
   private var providersList: some View {
-    VStack(alignment: .leading, spacing: 20) {
-      VStack(alignment: .leading, spacing: 10) {
-        Text("OAuth").font(.headline).fontWeight(.semibold)
-        settingsCard {
-          VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(LocalAuthProvider.allCases.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }.enumerated()), id: \.element) { index, provider in
-              if index > 0 {
-                Divider()
-                  .padding(.vertical, 4)
-              }
-              HStack(alignment: .center, spacing: 0) {
-                HStack(alignment: .center, spacing: 8) {
-                  LocalAuthProviderIconView(provider: provider, size: 16, cornerRadius: 4)
-                  Text(provider.displayName)
-                    .font(.body.weight(.medium))
-                }
-                .frame(minWidth: 140, alignment: .leading)
+    ScrollView {
+      VStack(alignment: .leading, spacing: 20) {
+        // OAuth Section
+        VStack(alignment: .leading, spacing: 10) {
+          Text("OAuth").font(.headline).fontWeight(.semibold)
 
-                Spacer(minLength: 16)
-
-                oauthStatusBadge(provider)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-
-                Button {
-                  if oauthStatus[provider] == true {
-                    Task {
-                      ensureServiceRunningIfNeeded(force: true)
-                      await refreshLocalModels()
-                      await MainActor.run { oauthInfoProvider = provider }
-                    }
-                  } else {
-                    startOAuthLogin(provider)
+          if !vm.oauthAccounts.isEmpty {
+            settingsCard {
+              VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(vm.oauthAccounts.enumerated()), id: \.element.id) { index, account in
+                  if index > 0 {
+                    Divider().padding(.vertical, 4)
                   }
-                } label: {
-                  Image(systemName: oauthStatus[provider] == true ? "info.circle" : "person.crop.circle.badge.plus")
-                    .font(.body)
-                }
-                .buttonStyle(.borderless)
-                .help(oauthStatus[provider] == true ? "View models and manage session" : "Sign in")
-              }
-              .padding(.vertical, 10)
-            }
-          }
-        }
-      }
+                  HStack(alignment: .center, spacing: 0) {
+                    // Left: Icon + Name
+                    HStack(alignment: .center, spacing: 8) {
+                      LocalAuthProviderIconView(provider: account.provider, size: 16, cornerRadius: 4)
+                        .frame(width: 20)
+                      Text(account.provider.displayName)
+                        .font(.body.weight(.medium))
+                    }
+                    .frame(minWidth: 140, alignment: .leading)
 
-      VStack(alignment: .leading, spacing: 10) {
-        HStack {
-          Text("API Key").font(.headline).fontWeight(.semibold)
-          Spacer()
-          Menu {
-            Section("API Key") {
-              if vm.templates.isEmpty {
-                Text("No templates found")
-              } else {
-                ForEach(vm.templates, id: \.id) { t in
-                  Button(t.name?.isEmpty == false ? t.name! : t.id) { vm.startFromTemplate(t) }
+                    Spacer(minLength: 16)
+
+                    // Center: Email/Status
+                    VStack(alignment: .leading, spacing: 2) {
+                      if let email = account.email, !email.isEmpty {
+                        Text(email)
+                          .font(.caption)
+                          .foregroundStyle(.secondary)
+                      }
+                      Text("Logged In")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    // Right: Info + Toggle
+                    Button {
+                      oauthInfoProvider = account.provider
+                    } label: {
+                      Image(systemName: "info.circle")
+                        .font(.body)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("View details")
+
+                    Toggle("", isOn: bindingForOAuthProvider(provider: account.provider))
+                      .toggleStyle(.switch)
+                      .labelsHidden()
+                      .controlSize(.small)
+                      .padding(.leading, 8)
+                  }
+                  .padding(.vertical, 4)
+                  .contentShape(Rectangle())
+                  .contextMenu {
+                    Button {
+                      oauthInfoProvider = account.provider
+                    } label: {
+                      Text("Info")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                      pendingDeleteAccount = account
+                    } label: {
+                      Text("Sign Out")
+                    }
+                  }
                 }
-                Divider()
               }
-              Button("Other…") { vm.startNewProvider() }
             }
-          } label: {
-            Label("Add", systemImage: "plus")
+          } else {
+            settingsCard {
+              VStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.badge.plus")
+                  .font(.system(size: 32))
+                  .foregroundStyle(.secondary)
+                Text("No OAuth Accounts")
+                  .font(.subheadline)
+                  .fontWeight(.medium)
+                Text("Click + to add an account")
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+              }
+              .frame(maxWidth: .infinity)
+              .frame(minHeight: 100)
+              .padding(.vertical, 20)
+            }
           }
+
+          // OAuth Add Button (Right aligned below list)
+          HStack {
+            Spacer()
+            ProviderAddMenu(
+              title: "Add OAuth Account",
+              helpText: "Add OAuth Account",
+              items: sortedOAuthProviders.map { provider in
+                ProviderMenuItem(
+                  id: provider.id,
+                  name: provider.displayName,
+                  icon: .oauth(provider),
+                  action: { startOAuthLogin(provider) }
+                )
+              }
+            )
+          }
+
         }
-        if !vm.providers.isEmpty {
-          settingsCard {
-            ScrollView {
+
+        // API Key Section
+        VStack(alignment: .leading, spacing: 10) {
+          Text("API Key").font(.headline).fontWeight(.semibold)
+
+          if !vm.providers.isEmpty {
+            settingsCard {
               VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(vm.providers.enumerated()), id: \.element.id) { index, p in
                   if index > 0 {
-                    Divider()
-                      .padding(.vertical, 4)
+                    Divider().padding(.vertical, 4)
                   }
                   HStack(alignment: .center, spacing: 0) {
+                    // Left: Icon + Name
                     HStack(alignment: .center, spacing: 8) {
                       APIKeyProviderIconView(
                         provider: p,
@@ -275,6 +389,7 @@ struct ProvidersSettingsView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
+                    // Right: Edit + Toggle
                     Button {
                       vm.selectedId = p.id
                       vm.showEditor = true
@@ -284,8 +399,15 @@ struct ProvidersSettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Edit provider")
+
+                    Toggle("", isOn: bindingForAPIKeyProvider(providerId: p.id))
+                      .toggleStyle(.switch)
+                      .labelsHidden()
+                      .controlSize(.small)
+                      .padding(.leading, 8)
                   }
                   .padding(.vertical, 4)
+                  .contentShape(Rectangle())
                   .contextMenu {
                     Button("Edit…") {
                       vm.showEditor = true
@@ -302,28 +424,49 @@ struct ProvidersSettingsView: View {
                 }
               }
             }
-          }
-        } else {
-          settingsCard {
-            VStack(spacing: 12) {
-              Image(systemName: "key")
-                .font(.system(size: 32))
-                .foregroundStyle(.secondary)
-              Text("No API Key Providers")
-                .font(.subheadline)
-                .fontWeight(.medium)
-              Text("Click Add to configure an API key provider")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+          } else {
+            settingsCard {
+              VStack(spacing: 12) {
+                Image(systemName: "key")
+                  .font(.system(size: 32))
+                  .foregroundStyle(.secondary)
+                Text("No API Key Providers")
+                  .font(.subheadline)
+                  .fontWeight(.medium)
+                Text("Click + to configure an API key provider")
+                  .font(.caption)
+                  .foregroundStyle(.secondary)
+              }
+              .frame(maxWidth: .infinity)
+              .frame(minHeight: 100)
+              .padding(.vertical, 20)
             }
-            .frame(maxWidth: .infinity)
-            .frame(minHeight: 120)
-            .padding(.vertical, 20)
+          }
+
+          // API Key Add Button (Right aligned below list)
+          HStack {
+            Spacer()
+            ProviderAddMenu(
+              title: "Add API Key Provider",
+              helpText: "Add API Key Provider",
+              items: sortedTemplates.map { template in
+                ProviderMenuItem(
+                  id: template.id,
+                  name: template.name?.isEmpty == false ? template.name! : template.id,
+                  icon: .apiKey(template),
+                  action: { vm.startFromTemplate(template) }
+                )
+              },
+              emptyMessage: "No templates found",
+              customAction: ("Custom…", { vm.startNewProvider() })
+            )
           }
         }
       }
+      .padding(.bottom, 20)
     }
   }
+
 
   private var proxyCapabilitiesSection: some View {
     VStack(alignment: .leading, spacing: 20) {
@@ -546,6 +689,96 @@ struct ProvidersSettingsView: View {
     }
   }
 
+  private var cliProxyAdvancedSection: some View {
+    VStack(alignment: .leading, spacing: 20) {
+      // CLI Proxy API Installation & Diagnostics
+      VStack(alignment: .leading, spacing: 10) {
+        Text("Advanced").font(.headline).fontWeight(.semibold)
+        settingsCard {
+          Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+            GridRow {
+              VStack(alignment: .leading, spacing: 0) {
+                Label("Binary Location", systemImage: "app.badge")
+                  .font(.subheadline).fontWeight(.medium)
+                Text("CLIProxyAPI binary executable path")
+                  .font(.caption).foregroundColor(.secondary)
+              }
+              Text(proxyService.binaryFilePath)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+              Button(proxyService.isBinaryInstalled ? "Reinstall" : "Install") {
+                Task { try? await proxyService.install() }
+              }
+              .buttonStyle(.borderedProminent)
+              .tint(proxyService.isBinaryInstalled ? .red : .blue)
+              .frame(width: 90, alignment: .trailing)
+              .disabled(proxyService.isInstalling)
+            }
+
+            gridDivider
+
+            GridRow {
+              VStack(alignment: .leading, spacing: 0) {
+                Label("Config File", systemImage: "doc.text")
+                  .font(.subheadline).fontWeight(.medium)
+                Text("CLIProxyAPI configuration file")
+                  .font(.caption).foregroundColor(.secondary)
+              }
+              Text(cliProxyConfigFilePath)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+              Button("Reveal") { revealCLIProxyConfigInFinder() }
+                .buttonStyle(.bordered)
+                .frame(width: 90, alignment: .trailing)
+            }
+
+            gridDivider
+
+            GridRow {
+              VStack(alignment: .leading, spacing: 0) {
+                Label("Auth Directory", systemImage: "folder")
+                  .font(.subheadline).fontWeight(.medium)
+                Text("OAuth credential storage")
+                  .font(.caption).foregroundColor(.secondary)
+              }
+              Text(cliProxyAuthDirPath)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+              Button("Reveal") { revealCLIProxyAuthDirInFinder() }
+                .buttonStyle(.bordered)
+                .frame(width: 90, alignment: .trailing)
+            }
+
+            gridDivider
+
+            GridRow {
+              VStack(alignment: .leading, spacing: 0) {
+                Label("Logs", systemImage: "doc.plaintext")
+                  .font(.subheadline).fontWeight(.medium)
+                Text("CLIProxyAPI log files directory")
+                  .font(.caption).foregroundColor(.secondary)
+              }
+              Text(cliProxyLogsPath)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+              Button("Reveal") { revealCLIProxyLogsInFinder() }
+                .buttonStyle(.bordered)
+                .frame(width: 90, alignment: .trailing)
+            }
+          }
+        }
+      }
+    }
+  }
+
   @ViewBuilder
   private func endpointBlock(label: String, value: String?) -> some View {
     HStack(spacing: 6) {
@@ -562,82 +795,25 @@ struct ProvidersSettingsView: View {
   }
 
   private func startOAuthLogin(_ provider: LocalAuthProvider) {
-    guard oauthLoginInProgress == nil else { return }
-    if proxyService.hasAuthToken(for: provider) {
-      preferences.oauthProvidersEnabled.insert(provider.rawValue)
-      refreshOAuthStatus()
-      ensureServiceRunningIfNeeded(force: true)
-      return
-    }
-    oauthLoginInProgress = provider
-    Task {
-      defer {
-        Task { @MainActor in
-          oauthLoginInProgress = nil
-          refreshOAuthStatus()
-        }
-      }
-      do {
-        try await proxyService.login(provider: provider)
-        _ = await MainActor.run {
-          preferences.oauthProvidersEnabled.insert(provider.rawValue)
-        }
-        await refreshLocalModels()
-        ensureServiceRunningIfNeeded(force: true)
-      } catch {
-        if error is CancellationError { return }
-      }
-    }
+    guard oauthLoginProvider == nil else { return }
+    oauthLoginProvider = provider
   }
 
   @ViewBuilder
-  private func oauthMenuLabel(_ provider: LocalAuthProvider) -> some View {
-    HStack(spacing: 6) {
-      LocalAuthProviderIconView(provider: provider, size: 14, cornerRadius: 3)
-        .frame(width: 16, height: 16, alignment: .center)
-        .clipped()
-      Text(provider.displayName)
-    }
-  }
-
-  @ViewBuilder
-  private func providersSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text(title)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-      VStack(alignment: .leading, spacing: 6) {
-        content()
-      }
-    }
-  }
-
-  @ViewBuilder
-  private func oauthStatusBadge(_ provider: LocalAuthProvider) -> some View {
-    if oauthLoginInProgress == provider {
-      HStack(spacing: 6) {
-        ProgressView().controlSize(.small)
-        Text("Logging in…").font(.caption)
-      }
-      .foregroundStyle(.secondary)
-    } else if oauthStatus[provider] == true {
-      Text("Logged in").font(.caption)
+  private func oauthStatusBadge(_ provider: LocalAuthProvider, isLoggedIn: Bool) -> some View {
+    if isLoggedIn {
+      Text("Logged In").font(.caption).foregroundStyle(.green)
     } else {
-      Text("Not logged in").font(.caption)
-        .foregroundStyle(.secondary)
+      Text("Logged Out").font(.caption).foregroundStyle(.secondary)
     }
   }
 
   private func refreshOAuthStatus() {
-    var next: [LocalAuthProvider: Bool] = [:]
-    for provider in LocalAuthProvider.allCases {
-      next[provider] = proxyService.hasAuthToken(for: provider)
-    }
-    oauthStatus = next
+    Task { await vm.refreshOAuthAccounts() }
   }
 
   private func ensureServiceRunningIfNeeded(force: Bool = false) {
-    let hasLoggedInOAuth = oauthStatus.values.contains(true)
+    let hasLoggedInOAuth = !vm.oauthAccounts.isEmpty
     let shouldEnsure =
       force
       || hasLoggedInOAuth
@@ -774,6 +950,40 @@ struct ProvidersSettingsView: View {
     pasteboard.setString(text, forType: .string)
   }
 
+  // MARK: - CLI Proxy API Path Helpers
+  private var cliProxyConfigFilePath: String {
+    let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+    let configPath = appSupport.appendingPathComponent("CodMate/config.yaml")
+    return configPath.path
+  }
+
+  private var cliProxyAuthDirPath: String {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    return home.appendingPathComponent(".codmate/auth").path
+  }
+
+  private var cliProxyLogsPath: String {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    return home.appendingPathComponent(".codmate/auth/logs").path
+  }
+
+  private func revealCLIProxyConfigInFinder() {
+    let url = URL(fileURLWithPath: cliProxyConfigFilePath)
+    NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+  }
+
+  private func revealCLIProxyAuthDirInFinder() {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let authPath = home.appendingPathComponent(".codmate/auth")
+    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: authPath.path)
+  }
+
+  private func revealCLIProxyLogsInFinder() {
+    let home = FileManager.default.homeDirectoryForCurrentUser
+    let logsPath = home.appendingPathComponent(".codmate/auth/logs")
+    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: logsPath.path)
+  }
+
   // MARK: - Helper Views
 
   @ViewBuilder
@@ -853,6 +1063,44 @@ struct ProvidersSettingsView: View {
       .padding(.horizontal, 8)
       .padding(.vertical, 8)
     }
+  }
+
+  private func bindingForOAuthProvider(provider: LocalAuthProvider) -> Binding<Bool> {
+    Binding(
+      get: { preferences.oauthProvidersEnabled.contains(provider.rawValue) },
+      set: { newValue in
+        var enabled = preferences.oauthProvidersEnabled
+        if newValue {
+          enabled.insert(provider.rawValue)
+        } else {
+          enabled.remove(provider.rawValue)
+        }
+        preferences.oauthProvidersEnabled = enabled
+
+        // Update CLIProxyAPI configuration via Management API
+        Task {
+          await CLIProxyService.shared.updateProviderAuthFilesDisabled(
+            provider: provider,
+            disabled: !newValue
+          )
+        }
+      }
+    )
+  }
+
+  private func bindingForAPIKeyProvider(providerId: String) -> Binding<Bool> {
+    Binding(
+      get: { preferences.apiKeyProvidersEnabled.contains(providerId) },
+      set: { newValue in
+        var enabled = preferences.apiKeyProvidersEnabled
+        if newValue {
+          enabled.insert(providerId)
+        } else {
+          enabled.remove(providerId)
+        }
+        preferences.apiKeyProvidersEnabled = enabled
+      }
+    )
   }
 
 }
@@ -1091,10 +1339,24 @@ private struct ProviderEditorSheet: View {
 private struct OAuthProviderInfoSheet: View {
   let provider: LocalAuthProvider
   let isLoggedIn: Bool
-  let models: [String]
+  let accounts: [CLIProxyService.OAuthAccount]
+  let initialModels: [String]
   let onLogin: () -> Void
-  let onLogout: () -> Void
+  let onLogout: (CLIProxyService.OAuthAccount) -> Void
+
+  @StateObject private var proxyService = CLIProxyService.shared
+  @State private var models: [String] = []
+  @State private var isRefreshing: Bool = false
+  @State private var accountInfo: AccountInfo?
   @Environment(\.dismiss) private var dismiss
+
+  struct AccountInfo {
+    let email: String?
+    let planType: String?
+    let planChecked: Bool
+    let accountType: String?
+    let organization: String?
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -1103,12 +1365,91 @@ private struct OAuthProviderInfoSheet: View {
         Text(provider.displayName)
           .font(.headline)
         Spacer()
-        Text(isLoggedIn ? "Logged in" : "Not logged in")
-          .font(.caption)
-          .foregroundStyle(isLoggedIn ? Color.green : Color.secondary)
+        if isLoggedIn {
+          Button {
+            refreshModels()
+          } label: {
+            if isRefreshing {
+              ProgressView()
+                .controlSize(.small)
+            } else {
+              Image(systemName: "arrow.clockwise")
+                .font(.body)
+            }
+          }
+          .buttonStyle(.plain)
+          .disabled(isRefreshing)
+          .help("Refresh models")
+        } else {
+          Text("Not logged in")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
       }
 
       if isLoggedIn {
+        // Account Status Section
+        if let info = accountInfo {
+          VStack(alignment: .leading, spacing: 6) {
+            Text("Account Status")
+              .font(.subheadline)
+              .fontWeight(.medium)
+            VStack(alignment: .leading, spacing: 4) {
+              if let email = info.email {
+                HStack(spacing: 4) {
+                  Text("Email:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                  Text(email)
+                    .font(.caption)
+                }
+              }
+              if let planType = info.planType, !planType.isEmpty {
+                HStack(spacing: 4) {
+                  Text("Plan:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                  Text(planType)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.primary)
+                }
+              } else {
+                // Show "Loading..." or "Unknown" if plan is being fetched
+                HStack(spacing: 4) {
+                  Text("Plan:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                  Text(info.planChecked ? "Unknown" : "Checking...")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .italic()
+                }
+              }
+              if let accountType = info.accountType {
+                HStack(spacing: 4) {
+                  Text("Type:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                  Text(accountType)
+                    .font(.caption)
+                }
+              }
+              if let org = info.organization {
+                HStack(spacing: 4) {
+                  Text("Organization:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                  Text(org)
+                    .font(.caption)
+                }
+              }
+            }
+          }
+          Divider()
+        }
+
+        // Models Section
         if models.isEmpty {
           Text("No models detected yet. Make sure CLI Proxy API is running.")
             .font(.caption)
@@ -1140,20 +1481,366 @@ private struct OAuthProviderInfoSheet: View {
       Divider()
 
       HStack {
-        Button("Close") { dismiss() }
-          .buttonStyle(.plain)
-        Spacer()
         if isLoggedIn {
-          Button("Sign Out") { onLogout() }
-            .buttonStyle(.bordered)
+          Button("Sign Out") {
+            if let account = accounts.first {
+              onLogout(account)
+            }
+          }
+          .buttonStyle(.bordered)
+          .focusable(false)
         } else {
           Button("Upstream Login") { onLogin() }
             .buttonStyle(.borderedProminent)
+            .focusable(false)
+        }
+        Spacer()
+        Button("Done") { dismiss() }
+          .buttonStyle(.plain)
+          .focusable(false)
+      }
+    }
+    .padding(16)
+    .frame(width: 460)
+    .focusable(false)
+    .onAppear {
+      models = initialModels
+      loadAccountInfo()
+    }
+  }
+
+  private func refreshModels() {
+    guard !isRefreshing else { return }
+    isRefreshing = true
+    Task {
+      let refreshedModels = await proxyService.fetchLocalModels(forceRefresh: true)
+      await MainActor.run {
+        // Filter models for this provider
+        guard let target = builtInProvider(for: provider) else {
+          isRefreshing = false
+          return
+        }
+        var seen: Set<String> = []
+        var ids: [String] = []
+        for model in refreshedModels {
+          if builtInProvider(for: model) == target {
+            if !seen.contains(model.id) {
+              seen.insert(model.id)
+              ids.append(model.id)
+            }
+          }
+        }
+        models = ids.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        // Also refresh account info in case it changed
+        loadAccountInfo()
+        isRefreshing = false
+      }
+    }
+  }
+
+  private func builtInProvider(for provider: LocalAuthProvider) -> LocalServerBuiltInProvider? {
+    switch provider {
+    case .codex: return .openai
+    case .claude: return .anthropic
+    case .gemini: return .gemini
+    case .antigravity: return .antigravity
+    case .qwen: return .qwen
+    }
+  }
+
+  private func builtInProvider(for model: CLIProxyService.LocalModel) -> LocalServerBuiltInProvider? {
+    let ownedBy = (model.owned_by ?? "").lowercased()
+    let provider = (model.provider ?? "").lowercased()
+    let source = (model.source ?? "").lowercased()
+
+    for builtIn in LocalServerBuiltInProvider.allCases {
+      if builtIn.matchesOwnedBy(ownedBy) || builtIn.matchesOwnedBy(provider) || builtIn.matchesOwnedBy(source) {
+        return builtIn
+      }
+    }
+    return nil
+  }
+
+  private func loadAccountInfo() {
+    guard let account = accounts.first else {
+      accountInfo = nil
+      return
+    }
+
+    // Try to extract more info from the account file
+    var email: String? = account.email
+    var planType: String?
+    var accountType: String?
+    var organization: String?
+
+    if let data = try? Data(contentsOf: URL(fileURLWithPath: account.filePath)),
+       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+
+      // Extract email if not already set
+      if email == nil {
+        email = json["email"] as? String
+          ?? json["user_email"] as? String
+          ?? json["account"] as? String
+          ?? json["user"] as? String
+      }
+
+      // Try to extract plan/subscription info (provider-specific)
+      switch provider {
+      case .claude:
+        // Claude might have plan info in the token or account data
+        if let plan = json["plan"] as? String ?? json["plan_type"] as? String ?? json["subscription"] as? String {
+          planType = plan
+        }
+        if let org = json["organization"] as? String ?? json["org_id"] as? String {
+          organization = org
+        }
+      case .codex:
+        // Codex/OpenAI might have plan info
+        if let plan = json["plan"] as? String ?? json["plan_type"] as? String {
+          planType = plan
+        }
+        accountType = json["account_type"] as? String
+      case .gemini:
+        // Gemini might have account info
+        if let plan = json["plan"] as? String ?? json["tier"] as? String {
+          planType = plan
+        }
+      default:
+        break
+      }
+    }
+
+    // Always try to fetch plan type via API (more reliable)
+    accountInfo = AccountInfo(
+      email: email,
+      planType: planType,
+      planChecked: planType != nil,
+      accountType: accountType,
+      organization: organization
+    )
+
+    // Fetch plan type from API in background
+    Task {
+      await fetchPlanTypeFromAPI(account: account, email: email)
+    }
+  }
+
+  private func fetchPlanTypeFromAPI(account: CLIProxyService.OAuthAccount, email: String?) async {
+    // Use CLI Proxy API management endpoint to fetch account info
+    guard let authFileInfo = await proxyService.fetchAuthFileInfo(for: account.filename) else {
+      await MainActor.run {
+        accountInfo = AccountInfo(
+          email: accountInfo?.email ?? email,
+          planType: accountInfo?.planType,
+          planChecked: true,
+          accountType: accountInfo?.accountType,
+          organization: accountInfo?.organization
+        )
+      }
+      return
+    }
+
+    await MainActor.run {
+      accountInfo = AccountInfo(
+        email: accountInfo?.email ?? email ?? authFileInfo.email,
+        planType: authFileInfo.consolidatedPlan,
+        planChecked: true,
+        accountType: authFileInfo.consolidatedAccountType,
+        organization: authFileInfo.organization
+      )
+    }
+  }
+}
+
+private struct OAuthLoginSheet: View {
+  let provider: LocalAuthProvider
+  let onDone: () -> Void
+  let onCancel: () -> Void
+
+  @StateObject private var proxyService = CLIProxyService.shared
+  @State private var loginState: LoginState = .idle
+  @State private var loginError: String?
+  @State private var loginTask: Task<Void, Never>?
+  @State private var checkAccountTask: Task<Void, Never>?
+  @Environment(\.dismiss) private var dismiss
+
+  enum LoginState {
+    case idle
+    case loggingIn
+    case needsInput
+    case success
+    case failed
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(spacing: 10) {
+        LocalAuthProviderIconView(provider: provider, size: 20, cornerRadius: 4)
+        Text(provider.displayName)
+          .font(.headline)
+        Spacer()
+        statusIndicator
+      }
+
+      statusMessage
+
+      if case .needsInput = loginState {
+        if let prompt = proxyService.loginPrompt {
+          Text(prompt.message)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 4)
+        }
+      }
+
+      if let error = loginError {
+        Text(error)
+          .font(.caption)
+          .foregroundStyle(.red)
+          .padding(.top, 4)
+      }
+
+      Divider()
+
+      HStack {
+        if loginState == .failed {
+          Button("Retry") {
+            loginError = nil
+            startLogin()
+          }
+          .buttonStyle(.bordered)
+          .focusable(false)
+        }
+        Spacer()
+        if loginState == .success {
+          Button("Done") {
+            onDone()
+            dismiss()
+          }
+          .buttonStyle(.borderedProminent)
+          .focusable(false)
+        } else {
+          Button("Cancel Login") {
+            onCancel()
+            dismiss()
+          }
+          .buttonStyle(.plain)
+          .focusable(false)
         }
       }
     }
     .padding(16)
     .frame(width: 460)
+    .focusable(false)
+    .onAppear {
+      startLogin()
+      startAccountCheck()
+    }
+    .onDisappear {
+      loginTask?.cancel()
+      checkAccountTask?.cancel()
+    }
+    .onChange(of: proxyService.loginPrompt) { prompt in
+      if prompt != nil && loginState == .loggingIn {
+        loginState = .needsInput
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var statusIndicator: some View {
+    switch loginState {
+    case .idle, .loggingIn:
+      ProgressView()
+        .controlSize(.small)
+    case .needsInput:
+      Image(systemName: "exclamationmark.circle.fill")
+        .foregroundStyle(.orange)
+    case .success:
+      Image(systemName: "checkmark.circle.fill")
+        .foregroundStyle(.green)
+    case .failed:
+      Image(systemName: "xmark.circle.fill")
+        .foregroundStyle(.red)
+    }
+  }
+
+  @ViewBuilder
+  private var statusMessage: some View {
+    switch loginState {
+    case .idle, .loggingIn:
+      Text("Logging in to \(provider.displayName)...")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    case .needsInput:
+      Text("Please complete the login in the browser or provide the required input.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    case .success:
+      Text("Login successful. Click Done to add this account.")
+        .font(.caption)
+        .foregroundStyle(.green)
+    case .failed:
+      Text("Login failed. You can retry or cancel.")
+        .font(.caption)
+        .foregroundStyle(.red)
+    }
+  }
+
+  private func startLogin() {
+    guard loginState != .loggingIn else { return }
+    loginState = .loggingIn
+    loginError = nil
+
+    loginTask = Task {
+      do {
+        try await proxyService.login(provider: provider)
+        // Login completed, checkAccountTask will verify success
+      } catch is CancellationError {
+        await MainActor.run {
+          if loginState == .loggingIn {
+            loginState = .idle
+          }
+        }
+      } catch {
+        await MainActor.run {
+          loginState = .failed
+          loginError = error.localizedDescription
+        }
+      }
+    }
+  }
+
+  private func startAccountCheck() {
+    checkAccountTask = Task {
+      // Record initial account files before login starts
+      let initialFiles = Set(proxyService.listOAuthAccounts()
+        .filter { $0.provider == provider }
+        .map { $0.filename })
+
+      // Wait 1 second to allow hideAuthFiles to execute
+      try? await Task.sleep(nanoseconds: 1_000_000_000)
+
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        let currentFiles = Set(proxyService.listOAuthAccounts()
+          .filter { $0.provider == provider }
+          .map { $0.filename })
+
+        // Detect new files or account count increase
+        let hasNewFiles = !currentFiles.subtracting(initialFiles).isEmpty
+        let countIncreased = currentFiles.count > initialFiles.count
+
+        if (hasNewFiles || countIncreased) && loginState != .success {
+          await MainActor.run {
+            loginState = .success
+            loginError = nil
+          }
+          break
+        }
+      }
+    }
   }
 }
 
@@ -1237,6 +1924,8 @@ final class ProvidersVM: ObservableObject {
   @Published var providerKeyURL: URL? = nil
   @Published var providerDocsURL: URL? = nil
 
+  @Published var oauthAccounts: [CLIProxyService.OAuthAccount] = []
+
   private let registry = ProvidersRegistryService()
   private let codex = CodexConfigService()
   @Published var templates: [ProvidersRegistryService.Provider] = []
@@ -1244,15 +1933,13 @@ final class ProvidersVM: ObservableObject {
   func loadAll() async {
     await registry.migrateFromCodexIfNeeded(codex: codex)
     await reload()
+    await refreshOAuthAccounts()
   }
 
   func loadTemplates() async {
     let list = await registry.listBundledProviders()
-    func display(_ p: ProvidersRegistryService.Provider) -> String {
-      (p.name?.isEmpty == false ? p.name! : p.id).lowercased()
-    }
-    let sorted = list.sorted { display($0) < display($1) }
-    await MainActor.run { templates = sorted }
+    // Sorting is handled by sortedTemplates computed property to avoid duplication
+    await MainActor.run { templates = list }
   }
 
   func reload() async {
@@ -1276,6 +1963,23 @@ final class ProvidersVM: ObservableObject {
 
     syncEditingFieldsFromSelected()
     loadModelRowsFromSelected()
+  }
+
+  func refreshOAuthAccounts() async {
+    let accounts = CLIProxyService.shared.listOAuthAccounts()
+    await MainActor.run {
+      self.oauthAccounts = accounts.sorted {
+        if $0.provider.displayName != $1.provider.displayName {
+          return $0.provider.displayName < $1.provider.displayName
+        }
+        return ($0.email ?? "") < ($1.email ?? "")
+      }
+    }
+  }
+
+  func deleteOAuthAccount(_ account: CLIProxyService.OAuthAccount) async {
+    CLIProxyService.shared.deleteOAuthAccount(account)
+    await refreshOAuthAccounts()
   }
 
   private func syncEditingFieldsFromSelected() {
@@ -2012,4 +2716,118 @@ final class ProvidersVM: ObservableObject {
     return line
   }
 
+}
+
+// MARK: - Provider Menu Components
+
+private struct ProviderMenuItem {
+  let id: String
+  let name: String
+  let icon: ProviderIconType
+  let action: () -> Void
+}
+
+private enum ProviderIconType {
+  case oauth(LocalAuthProvider)
+  case apiKey(ProvidersRegistryService.Provider)
+}
+
+private struct ProviderAddMenu: View {
+  let title: String
+  let helpText: String
+  let items: [ProviderMenuItem]
+  var emptyMessage: String? = nil
+  var customAction: (String, () -> Void)? = nil
+
+  var body: some View {
+    Menu {
+      Text(title)
+      if items.isEmpty {
+        if let emptyMessage {
+          Text(emptyMessage)
+        }
+      } else {
+        ForEach(items, id: \.id) { item in
+          Button(action: item.action) {
+            HStack {
+              ProviderMenuIconView(icon: item.icon, size: 16, cornerRadius: 3)
+              Text(item.name)
+            }
+          }
+        }
+        if customAction != nil {
+          Divider()
+        }
+      }
+      if let (label, action) = customAction {
+        Button(label, action: action)
+      }
+    } label: {
+      Image(systemName: "plus")
+        .font(.body)
+        .frame(width: 24, height: 24)
+    }
+    .menuStyle(.borderlessButton)
+    .buttonStyle(.plain)
+    .contentShape(Rectangle())
+    .help(helpText)
+  }
+}
+
+private struct ProviderMenuIconView: View {
+  let icon: ProviderIconType
+  var size: CGFloat = 16
+  var cornerRadius: CGFloat = 3
+
+  var body: some View {
+    Group {
+      switch icon {
+      case .oauth(let provider):
+        let iconName = iconNameForOAuthProvider(provider)
+        if let nsImage = ProviderIconThemeHelper.menuImage(named: iconName, size: NSSize(width: size, height: size)) {
+          Image(nsImage: nsImage)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: size, height: size)
+        } else {
+          LocalAuthProviderIconView(provider: provider, size: size, cornerRadius: cornerRadius)
+        }
+      case .apiKey(let provider):
+        if let iconName = iconNameForAPIProvider(provider),
+           let nsImage = ProviderIconThemeHelper.menuImage(named: iconName, size: NSSize(width: size, height: size)) {
+          Image(nsImage: nsImage)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: size, height: size)
+        } else {
+          APIKeyProviderIconView(provider: provider, size: size, cornerRadius: cornerRadius)
+        }
+      }
+    }
+  }
+
+  private func iconNameForOAuthProvider(_ provider: LocalAuthProvider) -> String {
+    switch provider {
+    case .codex: return "ChatGPTIcon"
+    case .claude: return "ClaudeIcon"
+    case .gemini: return "GeminiIcon"
+    case .antigravity: return "AntigravityIcon"
+    case .qwen: return "QwenIcon"
+    }
+  }
+
+  private func iconNameForAPIProvider(_ provider: ProvidersRegistryService.Provider) -> String? {
+    // Use unified icon resource library
+    let codexBaseURL = provider.connectors[ProvidersRegistryService.Consumer.codex.rawValue]?.baseURL
+    let claudeBaseURL = provider.connectors[ProvidersRegistryService.Consumer.claudeCode.rawValue]?.baseURL
+    let baseURL = codexBaseURL ?? claudeBaseURL
+
+    return ProviderIconResource.iconName(
+      forProviderId: provider.id,
+      name: provider.name,
+      baseURL: baseURL
+    )
+  }
 }
