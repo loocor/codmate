@@ -1348,6 +1348,7 @@ private struct OAuthProviderInfoSheet: View {
   @State private var models: [String] = []
   @State private var isRefreshing: Bool = false
   @State private var accountInfo: AccountInfo?
+  @State private var isHoveringModels: Bool = false
   @Environment(\.dismiss) private var dismiss
 
   struct AccountInfo {
@@ -1456,20 +1457,39 @@ private struct OAuthProviderInfoSheet: View {
             .foregroundStyle(.secondary)
         } else {
           VStack(alignment: .leading, spacing: 6) {
-            Text("Available Models")
-              .font(.subheadline)
-              .fontWeight(.medium)
-            ScrollView {
-              VStack(alignment: .leading, spacing: 4) {
-                ForEach(models, id: \.self) { model in
-                  Text(model)
-                    .font(.system(.caption, design: .monospaced))
+            HStack {
+              Text("Available Models")
+                .font(.subheadline)
+                .fontWeight(.medium)
+              Spacer()
+            }
+            ZStack(alignment: .topTrailing) {
+              ScrollView {
+                Text(models.joined(separator: "\n"))
+                  .font(.system(.caption, design: .monospaced))
+                  .foregroundStyle(.secondary)
+                  .textSelection(.enabled)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .padding(.trailing, isHoveringModels ? 28 : 0)
+              }
+              .frame(maxHeight: 200)
+
+              if isHoveringModels {
+                Button {
+                  copyModelsToClipboard()
+                } label: {
+                  Image(systemName: "doc.on.doc")
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 }
+                .buttonStyle(.plain)
+                .help("Copy all models to clipboard")
+                .padding(4)
               }
-              .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 200)
+            .onHover { hovering in
+              isHoveringModels = hovering
+            }
           }
         }
       } else {
@@ -1507,6 +1527,13 @@ private struct OAuthProviderInfoSheet: View {
       models = initialModels
       loadAccountInfo()
     }
+  }
+
+  private func copyModelsToClipboard() {
+    let modelsText = models.joined(separator: "\n")
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(modelsText, forType: .string)
   }
 
   private func refreshModels() {
