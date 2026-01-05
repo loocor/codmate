@@ -9,7 +9,7 @@ final class CLIProxyService: ObservableObject {
     static let shared = CLIProxyService()
 
     // MARK: - Properties
-    
+
     @Published var isRunning = false
     @Published var isInstalling = false
     @Published var installProgress: Double = 0
@@ -20,6 +20,14 @@ final class CLIProxyService: ObservableObject {
         let id = UUID()
         let provider: LocalAuthProvider
         let message: String
+    }
+
+    struct OAuthAccount: Identifiable, Equatable {
+        let id: String
+        let provider: LocalAuthProvider
+        let email: String?
+        let filename: String
+        let filePath: String
     }
 
     struct LocalModelList: Decodable {
@@ -39,17 +47,17 @@ final class CLIProxyService: ObservableObject {
             case source
         }
     }
-    
+
     // Log streaming
     @Published var logs: String = ""
     private var outputPipe: Pipe?
     private var errorPipe: Pipe?
-    
+
     var port: UInt16 {
         let p = UserDefaults.standard.integer(forKey: "codmate.localserver.port")
         return p > 0 ? UInt16(p) : 8080
     }
-    
+
     private var process: Process?
     private var loginProcess: Process?
     private var loginInputPipe: Pipe?
@@ -57,7 +65,7 @@ final class CLIProxyService: ObservableObject {
     private var loginCancellationRequested = false
     private var openedLoginURL: URL?
     private let proxyBridge = CLIProxyBridge()
-    
+
     // Paths
     private let binaryPath: String
     private let configPath: String
@@ -72,28 +80,28 @@ final class CLIProxyService: ObservableObject {
 
     private var cachedLocalModels: [LocalModel] = []
     private var cachedLocalModelsTimestamp: Date?
-    
+
     // Constants
     private static let githubRepo = "router-for-me/CLIProxyAPIPlus"
     private static let binaryName = "CLIProxyAPI"
-    
+
     private var internalPort: UInt16 {
         CLIProxyBridge.internalPort(from: port)
     }
-    
+
     init() {
         // Setup paths in Application Support
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let codMateDir = appSupport.appendingPathComponent("CodMate")
         let binDir = codMateDir.appendingPathComponent("bin", isDirectory: true)
         try? FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
-        
+
         let homeDir = FileManager.default.homeDirectoryForCurrentUser
-        
+
         self.binaryPath = binDir.appendingPathComponent(Self.binaryName).path
         self.configPath = codMateDir.appendingPathComponent("config.yaml").path
         self.authDir = homeDir.appendingPathComponent(".codmate/auth").path
-        
+
         // Persistent Management Key
         if let savedKey = UserDefaults.standard.string(forKey: "CLIProxyManagementKey") {
             self.managementKey = savedKey
@@ -101,37 +109,37 @@ final class CLIProxyService: ObservableObject {
             self.managementKey = UUID().uuidString
             UserDefaults.standard.set(self.managementKey, forKey: "CLIProxyManagementKey")
         }
-        
+
         try? FileManager.default.createDirectory(atPath: authDir, withIntermediateDirectories: true)
         ensureConfigExists()
     }
-    
+
     // MARK: - Process Management
-    
+
     func start() async throws {
         guard isBinaryInstalled else {
             appendLog("Binary not found. Please install it first.\n", isError: true)
             throw ServiceError.binaryNotFound
         }
-        
+
         guard !isRunning else {
             appendLog("Service is already running.\n")
             return
         }
-        
+
         lastError = nil
-        
+
         // Cleanup old processes
         cleanupOrphanProcesses()
-        
+
         // Update config with correct internal port (since we use bridge mode)
         updateConfigPort(internalPort)
-        
+
         // --- Diagnostic Section ---
         appendLog("Inspecting binary at \(binaryPath)...\n")
         let fileOutput = runShell(command: "/usr/bin/file", args: [binaryPath])
         appendLog("-> File type: \(fileOutput.trimmingCharacters(in: .whitespacesAndNewlines))\n")
-        
+
         let lsOutput = runShell(command: "/bin/ls", args: ["-l", binaryPath])
         appendLog("-> Permissions: \(lsOutput.trimmingCharacters(in: .whitespacesAndNewlines))\n")
         // --- End Diagnostic Section ---
@@ -140,12 +148,12 @@ final class CLIProxyService: ObservableObject {
         process.executableURL = URL(fileURLWithPath: binaryPath)
         process.arguments = ["-config", configPath]
         process.currentDirectoryURL = URL(fileURLWithPath: binaryPath).deletingLastPathComponent()
-        
+
         // Environment
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         process.environment = env
-        
+
         // Log Capture
         let out = Pipe()
         let err = Pipe()
@@ -153,7 +161,7 @@ final class CLIProxyService: ObservableObject {
         process.standardError = err
         self.outputPipe = out
         self.errorPipe = err
-        
+
         out.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if let str = String(data: data, encoding: .utf8), !str.isEmpty {
@@ -166,7 +174,7 @@ final class CLIProxyService: ObservableObject {
                 Task { @MainActor [weak self] in self?.appendLog(str, isError: true) }
             }
         }
-        
+
         process.terminationHandler = { [weak self] terminatedProcess in
             Task { @MainActor in
                 self?.isRunning = false
@@ -174,7 +182,7 @@ final class CLIProxyService: ObservableObject {
                 self?.proxyBridge.stop()
                 self?.outputPipe?.fileHandleForReading.readabilityHandler = nil
                 self?.errorPipe?.fileHandleForReading.readabilityHandler = nil
-                
+
                 let reason: String
                 switch terminatedProcess.terminationReason {
                 case .exit:
@@ -187,15 +195,15 @@ final class CLIProxyService: ObservableObject {
                 self?.appendLog("Service stopped. \(reason)\n", isError: terminatedProcess.terminationStatus != 0)
             }
         }
-        
+
         do {
             appendLog("Starting Local AI Server on port \(internalPort)...\n")
             try process.run()
             self.process = process
-            
+
             // Wait for startup
             try await Task.sleep(nanoseconds: 1_500_000_000)
-            
+
             guard process.isRunning else {
                 let reason: String
                 switch process.terminationReason {
@@ -210,46 +218,46 @@ final class CLIProxyService: ObservableObject {
                 appendLog(errText + "\n", isError: true)
                 throw ServiceError.startupFailed
             }
-            
+
             // Start Proxy Bridge
             proxyBridge.configure(listenPort: port, targetPort: internalPort)
             proxyBridge.start()
-            
+
             // Wait for bridge
             try await Task.sleep(nanoseconds: 500_000_000)
-            
+
             if !proxyBridge.isRunning {
                 process.terminate()
                 appendLog("Proxy bridge failed to start.\n", isError: true)
                 throw ServiceError.startupFailed
             }
-            
+
             isRunning = true
             appendLog("Service started successfully.\n")
-            
+
         } catch {
             lastError = error.localizedDescription
             appendLog("Error starting service: \(error.localizedDescription)\n", isError: true)
             throw error
         }
     }
-    
+
     func stop() {
         proxyBridge.stop()
-        
+
         if let p = process, p.isRunning {
             p.terminate()
         }
         process = nil
-        
+
         cleanupOrphanProcesses()
         isRunning = false
     }
-    
+
     func clearLogs() {
         logs = ""
     }
-    
+
     private func appendLog(_ text: String, isError: Bool = false) {
         // Keep last 50k characters to avoid memory issues
         if logs.count > 50000 {
@@ -258,35 +266,35 @@ final class CLIProxyService: ObservableObject {
         let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
         logs.append("[\(timestamp)] \(text)")
     }
-    
+
     // MARK: - Installation
-    
+
     var isBinaryInstalled: Bool {
         FileManager.default.fileExists(atPath: binaryPath)
     }
-    
+
     var binaryFilePath: String {
         binaryPath
     }
-    
+
     func install() async throws {
         isInstalling = true
         installProgress = 0
         defer { isInstalling = false }
-        
+
         do {
             let release = try await fetchLatestRelease()
             guard let asset = findCompatibleAsset(in: release) else {
                 throw ServiceError.noCompatibleBinary
             }
-            
+
             installProgress = 0.2
             let data = try await downloadAsset(url: asset.downloadURL)
             installProgress = 0.7
-            
+
             try await extractAndInstall(data: data, assetName: asset.name)
             installProgress = 1.0
-            
+
         } catch {
             lastError = error.localizedDescription
             throw error
@@ -311,10 +319,16 @@ final class CLIProxyService: ObservableObject {
 
         let flag = provider.loginFlag
 
+        // Hide existing auth files to force a new login flow
+        let hiddenFiles = hideAuthFiles(for: provider)
+        defer {
+            restoreAuthFiles(hiddenFiles)
+        }
+
         appendLog("Starting \(provider.displayName) login...\n")
         do {
             try await withTaskCancellationHandler {
-                try await runCLI(arguments: ["-config", configPath, flag], loginProvider: provider)
+                try await runCLI(arguments: ["-config", configPath, flag, "-incognito"], loginProvider: provider)
             } onCancel: {
                 Task { @MainActor in
                     self.cancelLogin()
@@ -324,6 +338,67 @@ final class CLIProxyService: ObservableObject {
         } catch is CancellationError {
             appendLog("\(provider.displayName) login cancelled.\n")
             throw CancellationError()
+        }
+    }
+
+    private func hideAuthFiles(for provider: LocalAuthProvider) -> [URL] {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(atPath: authDir) else { return [] }
+        var hidden: [URL] = []
+        let aliases = provider.authAliases.map { $0.lowercased() }
+
+        for name in items {
+            guard name.hasSuffix(".json") else { continue }
+            let url = URL(fileURLWithPath: authDir).appendingPathComponent(name)
+
+            // Check if this file belongs to the provider
+            var belongsToProvider = false
+            if aliases.contains(where: { name.lowercased().contains($0) }) {
+                belongsToProvider = true
+            } else if let data = try? Data(contentsOf: url),
+                      let text = String(data: data, encoding: .utf8) {
+                let lower = text.lowercased()
+                let patterns = [
+                    "\"type\":\"\(provider)\"",
+                    "\"type\": \"\(provider)\"",
+                    "\"provider\":\"\(provider)\"",
+                    "\"provider\": \"\(provider)\""
+                ]
+                if patterns.contains(where: { lower.contains($0) }) {
+                    belongsToProvider = true
+                }
+            }
+
+            if belongsToProvider {
+                let backupURL = url.appendingPathExtension("bak")
+                do {
+                    try fm.moveItem(at: url, to: backupURL)
+                    hidden.append(backupURL)
+                } catch {
+                    appendLog("Failed to hide auth file \(name): \(error.localizedDescription)\n", isError: true)
+                }
+            }
+        }
+        return hidden
+    }
+
+    private func restoreAuthFiles(_ backups: [URL]) {
+        let fm = FileManager.default
+        for backupURL in backups {
+            let originalURL = backupURL.deletingPathExtension()
+
+            // If the original file exists (meaning a new one was created with the same name),
+            // we assume the new one is the latest valid session for that account, so we discard the backup.
+            if fm.fileExists(atPath: originalURL.path) {
+                try? fm.removeItem(at: backupURL)
+            } else {
+                // Otherwise, restore the old file (different account)
+                do {
+                    try fm.moveItem(at: backupURL, to: originalURL)
+                } catch {
+                    appendLog("Failed to restore auth file \(originalURL.lastPathComponent): \(error.localizedDescription)\n", isError: true)
+                }
+            }
         }
     }
 
@@ -337,27 +412,86 @@ final class CLIProxyService: ObservableObject {
     }
 
     func logout(provider: LocalAuthProvider) {
+        let accounts = listOAuthAccounts().filter { $0.provider == provider }
         let fm = FileManager.default
-        guard let items = try? fm.contentsOfDirectory(atPath: authDir) else { return }
-        let aliases = provider.authAliases.map { $0.lowercased() }
         var removed = 0
-        for name in items {
-            let lower = name.lowercased()
-            guard lower.hasSuffix(".json") else { continue }
-            let path = (authDir as NSString).appendingPathComponent(name)
-            if aliases.contains(where: { lower.contains($0) }) {
-                try? fm.removeItem(atPath: path)
-                removed += 1
-                continue
-            }
-            if fileContainsProviderType(path: path, providers: aliases) {
-                try? fm.removeItem(atPath: path)
-                removed += 1
-            }
+        for account in accounts {
+            try? fm.removeItem(atPath: account.filePath)
+            removed += 1
         }
         if removed > 0 {
             appendLog("Removed \(removed) \(provider.displayName) credential file(s).\n")
         }
+    }
+
+    func deleteOAuthAccount(_ account: OAuthAccount) {
+        let fm = FileManager.default
+        do {
+            try fm.removeItem(atPath: account.filePath)
+            appendLog("Removed credential file for \(account.provider.displayName) (\(account.email ?? "unknown")).\n")
+        } catch {
+            appendLog("Failed to delete credential file: \(error.localizedDescription)\n", isError: true)
+        }
+    }
+
+    func listOAuthAccounts() -> [OAuthAccount] {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(atPath: authDir) else { return [] }
+        var accounts: [OAuthAccount] = []
+
+        for name in items {
+            guard name.hasSuffix(".json") else { continue }
+            let path = (authDir as NSString).appendingPathComponent(name)
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+
+            // Identify provider
+            var identifiedProvider: LocalAuthProvider?
+            for provider in LocalAuthProvider.allCases {
+                let aliases = provider.authAliases.map { $0.lowercased() }
+
+                // Check filename first
+                if aliases.contains(where: { name.lowercased().contains($0) }) {
+                    identifiedProvider = provider
+                    break
+                }
+
+                // Check content
+                let patterns = [
+                    "\"type\":\"\(provider)\"",
+                    "\"type\": \"\(provider)\"",
+                    "\"provider\":\"\(provider)\"",
+                    "\"provider\": \"\(provider)\""
+                ]
+                if patterns.contains(where: { text.lowercased().contains($0) }) {
+                    identifiedProvider = provider
+                    break
+                }
+            }
+
+            guard let provider = identifiedProvider else { continue }
+
+            // Extract email/account info
+            var email: String?
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                email = json["email"] as? String
+                    ?? json["user_email"] as? String
+                    ?? json["account"] as? String
+                    ?? json["user"] as? String
+                    ?? json["nickname"] as? String
+                    ?? json["name"] as? String
+            }
+
+            accounts.append(OAuthAccount(
+                id: name, // Use filename as ID
+                provider: provider,
+                email: email,
+                filename: name,
+                filePath: path
+            ))
+        }
+
+        return accounts
     }
 
     func hasAuthToken(for provider: LocalAuthProvider) -> Bool {
@@ -599,25 +733,25 @@ final class CLIProxyService: ObservableObject {
         guard !trimmed.isEmpty else { return }
         UserDefaults.standard.set(trimmed, forKey: Self.publicAPIKeyDefaultsKey)
     }
-    
+
     // MARK: - Helpers
-    
+
     private func cleanupOrphanProcesses() {
         killProcessOnPort(port)
         killProcessOnPort(internalPort)
     }
-    
+
     private func killProcessOnPort(_ port: UInt16) {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         task.arguments = ["-ti", "tcp:\(port)"]
-        
+
         let pipe = Pipe()
         task.standardOutput = pipe
-        
+
         try? task.run()
         task.waitUntilExit()
-        
+
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         if let output = String(data: data, encoding: .utf8) {
             for line in output.components(separatedBy: .newlines) {
@@ -627,7 +761,7 @@ final class CLIProxyService: ObservableObject {
             }
         }
     }
-    
+
     private func ensureConfigExists() {
         guard !FileManager.default.fileExists(atPath: configPath) else { return }
 
@@ -739,46 +873,46 @@ claude:
             try? await start()
         }
     }
-    
+
     private func updateConfigPort(_ newPort: UInt16) {
         guard FileManager.default.fileExists(atPath: configPath),
               var content = try? String(contentsOfFile: configPath, encoding: .utf8) else { return }
-        
+
         if let range = content.range(of: #"port:\s*\d+"#, options: .regularExpression) {
             content.replaceSubrange(range, with: "port: \(newPort)")
             try? content.write(toFile: configPath, atomically: true, encoding: .utf8)
         }
     }
-    
+
     // MARK: - GitHub API
-    
+
     private struct ReleaseInfo: Decodable {
         let assets: [AssetInfo]
     }
-    
+
     private struct AssetInfo: Decodable {
         let name: String
         let browser_download_url: String
         var downloadURL: String { browser_download_url }
     }
-    
+
     private struct CompatibleAsset {
         let name: String
         let downloadURL: String
     }
-    
+
     private func fetchLatestRelease() async throws -> ReleaseInfo {
         let url = URL(string: "https://api.github.com/repos/\(Self.githubRepo)/releases/latest")!
         var req = URLRequest(url: url)
         req.addValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
-        
+
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
             throw ServiceError.networkError
         }
         return try JSONDecoder().decode(ReleaseInfo.self, from: data)
     }
-    
+
     private func findCompatibleAsset(in release: ReleaseInfo) -> CompatibleAsset? {
         #if arch(arm64)
         let arch = "arm64"
@@ -786,7 +920,7 @@ claude:
         let arch = "amd64"
         #endif
         let target = "darwin_\(arch)"
-        
+
         for asset in release.assets {
             let name = asset.name.lowercased()
             if name.contains(target) && !name.contains("checksum") {
@@ -795,7 +929,7 @@ claude:
         }
         return nil
     }
-    
+
     private func downloadAsset(url: String) async throws -> Data {
         let (data, resp) = try await URLSession.shared.data(from: URL(string: url)!)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
@@ -803,45 +937,45 @@ claude:
         }
         return data
     }
-    
+
     private func extractAndInstall(data: Data, assetName: String) async throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
-        
+
         let archivePath = tempDir.appendingPathComponent(assetName)
         try data.write(to: archivePath)
-        
+
         // Extract
         let tar = Process()
         tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         tar.arguments = ["-xzf", archivePath.path, "-C", tempDir.path]
         try tar.run()
         tar.waitUntilExit()
-        
+
         // Find binary
         let binary = search(tempDir)
-        
+
         guard let validBinary = binary else {
             throw ServiceError.extractionFailed
         }
-        
+
         if FileManager.default.fileExists(atPath: binaryPath) {
             try FileManager.default.removeItem(atPath: binaryPath)
         }
         try FileManager.default.copyItem(at: validBinary, to: URL(fileURLWithPath: binaryPath))
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binaryPath)
     }
-    
+
     private func runShell(command: String, args: [String]) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command)
         process.arguments = args
-        
+
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        
+
         do {
             try process.run()
             process.waitUntilExit()
@@ -1033,6 +1167,51 @@ claude:
         let error: String?
     }
 
+    private struct ManagementAuthFilesResponse: Decodable {
+        let files: [AuthFileInfo]
+    }
+
+    struct AuthFileInfo: Decodable {
+        let id: String?
+        let name: String
+        let provider: String?
+        let status: String?
+        let email: String?
+        let account: String?
+        let plan: String?
+        let planType: String?
+        let tier: String?
+        let subscription: String?
+        let organization: String?
+        let accountType: String?
+        let disabled: Bool?
+        let idToken: CodexIDToken?
+
+        struct CodexIDToken: Decodable {
+            let chatgptAccountId: String?
+            let planType: String?
+
+            enum CodingKeys: String, CodingKey {
+                case chatgptAccountId = "chatgpt_account_id"
+                case planType = "plan_type"
+            }
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, provider, status, email, account, plan, planType, tier, subscription
+            case organization, accountType, disabled
+            case idToken = "id_token"
+        }
+
+        var consolidatedPlan: String? {
+            plan ?? planType ?? tier ?? subscription ?? idToken?.planType
+        }
+
+        var consolidatedAccountType: String? {
+            accountType
+        }
+    }
+
     private func loginViaManagement(provider: LocalAuthProvider) async throws {
         let shouldStopAfter = !isRunning
         if shouldStopAfter {
@@ -1132,18 +1311,125 @@ claude:
         request.setValue("Bearer \(managementKey)", forHTTPHeaderField: "Authorization")
         return request
     }
-    
+
+    func fetchAuthFileInfo(for filename: String) async -> AuthFileInfo? {
+        guard isRunning else {
+            appendLog("Cannot fetch auth file info: service not running\n", isError: true)
+            return nil
+        }
+        guard let request = managementRequest(path: "auth-files") else {
+            appendLog("Cannot fetch auth file info: failed to create request\n", isError: true)
+            return nil
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+
+            if statusCode != 200 {
+                appendLog("Auth files API returned status \(statusCode)\n", isError: true)
+                return nil
+            }
+
+            // Debug: print raw response
+            if let jsonString = String(data: data, encoding: .utf8) {
+                appendLog("Auth files API response: \(jsonString.prefix(500))\n")
+            }
+
+            let authFiles: [AuthFileInfo]
+            if let wrapped = try? JSONDecoder().decode(ManagementAuthFilesResponse.self, from: data) {
+                authFiles = wrapped.files
+            } else {
+                authFiles = try JSONDecoder().decode([AuthFileInfo].self, from: data)
+            }
+            appendLog("Successfully decoded \(authFiles.count) auth files\n")
+
+            if let found = authFiles.first(where: { $0.name == filename || $0.id == filename }) {
+                appendLog("Found auth file info for \(filename): plan=\(found.consolidatedPlan ?? "nil")\n")
+                return found
+            } else {
+                appendLog("Auth file \(filename) not found in response\n", isError: true)
+                return nil
+            }
+        } catch {
+            appendLog("Failed to fetch auth file info: \(error.localizedDescription)\n", isError: true)
+            return nil
+        }
+    }
+
+    /// Update the disabled status of an auth file via Management API
+    func updateAuthFileDisabled(filename: String, disabled: Bool) async -> Bool {
+        guard isRunning else {
+            appendLog("Cannot update auth file: service not running\n", isError: true)
+            return false
+        }
+        guard var request = managementRequest(path: "auth-files/\(filename)") else {
+            appendLog("Cannot update auth file: failed to create request\n", isError: true)
+            return false
+        }
+
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = ["disabled": disabled]
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: body) else {
+            appendLog("Cannot update auth file: failed to encode request body\n", isError: true)
+            return false
+        }
+        request.httpBody = jsonData
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+
+            if statusCode == 200 || statusCode == 204 {
+                appendLog("Successfully \(disabled ? "disabled" : "enabled") auth file \(filename)\n")
+                return true
+            } else {
+                if let errorString = String(data: data, encoding: .utf8) {
+                    appendLog("Failed to update auth file: HTTP \(statusCode) - \(errorString)\n", isError: true)
+                } else {
+                    appendLog("Failed to update auth file: HTTP \(statusCode)\n", isError: true)
+                }
+                return false
+            }
+        } catch {
+            appendLog("Failed to update auth file: \(error.localizedDescription)\n", isError: true)
+            return false
+        }
+    }
+
+    /// Update the disabled status for all auth files of a given provider
+    func updateProviderAuthFilesDisabled(provider: LocalAuthProvider, disabled: Bool) async {
+        let accounts = listOAuthAccounts().filter { $0.provider == provider }
+        guard !accounts.isEmpty else {
+            appendLog("No auth files found for \(provider.displayName)\n")
+            return
+        }
+
+        appendLog("\(disabled ? "Disabling" : "Enabling") \(accounts.count) auth file(s) for \(provider.displayName)...\n")
+
+        for account in accounts {
+            let success = await updateAuthFileDisabled(filename: account.filename, disabled: disabled)
+            if !success {
+                appendLog("Warning: Failed to update auth file \(account.filename)\n", isError: true)
+            }
+        }
+
+        appendLog("Finished updating auth files for \(provider.displayName)\n")
+    }
+
     private func search(_ dir: URL) -> URL? {
         guard let items = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isExecutableKey, .isDirectoryKey]) else { return nil }
-        
+
         let candidates = ["cliproxyapiplus", "cliproxyapi", "cli-proxy-api", "cli-proxy-api-plus"]
-        
+
         for item in items {
             if let vals = try? item.resourceValues(forKeys: [.isDirectoryKey]), vals.isDirectory == true {
                  if let found = search(item) { return found }
                  continue
             }
-            
+
             let name = item.lastPathComponent.lowercased()
             if candidates.contains(name) { return item }
             if name.contains("cliproxy") && !name.contains(".txt") && !name.contains(".md") && !name.contains(".gz") {
@@ -1161,7 +1447,7 @@ enum ServiceError: LocalizedError {
     case noCompatibleBinary
     case extractionFailed
     case loginFailed
-    
+
     var errorDescription: String? {
         switch self {
         case .binaryNotFound: return "CLIProxyAPI binary not found. Please install it first."
