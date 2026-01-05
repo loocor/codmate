@@ -271,7 +271,7 @@ final class ClaudeCodeVM: ObservableObject {
 
         if let providerId {
             switch UnifiedProviderID.parse(providerId) {
-            case .oauth(let authProvider):
+            case .oauth(let authProvider, _):
                 fallbackAliases = await proxyAliasDefaults(
                     for: authProvider,
                     fallbackModel: defaultModel

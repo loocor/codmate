@@ -62,36 +62,23 @@ struct GitReviewSettingsView: View {
               VStack(alignment: .leading, spacing: 2) {
                 Label("Commit Model", systemImage: "brain")
                   .font(.subheadline).fontWeight(.medium)
-                Text("Select an OAuth provider or an API key provider, then choose its model.")
+                Text("Select a model from Auto-Proxy mode.")
                   .font(.caption)
                   .foregroundStyle(.secondary)
                   .fixedSize(horizontal: false, vertical: true)
               }
-              HStack(spacing: 8) {
-                UnifiedProviderPickerView(
-                  sections: providerCatalog.sections,
-                  models: modelList,
-                  modelSectionTitle: providerCatalog.sectionTitle(for: providerId),
-                  includeAuto: true,
-                  autoTitle: "Auto",
-                  includeDefaultModel: true,
-                  defaultModelTitle: "(default)",
-                  providerUnavailableHint: providerCatalog.availabilityHint(for: providerId),
-                  disableModels: providerId == nil || !providerCatalog.isProviderAvailable(providerId),
-                  providerId: $providerId,
-                  modelId: $modelId
-                )
-                .onChange(of: providerId) { _ in
-                  normalizeSelection()
-                  if providerId == nil {
-                    Task { await reloadCatalog(forceRefresh: true) }
-                  }
-                }
-                .onChange(of: modelId) { newVal in
-                  preferences.commitModelId = newVal
-                }
-              }
+              // Model picker with sanitized names and provider icons
+              SimpleModelPicker(
+                models: modelList,
+                isDisabled: !providerCatalog.isProviderAvailable(providerId),
+                providerId: providerId,
+                providerCatalog: providerCatalog,
+                modelId: $modelId
+              )
               .frame(maxWidth: .infinity, alignment: .trailing)
+              .onChange(of: modelId) { newVal in
+                preferences.commitModelId = newVal
+              }
             }
             gridDivider
             // Prompt template placed last
@@ -146,6 +133,9 @@ struct GitReviewSettingsView: View {
     .onChange(of: preferences.oauthProvidersEnabled) { _ in
       Task { await reloadCatalog() }
     }
+    .onChange(of: preferences.apiKeyProvidersEnabled) { _ in
+      Task { await reloadCatalog() }
+    }
     .onChange(of: CLIProxyService.shared.isRunning) { _ in
       Task { await reloadCatalog() }
     }
@@ -172,9 +162,9 @@ struct GitReviewSettingsView: View {
   }
 
   private func normalizeSelection() {
-    let normalized = providerCatalog.normalizeProviderId(providerId ?? preferences.commitProviderId)
-    providerId = normalized
-    preferences.commitProviderId = normalized
+    // Git Review always uses Auto-Proxy mode
+    providerId = UnifiedProviderID.autoProxyId
+    preferences.commitProviderId = UnifiedProviderID.autoProxyId
 
     modelList = providerCatalog.models(for: providerId)
     let providerChanged = lastProviderId != nil && lastProviderId != providerId

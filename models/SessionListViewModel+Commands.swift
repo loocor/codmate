@@ -365,9 +365,11 @@ extension SessionListViewModel {
         }
 
         // Friendly nudge so users know the command was placed on clipboard
-        Task {
-            await SystemNotifier.shared.notify(
-                title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        if preferences.commandCopyNotificationsEnabled {
+            Task {
+                await SystemNotifier.shared.notify(
+                    title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+            }
         }
 
         // Event-driven incremental refresh hint + proactive targeted refresh for today

@@ -471,6 +471,7 @@ final class GitChangesViewModel: ObservableObject {
         }
         generatingTask = Task { [weak self] in
             guard let self else { return }
+            let shouldNotify = SessionPreferencesStore.isCommitMessageNotificationEnabled()
             let statusToken = StatusBarLogStore.shared.beginTask(
                 "Generating commit message...",
                 level: .info,
@@ -490,11 +491,13 @@ final class GitChangesViewModel: ObservableObject {
                 }
             }
             guard let repo = self.repo else {
-                await SystemNotifier.shared.notify(
-                    title: "AI Commit",
-                    body: "Cannot generate commit message: not a Git repository.",
-                    threadId: "ai-commit"
-                )
+                if shouldNotify {
+                    await SystemNotifier.shared.notify(
+                        title: "AI Commit",
+                        body: "Cannot generate commit message: not a Git repository.",
+                        threadId: "ai-commit"
+                    )
+                }
                 finalStatus = ("Not a Git repository", .error)
                 return
             }
@@ -510,11 +513,13 @@ final class GitChangesViewModel: ObservableObject {
             // Fetch staged diff (index vs HEAD)
             let full = await self.service.stagedUnifiedDiff(in: repo)
             if full.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                await SystemNotifier.shared.notify(
-                    title: "AI Commit",
-                    body: "No staged changes to summarize.",
-                    threadId: "ai-commit"
-                )
+                if shouldNotify {
+                    await SystemNotifier.shared.notify(
+                        title: "AI Commit",
+                        body: "No staged changes to summarize.",
+                        threadId: "ai-commit"
+                    )
+                }
                 #if DEBUG
                 print("[AICommit] No staged changes; generation skipped")
                 #endif
@@ -571,23 +576,27 @@ final class GitChangesViewModel: ObservableObject {
                     Self.log.info("Success provider=\(res.providerId, privacy: .public) elapsedMs=\(res.elapsedMs) msg=\(String(preview), privacy: .public)")
                     finalStatus = ("Commit message ready", .success)
                 }
-                await SystemNotifier.shared.notify(
-                    title: "AI Commit",
-                    body: finalMessage.isEmpty
-                        ? "Generation completed but returned an empty commit message."
-                        : "Generated commit message (\(res.providerId)) in \(res.elapsedMs)ms",
-                    threadId: "ai-commit"
-                )
+                if shouldNotify {
+                    await SystemNotifier.shared.notify(
+                        title: "AI Commit",
+                        body: finalMessage.isEmpty
+                            ? "Generation completed but returned an empty commit message."
+                            : "Generated commit message (\(res.providerId)) in \(res.elapsedMs)ms",
+                        threadId: "ai-commit"
+                    )
+                }
             } catch {
                 #if DEBUG
                 print("[AICommit] Error: \(error.localizedDescription)")
                 #endif
                 Self.log.error("Generation error: \(error.localizedDescription, privacy: .public)")
-                await SystemNotifier.shared.notify(
-                    title: "AI Commit",
-                    body: "Generation failed: \(error.localizedDescription)",
-                    threadId: "ai-commit"
-                )
+                if shouldNotify {
+                    await SystemNotifier.shared.notify(
+                        title: "AI Commit",
+                        body: "Generation failed: \(error.localizedDescription)",
+                        threadId: "ai-commit"
+                    )
+                }
                 finalStatus = ("Generation failed: \(error.localizedDescription)", .error)
             }
         }

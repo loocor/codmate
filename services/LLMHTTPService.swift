@@ -129,7 +129,7 @@ actor LLMHTTPService {
         var legacyRerouteLabel: String?
 
         switch parsedSelection {
-        case .oauth(let auth):
+        case .oauth(let auth, _):
             builtinProvider = Self.builtinProvider(for: auth)
         case .api(let id):
             effectiveProviderId = id
@@ -137,6 +137,9 @@ actor LLMHTTPService {
             builtinProvider = builtin
         case .legacyReroute(let label):
             legacyRerouteLabel = label
+        case .autoProxy:
+            // Auto proxy mode: use CLI Proxy API for routing (similar to nil/default)
+            break
         case .unknown(let value):
             effectiveProviderId = value
         case .none:
@@ -181,7 +184,10 @@ actor LLMHTTPService {
                 wireAPI: "chat"
             )
             let id: String = {
-                if case .oauth(let auth) = parsedSelection { return UnifiedProviderID.oauth(auth) }
+                // For OAuth accounts, preserve the full ID (including accountId if present)
+                if case .oauth = parsedSelection, let providerId = providerId {
+                  return providerId
+                }
                 if case .legacyBuiltin(let legacy) = parsedSelection { return legacy.id }
                 return builtin.id
             }()

@@ -16,7 +16,8 @@ UI Rules (macOS specific)
 - Use macOS SwiftUI and AppKit bridges; do NOT use iOS‑only placements such as `.navigationBarTrailing`.
 - Settings uses macOS 15's new TabView API (`Tab("…", systemImage: "…")`) when available; provide a macOS 13.5/14 fallback with `tabItem` + `tag`. Container padding is unified (horizontal 16pt, top 16pt).
   - Tab content uniformly uses `SettingsTabContent` container (top-aligned, overall 8pt padding) to ensure consistent layout and spacing across pages.
-- Providers has been separated from the Codex tab into a top-level Settings page: Settings › Providers manages API key providers, OAuth providers, and Codex/Claude bindings; Settings › Codex only retains Runtime/Notifications/Privacy/Raw Config (no longer includes Providers).
+- Notifications is a top-level Settings page between Terminal and Providers; sections are Common, Codex, Claude Code, and Gemini CLI. Common toggles commit message, title/comment, and copy New/Resume command notifications.
+- Providers has been separated from the Codex tab into a top-level Settings page: Settings › Providers manages API key providers, OAuth providers, and Codex/Claude bindings; Settings › Codex only retains Runtime/Privacy/Raw Config (notifications live in Settings › Notifications).
   - OAuth providers (Codex/Claude/Gemini/Antigravity/Qwen) are added from the Providers “Add” menu and appear under an OAuth list section with login status and info actions.
   - CLI Proxy API status, reroute, and public access live under Providers as shared capabilities; deep diagnostics and installation details live under Settings › Advanced › CLI Proxy API.
   - Built-in providers are auto-loaded from an app-bundled `payload/providers.json` (managedByCodMate=true). This avoids hardcoding and lets users simply provide API keys; base URLs/models come pre-filled. The list merges bundled entries with `~/.codmate/providers.json` (user overrides win).
@@ -80,6 +81,12 @@ Coding Guidelines
 - File IO: prefer `Data(mappedIfSafe:)` or `FileHandle.read(upToCount:)`; never load huge files into Strings.
 - Error handling: surface user‑visible errors through `ViewModel.errorMessage` and macOS system notifications/alerts; do not crash the UI.
 - Testability: keep parsers and small helpers pure; avoid `Process()`/AppKit in ViewModel.
+- Provider Icon Theme Handling:
+  - Use `ProviderIconThemeHelper` (in `utils/ProviderIconThemeHelper.swift`) for consistent dark/light mode icon adaptation.
+  - Icons that are black or dark-colored (ChatGPTIcon/Codex, KimiIcon, ZaiIcon, OpenRouterIcon) must be inverted in dark mode for visibility.
+  - For SwiftUI views: use `.providerIconTheme(iconName:)` modifier or `ProviderIconDarkModeModifier` directly.
+  - For AppKit menus: use `ProviderIconThemeHelper.menuImage(named:)` which automatically handles resizing and dark mode inversion.
+  - Do NOT manually check dark mode and invert icons; always use the helper to ensure consistency across the app.
 
 CLI Integration (codex)
 - Prefer invoking via `/usr/bin/env codex` (or `claude`) so resolution happens on system `PATH`.

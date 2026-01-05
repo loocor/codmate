@@ -13,6 +13,9 @@ struct ExtensionsSettingsView: View {
                         Tab("Commands", systemImage: "command", value: ExtensionsSettingsTab.commands) {
                             SettingsTabContent { CommandsSettingsView() }
                         }
+                        Tab("Hooks", systemImage: "link", value: ExtensionsSettingsTab.hooks) {
+                            SettingsTabContent { HooksSettingsView() }
+                        }
                         Tab("MCP Servers", systemImage: "server.rack", value: ExtensionsSettingsTab.mcp) {
                             SettingsTabContent {
                                 MCPServersSettingsPane(openMCPMateDownload: openMCPMateDownload, showHeader: false)
@@ -27,6 +30,10 @@ struct ExtensionsSettingsView: View {
                         SettingsTabContent { CommandsSettingsView() }
                             .tabItem { Label("Commands", systemImage: "command") }
                             .tag(ExtensionsSettingsTab.commands)
+
+                        SettingsTabContent { HooksSettingsView() }
+                            .tabItem { Label("Hooks", systemImage: "link") }
+                            .tag(ExtensionsSettingsTab.hooks)
 
                         SettingsTabContent {
                             MCPServersSettingsPane(openMCPMateDownload: openMCPMateDownload, showHeader: false)
@@ -46,7 +53,7 @@ struct ExtensionsSettingsView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Extensions")
+            Text("Extensions Settings")
                 .font(.title2)
                 .fontWeight(.bold)
             Text("Manage MCP servers, Skills, and Commands across AI CLI providers.")

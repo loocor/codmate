@@ -148,11 +148,13 @@ extension SessionListViewModel {
             }
 
             Self.log.info("Generation completed successfully")
-            await SystemNotifier.shared.notify(
-                title: "Session Summary",
-                body: "Generated title and comment in \(res.elapsedMs)ms",
-                threadId: "session-summary"
-            )
+            if preferences.titleCommentNotificationsEnabled {
+                await SystemNotifier.shared.notify(
+                    title: "Session Summary",
+                    body: "Generated title and comment in \(res.elapsedMs)ms",
+                    threadId: "session-summary"
+                )
+            }
             finalStatus = ("Title & comment ready", .success)
 
         } catch {
@@ -164,11 +166,13 @@ extension SessionListViewModel {
 
     private func showGenerationError(_ message: String) async {
         Self.log.error("Showing error: \(message, privacy: .public)")
-        await SystemNotifier.shared.notify(
-            title: "Session Summary Error",
-            body: message,
-            threadId: "session-summary"
-        )
+        if preferences.titleCommentNotificationsEnabled {
+            await SystemNotifier.shared.notify(
+                title: "Session Summary Error",
+                body: message,
+                threadId: "session-summary"
+            )
+        }
     }
 
     private func showOverwriteConfirmation() async -> Bool {

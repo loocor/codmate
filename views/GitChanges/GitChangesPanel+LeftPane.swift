@@ -97,14 +97,9 @@ extension GitChangesPanel {
                                 Button {
                                     vm.generateCommitMessage(providerId: preferences.commitProviderId, modelId: preferences.commitModelId)
                                 } label: {
-                                    ZStack(alignment: .bottomTrailing) {
-                                        Circle()
-                                            .fill(hoverWand ? Color.accentColor.opacity(0.15) : Color.clear)
-                                            .frame(width: wandButtonSize - 1, height: wandButtonSize - 1)
-                                        Image(systemName: "sparkles")
-                                            .font(.system(size: 15, weight: .semibold))
-                                            .foregroundStyle(hoverWand ? Color.accentColor : Color.secondary)
-                                    }
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(hoverWand ? Color.accentColor : Color.secondary)
                                 }
                                 .buttonStyle(.plain)
                                 .frame(width: wandButtonSize, height: wandButtonSize)

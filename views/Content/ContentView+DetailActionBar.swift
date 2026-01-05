@@ -360,13 +360,14 @@ private extension ContentView {
       let fallbackCommand = simpleProjectNewCommands(project: project)
       let cmd = viewModel.buildNewProjectCLIInvocation(project: project)
       let shouldCopy = viewModel.shouldCopyCommandsToClipboard
+      let shouldNotify = viewModel.preferences.commandCopyNotificationsEnabled
       if profile.usesWarpCommands {
         guard viewModel.copyNewProjectCommandsIfEnabled(project: project, destinationApp: profile)
         else {
           return
         }
         viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
-        if shouldCopy {
+        if shouldCopy && shouldNotify {
           Task {
             await SystemNotifier.shared.notify(
               title: "CodMate", body: "Command copied. Paste it in \(profile.displayTitle).")
@@ -381,7 +382,7 @@ private extension ContentView {
           pb.setString(fallbackCommand + "\n", forType: .string)
         }
         _ = viewModel.openAppleTerminal(at: dir)
-        if shouldCopy {
+        if shouldCopy && shouldNotify {
           Task {
             await SystemNotifier.shared.notify(
               title: "CodMate", body: "Command copied. Paste it in Terminal.")
@@ -398,7 +399,7 @@ private extension ContentView {
       let runCommand = profile.supportsDirectoryResolved ? cmd : fallbackCommand
       let inline = profile.supportsCommandResolved ? runCommand : nil
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: inline)
-      if !profile.supportsCommandResolved, shouldCopy {
+      if !profile.supportsCommandResolved, shouldCopy, shouldNotify {
         Task {
           await SystemNotifier.shared.notify(
             title: "CodMate", body: "Command copied. Paste it in \(profile.displayTitle).")
@@ -415,6 +416,7 @@ private extension ContentView {
       let cmd = buildClaudeProjectInvocation(for: project)
       let cdCommand = "cd " + shellEscapedPath(dir) + "\n" + cmd
       let shouldCopy = viewModel.shouldCopyCommandsToClipboard
+      let shouldNotify = viewModel.preferences.commandCopyNotificationsEnabled
       if profile.isTerminal {
         if shouldCopy {
           let pb = NSPasteboard.general
@@ -422,7 +424,7 @@ private extension ContentView {
           pb.setString(cdCommand + "\n", forType: .string)
         }
         _ = viewModel.openAppleTerminal(at: dir)
-        if shouldCopy {
+        if shouldCopy && shouldNotify {
           Task {
             await SystemNotifier.shared.notify(
               title: "CodMate", body: "Command copied. Paste it in Terminal.")
@@ -439,7 +441,7 @@ private extension ContentView {
       let runCommand = profile.supportsDirectoryResolved ? cmd : cdCommand
       let inline = profile.supportsCommandResolved ? runCommand : nil
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: inline)
-      if !profile.supportsCommandResolved, shouldCopy {
+      if !profile.supportsCommandResolved, shouldCopy, shouldNotify {
         Task {
           await SystemNotifier.shared.notify(
             title: "CodMate", body: "Command copied. Paste it in \(profile.displayTitle).")
@@ -454,6 +456,7 @@ private extension ContentView {
       let cmd = buildGeminiProjectInvocation(for: project)
       let cdCommand = "cd " + shellEscapedPath(dir) + "\n" + cmd
       let shouldCopy = viewModel.shouldCopyCommandsToClipboard
+      let shouldNotify = viewModel.preferences.commandCopyNotificationsEnabled
 
       if profile.isTerminal {
         if shouldCopy {
@@ -462,7 +465,7 @@ private extension ContentView {
           pb.setString(cdCommand + "\n", forType: .string)
         }
         _ = viewModel.openAppleTerminal(at: dir)
-        if shouldCopy {
+        if shouldCopy && shouldNotify {
           Task {
             await SystemNotifier.shared.notify(
               title: "CodMate", body: "Command copied. Paste it in Terminal.")
@@ -479,7 +482,7 @@ private extension ContentView {
       let runCommand = profile.supportsDirectoryResolved ? cmd : cdCommand
       let inline = profile.supportsCommandResolved ? runCommand : nil
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: inline)
-      if !profile.supportsCommandResolved, shouldCopy {
+      if !profile.supportsCommandResolved, shouldCopy, shouldNotify {
         Task {
           await SystemNotifier.shared.notify(
             title: "CodMate", body: "Command copied. Paste it in \(profile.displayTitle).")
@@ -543,9 +546,11 @@ private extension ContentView {
     if profile.isNone {
       _ = viewModel.copyNewProjectCommandsIfEnabled(project: project, destinationApp: profile)
       if viewModel.shouldCopyCommandsToClipboard {
-        Task {
-          await SystemNotifier.shared.notify(
-            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        if viewModel.preferences.commandCopyNotificationsEnabled {
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+          }
         }
       }
       return
@@ -573,7 +578,9 @@ private extension ContentView {
       }
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
     }
-    if viewModel.shouldCopyCommandsToClipboard {
+    if viewModel.shouldCopyCommandsToClipboard
+      && viewModel.preferences.commandCopyNotificationsEnabled
+    {
       Task {
         await SystemNotifier.shared.notify(
           title: "CodMate", body: "Command copied. Paste it in the opened terminal.")

@@ -661,17 +661,7 @@ private struct ProjectTreeNodeView: View {
     if profile.usesWarpCommands {
       vm.openPreferredTerminalViaScheme(profile: profile, directory: dir)
       if vm.shouldCopyCommandsToClipboard {
-        Task {
-          await SystemNotifier.shared.notify(
-            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
-        }
-      }
-      return
-    }
-    if profile.isTerminal {
-      if !vm.openNewSession(session: target) {
-        _ = vm.openAppleTerminal(at: dir)
-        if vm.shouldCopyCommandsToClipboard {
+        if vm.preferences.commandCopyNotificationsEnabled {
           Task {
             await SystemNotifier.shared.notify(
               title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
@@ -680,11 +670,27 @@ private struct ProjectTreeNodeView: View {
       }
       return
     }
+    if profile.isTerminal {
+      if !vm.openNewSession(session: target) {
+        _ = vm.openAppleTerminal(at: dir)
+        if vm.shouldCopyCommandsToClipboard {
+          if vm.preferences.commandCopyNotificationsEnabled {
+            Task {
+              await SystemNotifier.shared.notify(
+                title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+            }
+          }
+        }
+      }
+      return
+    }
     if profile.isNone {
       if vm.shouldCopyCommandsToClipboard {
-        Task {
-          await SystemNotifier.shared.notify(
-            title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+        if vm.preferences.commandCopyNotificationsEnabled {
+          Task {
+            await SystemNotifier.shared.notify(
+              title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
+          }
         }
       }
       return
@@ -698,7 +704,9 @@ private struct ProjectTreeNodeView: View {
       // Clipboard already populated when copy preference is enabled.
     }
     vm.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
-    if !profile.supportsCommandResolved, vm.shouldCopyCommandsToClipboard {
+    if !profile.supportsCommandResolved, vm.shouldCopyCommandsToClipboard,
+      vm.preferences.commandCopyNotificationsEnabled
+    {
       Task {
         await SystemNotifier.shared.notify(
           title: "CodMate", body: "Command copied. Paste it in the opened terminal.")

@@ -25,11 +25,6 @@ struct AdvancedSettingsView: View {
                                 AdvancedPathPane(preferences: preferences)
                             }
                         }
-                        Tab("CliProxyAPI", systemImage: "bolt.horizontal") {
-                            SettingsTabContent {
-                                CLIProxyAdvancedPane()
-                            }
-                        }
                         Tab("Dialectics", systemImage: "doc.text.magnifyingglass") {
                             SettingsTabContent {
                                 DialecticsPane(preferences: preferences)
@@ -42,10 +37,6 @@ struct AdvancedSettingsView: View {
                             AdvancedPathPane(preferences: preferences)
                         }
                         .tabItem { Label("Path", systemImage: "folder") }
-                        SettingsTabContent {
-                            CLIProxyAdvancedPane()
-                        }
-                        .tabItem { Label("CliProxyAPI", systemImage: "bolt.horizontal") }
                         SettingsTabContent {
                             DialecticsPane(preferences: preferences)
                         }

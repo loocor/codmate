@@ -605,7 +605,9 @@ extension SessionListColumnView {
     } else {
       if profile.isNone {
         _ = viewModel.copyNewProjectCommandsIfEnabled(project: project, destinationApp: profile)
-        if viewModel.shouldCopyCommandsToClipboard {
+        if viewModel.shouldCopyCommandsToClipboard
+          && viewModel.preferences.commandCopyNotificationsEnabled
+        {
           Task {
             await SystemNotifier.shared.notify(
               title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
@@ -625,7 +627,7 @@ extension SessionListColumnView {
         viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir, command: cmd)
       }
     }
-    if viewModel.shouldCopyCommandsToClipboard {
+    if viewModel.shouldCopyCommandsToClipboard && viewModel.preferences.commandCopyNotificationsEnabled {
       Task {
         await SystemNotifier.shared.notify(
           title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
@@ -787,7 +789,9 @@ extension SessionListColumnView {
     else { return }
     if profile.usesWarpCommands {
       viewModel.openPreferredTerminalViaScheme(profile: profile, directory: dir)
-      if viewModel.shouldCopyCommandsToClipboard {
+      if viewModel.shouldCopyCommandsToClipboard
+        && viewModel.preferences.commandCopyNotificationsEnabled
+      {
         Task {
           await SystemNotifier.shared.notify(
             title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
@@ -798,7 +802,9 @@ extension SessionListColumnView {
     if profile.isTerminal {
       if !viewModel.openNewSession(session: target) {
         _ = viewModel.openAppleTerminal(at: dir)
-        if viewModel.shouldCopyCommandsToClipboard {
+        if viewModel.shouldCopyCommandsToClipboard
+          && viewModel.preferences.commandCopyNotificationsEnabled
+        {
           Task {
             await SystemNotifier.shared.notify(
               title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
@@ -808,7 +814,9 @@ extension SessionListColumnView {
       return
     }
     if profile.isNone {
-      if viewModel.shouldCopyCommandsToClipboard {
+      if viewModel.shouldCopyCommandsToClipboard
+        && viewModel.preferences.commandCopyNotificationsEnabled
+      {
         Task {
           await SystemNotifier.shared.notify(
             title: "CodMate", body: "Command copied. Paste it in the opened terminal.")
@@ -829,7 +837,9 @@ extension SessionListColumnView {
       directory: dir,
       command: cmd
     )
-    if !profile.supportsCommandResolved, viewModel.shouldCopyCommandsToClipboard {
+    if !profile.supportsCommandResolved, viewModel.shouldCopyCommandsToClipboard,
+      viewModel.preferences.commandCopyNotificationsEnabled
+    {
       Task {
         await SystemNotifier.shared.notify(
           title: "CodMate", body: "Command copied. Paste it in the opened terminal.")

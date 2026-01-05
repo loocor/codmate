@@ -364,6 +364,14 @@ extension SessionActions {
             env["SEATBELT_PROFILE"] = geminiSeatbeltProfile(for: sandboxPreference)
         }
 
+        // Inject CLI Proxy endpoint if provider is configured
+        let providerId = UserDefaults.standard.string(forKey: "codmate.gemini.proxyProviderId")
+        if let providerId, !providerId.isEmpty {
+            let portValue = UserDefaults.standard.integer(forKey: "codmate.localserver.port")
+            let port = portValue > 0 ? portValue : 8080
+            env["CODE_ASSIST_ENDPOINT"] = "http://127.0.0.1:\(port)"
+        }
+
         return GeminiRuntimeConfiguration(flags: flags, environment: env)
     }
 
@@ -1177,9 +1185,7 @@ extension SessionActions {
             if sandboxRaw == nil { sandboxRaw = SandboxMode.workspaceWrite.rawValue }
 
             let modelFromProject = pp?.model
-            let modelForInline = (provider == "codmate-proxy" && isLikelyBuiltinCodexModel(modelFromProject))
-                ? nil
-                : modelFromProject  // include model only inside profile injection
+            let modelForInline = resolveInlineModel(provider: provider, candidate: modelFromProject)
             if let inline = renderInlineProfileConfig(
                 key: profileId,
                 model: modelForInline,
@@ -1410,9 +1416,7 @@ extension SessionActions {
             if sandboxRaw == nil { sandboxRaw = SandboxMode.workspaceWrite.rawValue }
 
             let preferredModel = modelFromProject ?? fallbackModel
-            let modelForInline = (provider == "codmate-proxy" && isLikelyBuiltinCodexModel(preferredModel))
-                ? nil
-                : preferredModel
+            let modelForInline = resolveInlineModel(provider: provider, candidate: preferredModel)
             if let inline = renderInlineProfileConfig(
                 key: pid,
                 model: modelForInline,
@@ -1702,9 +1706,7 @@ extension SessionActions {
             if sandboxRaw == nil { sandboxRaw = SandboxMode.workspaceWrite.rawValue }
 
             let preferredModel = project.profile?.model ?? fallbackModel
-            let modelForInline = (provider == "codmate-proxy" && isLikelyBuiltinCodexModel(preferredModel))
-                ? nil
-                : preferredModel
+            let modelForInline = resolveInlineModel(provider: provider, candidate: preferredModel)
             if let inline = renderInlineProfileConfig(
                 key: pid,
                 model: modelForInline,
