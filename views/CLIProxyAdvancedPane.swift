@@ -6,6 +6,20 @@ struct CLIProxyAdvancedPane: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
+      // Conflict warning
+      if let warning = service.conflictWarning {
+        HStack(spacing: 8) {
+          Image(systemName: "exclamationmark.triangle.fill")
+            .foregroundColor(.orange)
+          Text(warning)
+            .font(.caption)
+            .foregroundColor(.secondary)
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.1))
+        .cornerRadius(8)
+      }
+
       settingsCard {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
           GridRow {
@@ -20,11 +34,32 @@ struct CLIProxyAdvancedPane: View {
               .lineLimit(1)
               .truncationMode(.middle)
               .frame(maxWidth: .infinity, alignment: .trailing)
-            Button(service.isBinaryInstalled ? "Reinstall" : "Install") {
-              Task { try? await service.install() }
+              .onTapGesture(count: 2) {
+                revealBinaryInFinder()
+              }
+              .help("Double-click to reveal in Finder")
+            HStack(spacing: 8) {
+              if service.isInstalling {
+                ProgressView()
+                  .scaleEffect(0.6)
+                  .frame(width: 14, height: 14)
+                Text("Installing")
+                  .font(.caption)
+                  .foregroundColor(.secondary)
+              } else {
+                Button(actionButtonTitle) {
+                  Task {
+                    if service.binarySource == .homebrew {
+                      try? await service.brewUpgrade()
+                    } else {
+                      try? await service.install()
+                    }
+                  }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(actionButtonColor)
+              }
             }
-            .buttonStyle(.borderedProminent)
-            .tint(service.isBinaryInstalled ? .red : .blue)
             .frame(width: 90, alignment: .trailing)
             .disabled(service.isInstalling)
           }
@@ -134,5 +169,75 @@ struct CLIProxyAdvancedPane: View {
     let home = FileManager.default.homeDirectoryForCurrentUser
     let logsPath = home.appendingPathComponent(".codmate/auth/logs")
     NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: logsPath.path)
+  }
+
+  private func revealBinaryInFinder() {
+    let url = URL(fileURLWithPath: service.binaryFilePath)
+    NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: url.deletingLastPathComponent().path)
+  }
+
+  private var binarySourceDescription: String {
+    switch service.binarySource {
+    case .none:
+      return "No binary detected"
+    case .homebrew:
+      return "Homebrew installation (managed via brew services)"
+    case .codmate:
+      return "CodMate built-in installation"
+    case .other:
+      return "Other installation (potential conflicts)"
+    }
+  }
+
+  private var binarySourceLabel: String {
+    switch service.binarySource {
+    case .none:
+      return "Not Detected"
+    case .homebrew:
+      return "Homebrew"
+    case .codmate:
+      return "CodMate"
+    case .other:
+      return "Other"
+    }
+  }
+
+  private var binarySourceColor: Color {
+    switch service.binarySource {
+    case .none:
+      return .secondary
+    case .homebrew:
+      return .green
+    case .codmate:
+      return .blue
+    case .other:
+      return .orange
+    }
+  }
+
+  private var actionButtonTitle: String {
+    switch service.binarySource {
+    case .none:
+      return "Install"
+    case .homebrew:
+      return service.isBinaryInstalled ? "Upgrade" : "Install"
+    case .codmate:
+      return service.isBinaryInstalled ? "Reinstall" : "Install"
+    case .other:
+      return service.isBinaryInstalled ? "Reinstall" : "Install"
+    }
+  }
+
+  private var actionButtonColor: Color {
+    switch service.binarySource {
+    case .none:
+      return .blue
+    case .homebrew:
+      return .green
+    case .codmate:
+      return service.isBinaryInstalled ? .red : .blue
+    case .other:
+      return service.isBinaryInstalled ? .red : .blue
+    }
   }
 }
