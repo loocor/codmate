@@ -101,24 +101,54 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     item.menu = statusMenu
     statusItem = item
 
-    // Initial icon update
+    // Always set a placeholder icon first to avoid blank display
+    applyStaticIcon(to: item.button)
+
+    // Then update with dynamic icon if snapshots are available
     if let snapshots = viewModel?.usageSnapshots {
         updateStatusItemIcon(with: snapshots)
-    } else {
-        // Fallback to static icon if no snapshots yet
-        applyStaticIcon(to: item.button)
     }
   }
 
   private func applyStaticIcon(to button: NSStatusBarButton?) {
     guard let button else { return }
     if let image = NSImage(
-      systemSymbolName: "fossil.shell.fill", accessibilityDescription: "CodMate")
+      systemSymbolName: "circle.fill", accessibilityDescription: "CodMate")
     {
       image.isTemplate = true
-      let flipped = horizontallyFlippedImage(image)
-      button.image = flipped ?? image
+      image.size = NSSize(width: 18, height: 18)
+      button.image = image
+    } else {
+      // Fallback: create a placeholder icon if system symbol fails
+      button.image = createPlaceholderIcon()
     }
+  }
+
+  private func createPlaceholderIcon() -> NSImage {
+    // Create a simple placeholder icon with the same size as menu bar icons
+    // Use a simple circle icon as fallback
+    let size = NSSize(width: 18, height: 18)
+
+    // Try to use a system symbol as fallback
+    if let systemImage = NSImage(systemSymbolName: "circle.fill", accessibilityDescription: "CodMate") {
+      systemImage.isTemplate = true
+      systemImage.size = size
+      return systemImage
+    }
+
+    // Last resort: create a simple geometric shape
+    let image = NSImage(size: size)
+    image.lockFocus()
+
+    // Draw a simple filled circle
+    let rect = NSRect(origin: .zero, size: size)
+    let path = NSBezierPath(ovalIn: rect.insetBy(dx: 4, dy: 4))
+    NSColor.black.setFill()
+    path.fill()
+
+    image.unlockFocus()
+    image.isTemplate = true
+    return image
   }
 
   private func updateStatusItemIcon(with snapshots: [UsageProviderKind: UsageProviderSnapshot]) {
@@ -161,6 +191,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         nsImage.isTemplate = true // Use system template mode (ignore colors, use alpha)
         button.image = nsImage
         isShowingDynamicIcon = true
+    } else {
+        // Fallback to static icon if dynamic icon rendering fails
+        applyStaticIcon(to: button)
+        isShowingDynamicIcon = false
     }
   }
 
@@ -639,6 +673,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     case .gemini: name = "GeminiIcon"
     case .antigravity: name = "AntigravityIcon"
     case .qwen: name = "QwenIcon"
+    case .warp: name = "WarpIcon"
     }
     return ProviderIconThemeHelper.menuImage(named: name)
   }
