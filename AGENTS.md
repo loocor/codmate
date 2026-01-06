@@ -131,6 +131,7 @@ Session Metadata (Rename/Comment)
 
 About Surface
 - Settings › About shows app version, build timestamp (derived from the app executable’s modification date), and project URL.
+- Settings › About includes update checking/downloading for non-App Store builds and guides manual install.
 - “About CodMate” menu item should open Settings pre-selecting the About tab.
  - Include an “Open Source Licenses” entry that displays `THIRD-PARTY-NOTICES.md` (bundled if present; falls back to repository URL if missing).
 

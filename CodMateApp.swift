@@ -38,6 +38,10 @@ struct CodMateApp: App {
     Task { @MainActor in
       LaunchAtLoginService.shared.syncWithPreferences(prefs)
     }
+    // Daily update check (non-App Store builds only)
+    Task {
+      _ = await UpdateService.shared.checkIfNeeded(trigger: .appLaunch)
+    }
     // Log startup info to Status Bar
     Task { @MainActor in
       let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"

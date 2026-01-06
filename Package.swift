@@ -65,6 +65,10 @@ let package = Package(
       path: "notify",
       sources: ["NotifyMain.swift"]
     ),
+    .testTarget(
+      name: "CodMateTests",
+      dependencies: ["CodMate"]
+    ),
   ],
   swiftLanguageModes: [.v5]
 )

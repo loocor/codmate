@@ -9,6 +9,7 @@ struct SettingsView: View {
   @StateObject private var codexVM = CodexVM()
   @StateObject private var geminiVM = GeminiVM()
   @StateObject private var claudeVM = ClaudeCodeVM()
+  @StateObject private var updateViewModel = UpdateViewModel()
   @EnvironmentObject private var viewModel: SessionListViewModel
   @ObservedObject private var permissionsManager = SandboxPermissionsManager.shared
   @State private var showLicensesSheet = false
@@ -1238,6 +1239,12 @@ struct SettingsView: View {
           }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+
+        AboutUpdateSection(viewModel: updateViewModel)
+          .onAppear {
+            updateViewModel.loadCached()
+            updateViewModel.checkIfNeeded(trigger: .aboutAuto)
+          }
 
         // Discord Community Card
         HStack(spacing: 12) {

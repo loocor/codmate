@@ -79,3 +79,110 @@ struct OpenSourceLicensesView: View {
         }
     }
 }
+
+struct AboutUpdateSection: View {
+    @ObservedObject var viewModel: UpdateViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Update")
+                    .font(.headline)
+                Spacer()
+                if let lastCheckedAt = viewModel.lastCheckedAt {
+                    Text("Last checked \(Self.lastCheckedFormatter.string(from: lastCheckedAt))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if AppDistribution.isAppStore {
+                Text("Updates are managed by the App Store.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            } else {
+                content
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.gray.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+        )
+        .alert("Install", isPresented: $viewModel.showInstallInstructions) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(viewModel.installInstructions)
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch viewModel.state {
+        case .idle:
+            HStack {
+                Text("Check for updates.")
+                Spacer()
+                Button("Check Now") { viewModel.checkNow() }
+            }
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Checking...")
+            }
+        case .upToDate(let current, _):
+            HStack {
+                Text("Up to date (\(current)).")
+                Spacer()
+                Button("Check Now") { viewModel.checkNow() }
+            }
+        case .updateAvailable(let info):
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("New version available: \(info.latestVersion)")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                        Text(info.assetName)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    if viewModel.isDownloading {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                            Text("Downloading...")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                    } else {
+                        Button("Download & Install") { viewModel.downloadIfNeeded() }
+                    }
+                }
+                if let lastError = viewModel.lastError {
+                    Text("Download failed: \(lastError)")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+            }
+        case .error(let message):
+            HStack {
+                Text("Update check failed: \(message)")
+                    .foregroundColor(.red)
+                Spacer()
+                Button("Retry") { viewModel.checkNow() }
+            }
+        }
+    }
+
+    private static let lastCheckedFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+}
