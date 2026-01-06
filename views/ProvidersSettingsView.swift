@@ -12,6 +12,8 @@ struct ProvidersSettingsView: View {
   @State private var oauthInfoAccount: CLIProxyService.OAuthAccount?
   @State private var oauthLoginProvider: LocalAuthProvider?
   @State private var oauthAutoStartFailed: Bool = false
+  @State private var pendingOAuthProvider: LocalAuthProvider?
+  @State private var showOAuthRiskWarning: Bool = false
   @State private var localModels: [CLIProxyService.LocalModel] = []
   @State private var localIP: String = "127.0.0.1"
   @State private var publicAPIKey: String = ""
@@ -124,6 +126,27 @@ struct ProvidersSettingsView: View {
       )
     }
     .codmatePresentationSizingIfAvailable()
+    .alert("OAuth Provider Authorization Risk Warning", isPresented: $showOAuthRiskWarning) {
+      Button("I Understand and Accept the Risk", role: .destructive) {
+        confirmOAuthLogin()
+      }
+      Button("Cancel", role: .cancel) {
+        pendingOAuthProvider = nil
+      }
+    } message: {
+      Text("""
+      Adding OAuth providers requires separate authorization through CLIProxyAPI, which is isolated from CodMate's main CLI authorization.
+
+      ⚠️ **Potential Risks:**
+      • Account suspension or termination by the provider
+      • Violation of provider terms of service
+      • Loss of access to services
+
+      By proceeding, you acknowledge that you understand these risks and will use this feature at your own discretion.
+
+      **Note:** The ability to add OAuth providers may be partially or fully removed in future versions of CodMate.
+      """)
+    }
     .task {
       await vm.loadAll()
       await vm.loadTemplates()
@@ -138,22 +161,7 @@ struct ProvidersSettingsView: View {
         ensureServiceRunningIfNeeded(force: true)
       }
     }
-    .onChange(of: preferences.localServerReroute) { enabled in
-      if enabled {
-        ensureServiceRunningIfNeeded(force: true)
-      }
-    }
-    .onChange(of: preferences.localServerReroute3P) { enabled in
-      if enabled {
-        ensureServiceRunningIfNeeded(force: true)
-      }
-      Task {
-        if enabled {
-          await proxyService.syncThirdPartyProviders()
-        }
-        await refreshLocalModels()
-      }
-    }
+    // Removed rerouteBuiltIn/reroute3P onChange handlers - all providers now use Auto-Proxy mode
     .onChange(of: preferences.oauthProvidersEnabled) { _ in
       refreshOAuthStatus()
       Task { await refreshLocalModels() }
@@ -471,9 +479,9 @@ struct ProvidersSettingsView: View {
 
   private var proxyCapabilitiesSection: some View {
     VStack(alignment: .leading, spacing: 20) {
-      // 1. Reroute Control
+      // 1. CLI Proxy API Status
       VStack(alignment: .leading, spacing: 10) {
-        Text("Reroute Control").font(.headline).fontWeight(.semibold)
+        Text("CLI Proxy API").font(.headline).fontWeight(.semibold)
         settingsCard {
           Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
             GridRow {
@@ -481,10 +489,10 @@ struct ProvidersSettingsView: View {
                 HStack(spacing: 6) {
                   Image(systemName: "bolt.horizontal")
                     .frame(width: 16, alignment: .leading)
-                  Text("CLI Proxy API")
+                  Text("Service Status")
                     .font(.subheadline).fontWeight(.medium)
                 }
-                Text("Service status for OAuth and reroute")
+                Text("All providers are routed through CLI Proxy API when enabled in the Providers list above.")
                   .font(.caption).foregroundColor(.secondary)
                   .padding(.leading, 22)
               }
@@ -505,26 +513,6 @@ struct ProvidersSettingsView: View {
                 }
               }
               .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-
-            gridDivider
-            GridRow {
-              VStack(alignment: .leading, spacing: 2) {
-                Label("ReRoute API Key Providers", systemImage: "arrow.triangle.2.circlepath")
-                  .font(.subheadline).fontWeight(.medium)
-                Text("Route API key providers through CLI Proxy API so models match proxy results.")
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
-                  .fixedSize(horizontal: false, vertical: true)
-                Text("Temporarily disabled while we finalize this flow.")
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
-                  .fixedSize(horizontal: false, vertical: true)
-              }
-              Toggle("", isOn: $preferences.localServerReroute3P)
-                .labelsHidden().toggleStyle(.switch).controlSize(.small)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .disabled(true)
             }
           }
         }
@@ -837,6 +825,14 @@ struct ProvidersSettingsView: View {
 
   private func startOAuthLogin(_ provider: LocalAuthProvider) {
     guard oauthLoginProvider == nil else { return }
+    // Show risk warning before starting OAuth login
+    pendingOAuthProvider = provider
+    showOAuthRiskWarning = true
+  }
+
+  private func confirmOAuthLogin() {
+    guard let provider = pendingOAuthProvider else { return }
+    pendingOAuthProvider = nil
     oauthLoginProvider = provider
   }
 
@@ -855,12 +851,12 @@ struct ProvidersSettingsView: View {
 
   private func ensureServiceRunningIfNeeded(force: Bool = false) {
     let hasLoggedInOAuth = !vm.oauthAccounts.isEmpty
+    let hasEnabledProviders = !vm.oauthAccounts.isEmpty || !vm.providers.isEmpty
     let shouldEnsure =
       force
       || hasLoggedInOAuth
       || preferences.localServerEnabled
-      || preferences.localServerReroute
-      || preferences.localServerReroute3P
+      || hasEnabledProviders
     guard shouldEnsure else { return }
     guard !proxyService.isRunning else { return }
     oauthAutoStartFailed = false

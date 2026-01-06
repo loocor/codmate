@@ -119,17 +119,7 @@ struct GitReviewSettingsView: View {
       modelId = preferences.commitModelId
       Task { await reloadCatalog() }
     }
-    .onChange(of: preferences.localServerReroute) { _ in
-      Task { await reloadCatalog() }
-    }
-    .onChange(of: preferences.localServerReroute3P) { _ in
-      Task {
-        if preferences.localServerReroute3P {
-          await CLIProxyService.shared.syncThirdPartyProviders()
-        }
-        await reloadCatalog()
-      }
-    }
+    // Removed rerouteBuiltIn/reroute3P onChange handlers - all providers now use Auto-Proxy mode
     .onChange(of: preferences.oauthProvidersEnabled) { _ in
       Task { await reloadCatalog() }
     }

@@ -138,8 +138,15 @@ struct SimpleModelPicker: View {
       if includeDefault {
         Text(defaultTitle).tag(String?.none)
       }
-      ForEach(models, id: \.self) { model in
-        modelMenuItem(model: model)
+      if models.isEmpty {
+        // Show a placeholder when models are empty and includeDefault is false
+        if !includeDefault {
+          Text("(no models available)").tag(String?.none).disabled(true)
+        }
+      } else {
+        ForEach(models, id: \.self) { model in
+          modelMenuItem(model: model)
+        }
       }
     }
     .labelsHidden()

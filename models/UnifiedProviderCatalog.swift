@@ -30,19 +30,29 @@ final class UnifiedProviderCatalogModel: ObservableObject {
   private var reroutedModelsByLabel: [String: [String]] = [:]
 
   func reload(preferences: SessionPreferencesStore, forceRefresh: Bool = false) async {
+    let taskToken = AppLogger.shared.beginTask("Reloading provider catalog", source: "ProviderCatalog")
     let registry = ProvidersRegistryService()
     let providers = await registry.listProviders()
     registryProviders = providers
+    AppLogger.shared.info("Loaded \(providers.count) providers from registry", source: "ProviderCatalog")
 
-    let rerouteBuiltIn = preferences.localServerReroute
-    let reroute3P = preferences.localServerReroute3P
-    let oauthEnabledSet = preferences.oauthProvidersEnabled
+    // All providers now use Auto-Proxy mode through CLIProxyAPI
+    // No separate rerouteBuiltIn/reroute3P switches - providers are enabled/disabled via the Providers list
+    // OAuth is enabled at account level (oauthAccountsEnabled), not provider level
+    let oauthAccountsEnabledSet = preferences.oauthAccountsEnabled
     let apiKeyEnabledSet = preferences.apiKeyProvidersEnabled
     let proxyRunning = CLIProxyService.shared.isRunning
 
+    AppLogger.shared.info("Proxy running=\(proxyRunning), OAuth accounts enabled=\(oauthAccountsEnabledSet.count), API key enabled=\(apiKeyEnabledSet.count)", source: "ProviderCatalog")
+
     var localModels: [CLIProxyService.LocalModel] = []
-    if proxyRunning && (rerouteBuiltIn || reroute3P) {
+    // Always fetch models if proxy is running, even if reroute is not enabled
+    // This allows auto-proxy mode to show available models for selection
+    if proxyRunning {
       localModels = await CLIProxyService.shared.fetchLocalModels(forceRefresh: forceRefresh)
+      AppLogger.shared.info("Fetched \(localModels.count) models from CLIProxyAPI", source: "ProviderCatalog")
+    } else {
+      AppLogger.shared.warning("Skipping local model fetch: CLIProxy not running", source: "ProviderCatalog")
     }
     let mapped = mapLocalModels(localModels)
 
@@ -59,7 +69,6 @@ final class UnifiedProviderCatalogModel: ObservableObject {
     let oauthAccounts = CLIProxyService.shared.listOAuthAccounts()
 
     for provider in oauthProviders {
-      let isEnabled = oauthEnabledSet.contains(provider.rawValue)
       let providerAccounts = oauthAccounts.filter { $0.provider == provider }
 
       if providerAccounts.isEmpty {
@@ -67,8 +76,7 @@ final class UnifiedProviderCatalogModel: ObservableObject {
         let id = UnifiedProviderID.oauth(provider, accountId: nil)
         let hint = availabilityHintForOAuth(
           proxyRunning: proxyRunning,
-          rerouteBuiltIn: rerouteBuiltIn,
-          oauthEnabled: isEnabled,
+          oauthEnabled: false,
           authAvailable: false,
           providerName: provider.displayName
         )
@@ -87,11 +95,12 @@ final class UnifiedProviderCatalogModel: ObservableObject {
         // Multiple accounts - create one choice per account
         for account in providerAccounts.sorted(by: { ($0.email ?? "") < ($1.email ?? "") }) {
           let id = UnifiedProviderID.oauth(provider, accountId: account.id)
-          let available = proxyRunning && rerouteBuiltIn && isEnabled
+          // Account is available if proxy is running and account is enabled
+          let accountEnabled = oauthAccountsEnabledSet.contains(account.id)
+          let available = proxyRunning && accountEnabled
           let hint = availabilityHintForOAuth(
             proxyRunning: proxyRunning,
-            rerouteBuiltIn: rerouteBuiltIn,
-            oauthEnabled: isEnabled,
+            oauthEnabled: accountEnabled,
             authAvailable: true,
             providerName: provider.displayName
           )
@@ -106,9 +115,9 @@ final class UnifiedProviderCatalogModel: ObservableObject {
           )
           oauthChoices.append(choice)
           kinds[id] = .oauth
-          if available && isEnabled {
+          if available && accountEnabled {
             // Use provider-level models (all accounts of same provider share models)
-            // Only include models if provider is enabled
+            // Only include models if account is enabled
             let providerBaseId = UnifiedProviderID.oauth(provider, accountId: nil)
             let models = sortModels(mapped.builtIn[providerBaseId] ?? [])
             nextModels[id] = models
@@ -142,10 +151,11 @@ final class UnifiedProviderCatalogModel: ObservableObject {
       .map { provider in
         let id = UnifiedProviderID.api(provider.id)
         let isEnabled = apiKeyEnabledSet.contains(provider.id)
-        let available = !(reroute3P && !proxyRunning)
-        let hint = availabilityHintForAPIKey(proxyRunning: proxyRunning, reroute3P: reroute3P)
+        // Provider is available if proxy is running (all providers use Auto-Proxy mode)
+        let available = proxyRunning
+        let hint = availabilityHintForAPIKey(proxyRunning: proxyRunning)
         kinds[id] = .apiKey
-        if reroute3P && proxyRunning && isEnabled {
+        if proxyRunning && isEnabled {
           // Try multiple label variations to match models from CLIProxyAPI
           // CLIProxyAPI uses provider.name ?? provider.id as the name in config.yaml
           let providerName = provider.name ?? provider.id
@@ -201,47 +211,63 @@ final class UnifiedProviderCatalogModel: ObservableObject {
       )
     }
 
-    // Add auto-proxy models: all models from CLI Proxy API (only from enabled providers)
-    if proxyRunning && (rerouteBuiltIn || reroute3P) {
+    // Add auto-proxy models: all models from CLI Proxy API
+    // For auto-proxy mode, show all available models regardless of reroute/enabled settings
+    // This allows users to see and select models even if they haven't configured reroute yet
+    if proxyRunning {
       var allProxyModels = Set<String>()
-      // Collect OAuth provider models (only from enabled providers)
+
+      // Collect all OAuth provider models (only from enabled accounts)
+      // Check if any account of this provider is enabled
       for provider in LocalAuthProvider.allCases {
-        if oauthEnabledSet.contains(provider.rawValue) {
-          let providerBaseId = UnifiedProviderID.oauth(provider, accountId: nil)
-          if let models = mapped.builtIn[providerBaseId] {
+        let providerBaseId = UnifiedProviderID.oauth(provider, accountId: nil)
+        if let models = mapped.builtIn[providerBaseId], !models.isEmpty {
+          // Check if any account of this provider is enabled
+          let providerAccounts = oauthAccounts.filter { $0.provider == provider }
+          let hasEnabledAccount = providerAccounts.contains { oauthAccountsEnabledSet.contains($0.id) }
+          if hasEnabledAccount {
             allProxyModels.formUnion(models)
           }
         }
       }
-      // Collect API key provider models (only from enabled providers)
-      for provider in providers {
-        if apiKeyEnabledSet.contains(provider.id) {
-          let providerName = provider.name ?? provider.id
-          let displayName = UnifiedProviderID.providerDisplayName(provider)
-          // Try multiple label variations
-          let normalizedDisplayName = normalizeLabel(displayName)
-          let normalizedName = normalizeLabel(providerName)
-          let normalizedId = normalizeLabel(provider.id)
 
-          if let models = mapped.rerouted[normalizedDisplayName] {
-            allProxyModels.formUnion(models)
-          } else if let models = mapped.rerouted[normalizedName] {
-            allProxyModels.formUnion(models)
-          } else if let models = mapped.rerouted[normalizedId] {
-            allProxyModels.formUnion(models)
-          } else {
-            // Try fuzzy matching
-            for (key, modelList) in mapped.rerouted {
-              if key.contains(normalizedName) || normalizedName.contains(key) ||
-                 key.contains(normalizedDisplayName) || normalizedDisplayName.contains(key) {
-                allProxyModels.formUnion(modelList)
-              }
+      // Collect all API key provider models (only from enabled providers)
+      for provider in providers {
+        let providerName = provider.name ?? provider.id
+        let displayName = UnifiedProviderID.providerDisplayName(provider)
+        // Try multiple label variations
+        let normalizedDisplayName = normalizeLabel(displayName)
+        let normalizedName = normalizeLabel(providerName)
+        let normalizedId = normalizeLabel(provider.id)
+
+        var foundModels: [String] = []
+        if let models = mapped.rerouted[normalizedDisplayName] {
+          foundModels = models
+        } else if let models = mapped.rerouted[normalizedName] {
+          foundModels = models
+        } else if let models = mapped.rerouted[normalizedId] {
+          foundModels = models
+        } else {
+          // Try fuzzy matching
+          for (key, modelList) in mapped.rerouted {
+            if key.contains(normalizedName) || normalizedName.contains(key) ||
+               key.contains(normalizedDisplayName) || normalizedDisplayName.contains(key) {
+              foundModels.append(contentsOf: modelList)
             }
           }
         }
+        if !foundModels.isEmpty && apiKeyEnabledSet.contains(provider.id) {
+          allProxyModels.formUnion(foundModels)
+        }
       }
-      nextModels[UnifiedProviderID.autoProxyId] = sortModels(Array(allProxyModels))
+
+      // Only include models from enabled providers - do not include models from disabled providers
+      // This prevents showing models from providers that users have explicitly disabled
+      let sortedModels = sortModels(Array(allProxyModels))
+      AppLogger.shared.info("Auto-proxy: \(sortedModels.count) models (from enabled providers only)", source: "ProviderCatalog")
+      nextModels[UnifiedProviderID.autoProxyId] = sortedModels
     } else {
+      AppLogger.shared.warning("Auto-proxy models empty: CLIProxy not running", source: "ProviderCatalog")
       nextModels[UnifiedProviderID.autoProxyId] = []
     }
 
@@ -249,6 +275,9 @@ final class UnifiedProviderCatalogModel: ObservableObject {
     modelsByProviderId = nextModels
     availabilityByProviderId = availability
     kindByProviderId = kinds
+
+    let autoProxyCount = nextModels[UnifiedProviderID.autoProxyId]?.count ?? 0
+    AppLogger.shared.endTask(taskToken, message: "Catalog reloaded: \(nextSections.count) sections, auto-proxy=\(autoProxyCount) models", source: "ProviderCatalog")
   }
 
   func normalizeProviderId(_ raw: String?) -> String? {
@@ -408,7 +437,9 @@ final class UnifiedProviderCatalogModel: ObservableObject {
         modelToProvider[model.id] = id
         continue
       }
-      guard let label = rerouteProviderLabel(for: model) else { continue }
+      guard let label = rerouteProviderLabel(for: model) else {
+        continue
+      }
       let key = normalizeLabel(label)
       var list = rerouted[key] ?? []
       if !list.contains(model.id) { list.append(model.id) }
@@ -444,6 +475,7 @@ final class UnifiedProviderCatalogModel: ObservableObject {
     modelToProviderMap = modelToProvider
     // Store rerouted models by label for fallback inference
     reroutedModelsByLabel = rerouted
+
     return LocalModelMap(builtIn: builtIn, rerouted: rerouted)
   }
 
@@ -492,19 +524,15 @@ final class UnifiedProviderCatalogModel: ObservableObject {
 
   private func availabilityHintForOAuth(
     proxyRunning: Bool,
-    rerouteBuiltIn: Bool,
     oauthEnabled: Bool,
     authAvailable: Bool,
     providerName: String
   ) -> String? {
-    if !rerouteBuiltIn {
-      return "Enable ReRoute for OAuth providers in Providers → ReRoute Control."
-    }
     if !proxyRunning {
-      return "CLI Proxy API isn't running. Start it in Providers → ReRoute Control."
+      return "CLI Proxy API isn't running. Start it in Providers → CLI Proxy API."
     }
     if !oauthEnabled {
-      return "Enable OAuth providers in Providers to use this option."
+      return "Enable this provider in Providers to use this option."
     }
     if !authAvailable {
       return "Sign in to \(providerName) in Providers to use this option."
@@ -512,9 +540,9 @@ final class UnifiedProviderCatalogModel: ObservableObject {
     return nil
   }
 
-  private func availabilityHintForAPIKey(proxyRunning: Bool, reroute3P: Bool) -> String? {
-    if reroute3P && !proxyRunning {
-      return "CLI Proxy API isn't running. Start it in Providers → ReRoute Control."
+  private func availabilityHintForAPIKey(proxyRunning: Bool) -> String? {
+    if !proxyRunning {
+      return "CLI Proxy API isn't running. Start it in Providers → CLI Proxy API."
     }
     return nil
   }

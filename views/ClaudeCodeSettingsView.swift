@@ -61,12 +61,7 @@ struct ClaudeCodeSettingsView: View {
             await vm.loadProxyDefaults(preferences: preferences)
             await reloadProxyCatalog()
         }
-        .onChange(of: preferences.localServerReroute) { _ in
-            Task { await reloadProxyCatalog() }
-        }
-        .onChange(of: preferences.localServerReroute3P) { _ in
-            Task { await reloadProxyCatalog() }
-        }
+        // Removed rerouteBuiltIn/reroute3P onChange handlers - all providers now use Auto-Proxy mode
         .onChange(of: preferences.oauthProvidersEnabled) { _ in
             Task { await reloadProxyCatalog() }
         }
@@ -521,12 +516,44 @@ struct ClaudeCodeSettingsView: View {
 
     private func selectModel(from models: [String], tokens: [String]) -> String? {
         guard !models.isEmpty else { return nil }
+
+        // Find all models matching any token, then select the one with highest version
+        var candidates: [String] = []
         for token in tokens {
-            if let match = models.first(where: { $0.localizedCaseInsensitiveContains(token) }) {
-                return match
+            let matching = models.filter { $0.localizedCaseInsensitiveContains(token) }
+            candidates.append(contentsOf: matching)
+        }
+
+        guard !candidates.isEmpty else { return nil }
+
+        // Use ModelNameSanitizer's version comparison logic to find the highest version
+        // For each token category (opus, sonnet, haiku), select the model with the latest version
+        var bestModel: String? = nil
+        var bestVersion: ModelNameSanitizer.ModelVersion? = nil
+
+        for model in candidates {
+            let (baseName, version) = ModelNameSanitizer.extractModelVersion(model)
+
+            // Check if this model's base name matches any token
+            let matchesToken = tokens.contains { token in
+                baseName.localizedCaseInsensitiveContains(token)
+            }
+
+            if matchesToken {
+                if let existing = bestVersion {
+                    if version.isNewerThan(existing) {
+                        bestVersion = version
+                        bestModel = model
+                    }
+                } else {
+                    bestVersion = version
+                    bestModel = model
+                }
             }
         }
-        return nil
+
+        // If no version-based match found, fall back to first match (for models without date suffixes)
+        return bestModel ?? candidates.first
     }
 
     // aliasPicker removed

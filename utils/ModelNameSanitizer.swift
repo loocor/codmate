@@ -73,13 +73,55 @@ struct ModelNameSanitizer {
         return baseName
     }
 
+    /// Extracts base name and version from a model name (public helper for version comparison)
+    ///
+    /// - Parameter model: Model name to process
+    /// - Returns: Tuple of (base name, version info)
+    static func extractModelVersion(_ model: String) -> (baseName: String, version: ModelVersion) {
+        let cleaned = removeProviderPrefix(model)
+        return extractBaseNameAndVersion(cleaned)
+    }
+
+    /// Represents version information extracted from a model name (public for comparison)
+    struct ModelVersion {
+        let originalName: String
+        let dateString: String?
+        let format: DateFormat?
+
+        enum DateFormat {
+            case yyyyMMdd
+            case yyyyMM
+        }
+
+        /// Compares if this version is newer than another version
+        func isNewerThan(_ other: ModelVersion) -> Bool {
+            // If both have dates, compare them
+            if let myDate = dateString, let otherDate = other.dateString {
+                return myDate > otherDate
+            }
+
+            // If only this version has a date, it's considered newer
+            if dateString != nil && other.dateString == nil {
+                return true
+            }
+
+            // If only the other version has a date, it's considered newer
+            if dateString == nil && other.dateString != nil {
+                return false
+            }
+
+            // If neither has a date, compare original names lexicographically
+            return originalName > other.originalName
+        }
+    }
+
     /// Removes provider prefix from a model name.
     ///
     /// Example: "anthropic/claude-3-5-sonnet-20241022" -> "claude-3-5-sonnet-20241022"
     ///
     /// - Parameter model: Model name with potential provider prefix
     /// - Returns: Model name without provider prefix
-    private static func removeProviderPrefix(_ model: String) -> String {
+    static func removeProviderPrefix(_ model: String) -> String {
         for prefix in providerPrefixes {
             if model.hasPrefix(prefix) {
                 return String(model.dropFirst(prefix.count))
@@ -124,38 +166,5 @@ struct ModelNameSanitizer {
 
         // No date pattern found, return as-is
         return (model, ModelVersion(originalName: model, dateString: nil, format: nil))
-    }
-
-    /// Represents version information extracted from a model name
-    private struct ModelVersion {
-        let originalName: String
-        let dateString: String?
-        let format: DateFormat?
-
-        enum DateFormat {
-            case yyyyMMdd
-            case yyyyMM
-        }
-
-        /// Compares if this version is newer than another version
-        func isNewerThan(_ other: ModelVersion) -> Bool {
-            // If both have dates, compare them
-            if let myDate = dateString, let otherDate = other.dateString {
-                return myDate > otherDate
-            }
-
-            // If only this version has a date, it's considered newer
-            if dateString != nil && other.dateString == nil {
-                return true
-            }
-
-            // If only the other version has a date, it's considered newer
-            if dateString == nil && other.dateString != nil {
-                return false
-            }
-
-            // If neither has a date, compare original names lexicographically
-            return originalName > other.originalName
-        }
     }
 }

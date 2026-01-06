@@ -114,9 +114,9 @@ actor LLMHTTPService {
         preferred: PreferredEngine,
         providerId: String?
     ) -> (provider: ProvidersRegistryService.Provider, connector: ProvidersRegistryService.Connector, baseURL: String, headers: [String:String], consumerKey: String)? {
-        let defaults = UserDefaults.standard
-        let rerouteBuiltIn = defaults.bool(forKey: "codmate.localserver.reroute")
-        let reroute3P = defaults.bool(forKey: "codmate.localserver.reroute3p")
+        // All providers now use Auto-Proxy mode through CLIProxyAPI
+        // OAuth providers require separate authorization through CLIProxyAPI (isolated from main CLI auth)
+        // API key providers also route through CLIProxyAPI for unified model access
 
         var parsedSelection = providerId.map { UnifiedProviderID.parse($0) }
         if case .unknown(let raw) = parsedSelection,
@@ -130,6 +130,7 @@ actor LLMHTTPService {
 
         switch parsedSelection {
         case .oauth(let auth, _):
+            // OAuth providers always route through CLIProxyAPI (requires separate authorization)
             builtinProvider = Self.builtinProvider(for: auth)
         case .api(let id):
             effectiveProviderId = id
@@ -138,19 +139,12 @@ actor LLMHTTPService {
         case .legacyReroute(let label):
             legacyRerouteLabel = label
         case .autoProxy:
-            // Auto proxy mode: use CLI Proxy API for routing (similar to nil/default)
+            // Auto proxy mode: use CLI Proxy API for routing
             break
         case .unknown(let value):
             effectiveProviderId = value
         case .none:
             break
-        }
-
-        if builtinProvider != nil && !rerouteBuiltIn {
-            builtinProvider = nil
-        }
-        if legacyRerouteLabel != nil && !reroute3P {
-            legacyRerouteLabel = nil
         }
 
         // Handle legacy CLI Proxy reroute providers selection (local-reroute:*)
@@ -175,7 +169,7 @@ actor LLMHTTPService {
             return (vProvider, vConnector, base, headers, "internal")
         }
 
-        // Handle built-in OAuth providers selection (oauth:*)
+        // Handle OAuth providers selection (oauth:*) - always route through CLIProxyAPI
         if let builtin = builtinProvider {
             let port = Self.localServerPort()
             let base = "http://127.0.0.1:\(port)/v1"
@@ -203,34 +197,6 @@ actor LLMHTTPService {
                 headers["Authorization"] = key.hasPrefix("Bearer ") ? key : "Bearer \(key)"
             }
             return (vProvider, vConnector, base, headers, "internal")
-        }
-
-        // Check if providerId refers to a user-added 3P provider
-        let is3PProvider = effectiveProviderId != nil && reg.providers.contains(where: { $0.id == effectiveProviderId })
-
-        // If local proxy is enabled for built-in providers AND no specific 3P provider is selected
-        // (i.e., this is for internal AI features using built-in capabilities)
-        if rerouteBuiltIn && !is3PProvider {
-            let port = defaults.integer(forKey: "codmate.localserver.port")
-            let pPort = port > 0 ? port : 8080
-
-            // Create a virtual provider/connector for the local proxy
-            let vConnector = ProvidersRegistryService.Connector(
-                baseURL: "http://127.0.0.1:\(pPort)/v1",
-                wireAPI: "chat"
-            )
-            let vProvider = ProvidersRegistryService.Provider(
-                id: "local-proxy-builtin",
-                name: "Local AI Server (Built-in)",
-                class: "openai-compatible",
-                managedByCodMate: true,
-                connectors: ["internal": vConnector]
-            )
-            var headers: [String:String] = [:]
-            if let key = Self.loadLocalServerAPIKey(), !key.isEmpty {
-                headers["Authorization"] = key.hasPrefix("Bearer ") ? key : "Bearer \(key)"
-            }
-            return (vProvider, vConnector, vConnector.baseURL!, headers, "internal")
         }
 
         func resolve(_ consumer: ProvidersRegistryService.Consumer, scopedProvider: ProvidersRegistryService.Provider? = nil) -> (ProvidersRegistryService.Provider, ProvidersRegistryService.Connector, String, [String:String], String)? {
@@ -279,16 +245,17 @@ actor LLMHTTPService {
 
         guard let resolved = result else { return nil }
 
-        // Check if we need to reroute 3P providers through local proxy
+        // All API key providers managed by CodMate route through CLIProxyAPI
+        // This provides unified model access and matches the Auto-Proxy model list
         let (provider, _, _, _, _) = resolved
 
-        if reroute3P && provider.managedByCodMate == true {
-            // This is a third-party provider managed by CodMate, reroute through local proxy
-            let port = defaults.integer(forKey: "codmate.localserver.port")
-            let pPort = port > 0 ? port : 8080
+        if provider.managedByCodMate == true {
+            // Route through CLIProxyAPI for unified access
+            let port = Self.localServerPort()
+            let base = "http://127.0.0.1:\(port)/v1"
 
             let vConnector = ProvidersRegistryService.Connector(
-                baseURL: "http://127.0.0.1:\(pPort)/v1",
+                baseURL: base,
                 wireAPI: "chat"
             )
             // Keep original provider info for model selection
@@ -300,7 +267,7 @@ actor LLMHTTPService {
                 proxyHeaders["Authorization"] = key.hasPrefix("Bearer ") ? key : "Bearer \(key)"
             }
 
-            return (reroutedProvider, vConnector, vConnector.baseURL!, proxyHeaders, "internal")
+            return (reroutedProvider, vConnector, base, proxyHeaders, "internal")
         }
 
         return resolved

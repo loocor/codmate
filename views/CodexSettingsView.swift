@@ -73,12 +73,7 @@ struct CodexSettingsView: View {
             await codexVM.loadProxyDefaults(preferences: preferences)
             await reloadProxyCatalog()
         }
-        .onChange(of: preferences.localServerReroute) { _ in
-            Task { await reloadProxyCatalog() }
-        }
-        .onChange(of: preferences.localServerReroute3P) { _ in
-            Task { await reloadProxyCatalog() }
-        }
+        // Removed rerouteBuiltIn/reroute3P onChange handlers - all providers now use Auto-Proxy mode
         .onChange(of: preferences.oauthProvidersEnabled) { _ in
             Task { await reloadProxyCatalog() }
         }
