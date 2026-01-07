@@ -10,26 +10,37 @@ enum MCPImportService {
   private static let codmateBegin = "# codmate-mcp begin"
   private static let codmateEnd = "# codmate-mcp end"
 
-  static func scan(scope: ExtensionsImportScope, fileManager: FileManager = .default) -> [MCPImportCandidate] {
+  static func scan(scope: ExtensionsImportScope, fileManager: FileManager = .default)
+    -> [MCPImportCandidate]
+  {
     let sources: [SourceDescriptor]
     switch scope {
     case .home:
       let home = SessionPreferencesStore.getRealUserHomeURL()
       sources = [
-        SourceDescriptor(label: "Codex", url: home.appendingPathComponent(".codex", isDirectory: true)
-          .appendingPathComponent("config.toml", isDirectory: false), loader: {
+        SourceDescriptor(
+          label: "Codex",
+          url: home.appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("config.toml", isDirectory: false),
+          loader: {
             let url = home.appendingPathComponent(".codex", isDirectory: true)
               .appendingPathComponent("config.toml", isDirectory: false)
             return readText(url: url, fileManager: fileManager).map(stripCodMateManagedBlock)
           }),
-        SourceDescriptor(label: "Claude", url: home.appendingPathComponent(".claude", isDirectory: true)
-          .appendingPathComponent("settings.json", isDirectory: false), loader: {
+        SourceDescriptor(
+          label: "Claude",
+          url: home.appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("settings.json", isDirectory: false),
+          loader: {
             let url = home.appendingPathComponent(".claude", isDirectory: true)
               .appendingPathComponent("settings.json", isDirectory: false)
             return readMCPServersJSON(url: url, fileManager: fileManager)
           }),
-        SourceDescriptor(label: "Gemini", url: home.appendingPathComponent(".gemini", isDirectory: true)
-          .appendingPathComponent("settings.json", isDirectory: false), loader: {
+        SourceDescriptor(
+          label: "Gemini",
+          url: home.appendingPathComponent(".gemini", isDirectory: true)
+            .appendingPathComponent("settings.json", isDirectory: false),
+          loader: {
             let url = home.appendingPathComponent(".gemini", isDirectory: true)
               .appendingPathComponent("settings.json", isDirectory: false)
             return readMCPServersJSON(url: url, fileManager: fileManager)
@@ -37,20 +48,38 @@ enum MCPImportService {
       ]
     case .project(let directory):
       sources = [
-        SourceDescriptor(label: "Codex", url: directory.appendingPathComponent(".codex", isDirectory: true)
-          .appendingPathComponent("config.toml", isDirectory: false), loader: {
+        SourceDescriptor(
+          label: "Codex",
+          url: directory.appendingPathComponent(".codex", isDirectory: true)
+            .appendingPathComponent("config.toml", isDirectory: false),
+          loader: {
             let url = directory.appendingPathComponent(".codex", isDirectory: true)
               .appendingPathComponent("config.toml", isDirectory: false)
             return readText(url: url, fileManager: fileManager).map(stripCodMateManagedBlock)
           }),
-        SourceDescriptor(label: "Claude", url: directory.appendingPathComponent(".claude", isDirectory: true)
-          .appendingPathComponent(".mcp.json", isDirectory: false), loader: {
+        // Claude Code official path: project_root/.mcp.json
+        SourceDescriptor(
+          label: "Claude",
+          url: directory.appendingPathComponent(".mcp.json", isDirectory: false),
+          loader: {
+            let url = directory.appendingPathComponent(".mcp.json", isDirectory: false)
+            return readMCPServersJSON(url: url, fileManager: fileManager)
+          }),
+        // CodMate legacy path: project_root/.claude/.mcp.json (for backward compatibility)
+        SourceDescriptor(
+          label: "Claude",
+          url: directory.appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent(".mcp.json", isDirectory: false),
+          loader: {
             let url = directory.appendingPathComponent(".claude", isDirectory: true)
               .appendingPathComponent(".mcp.json", isDirectory: false)
             return readMCPServersJSON(url: url, fileManager: fileManager)
           }),
-        SourceDescriptor(label: "Gemini", url: directory.appendingPathComponent(".gemini", isDirectory: true)
-          .appendingPathComponent("settings.json", isDirectory: false), loader: {
+        SourceDescriptor(
+          label: "Gemini",
+          url: directory.appendingPathComponent(".gemini", isDirectory: true)
+            .appendingPathComponent("settings.json", isDirectory: false),
+          loader: {
             let url = directory.appendingPathComponent(".gemini", isDirectory: true)
               .appendingPathComponent("settings.json", isDirectory: false)
             return readMCPServersJSON(url: url, fileManager: fileManager)
@@ -72,7 +101,8 @@ enum MCPImportService {
         let name = (draft.name ?? "imported-server").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { continue }
 
-        let signature = normalizeSignature(name: name, kind: draft.kind, command: draft.command, url: draft.url, args: draft.args)
+        let signature = normalizeSignature(
+          name: name, kind: draft.kind, command: draft.command, url: draft.url, args: draft.args)
         if var existing = map[signature] {
           if !existing.sources.contains(source.label) {
             existing.sources.append(source.label)
@@ -107,7 +137,9 @@ enum MCPImportService {
       byName[candidate.name, default: []].append(candidate.signature)
     }
 
-    var out = map.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    var out = map.values.sorted {
+      $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+    }
     for idx in out.indices {
       if let signatures = byName[out[idx].name], signatures.count > 1 {
         out[idx].hasNameCollision = true
@@ -144,7 +176,9 @@ enum MCPImportService {
     let normName = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let normCommand = (command ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let normURL = (url ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let normArgs = (args ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.sorted().joined(separator: "|")
+    let normArgs = (args ?? []).map {
+      $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }.sorted().joined(separator: "|")
     return "\(normName)|\(kind.rawValue)|\(normCommand)|\(normURL)|\(normArgs)"
   }
 
@@ -156,15 +190,22 @@ enum MCPImportService {
   private static func readMCPServersJSON(url: URL, fileManager: FileManager) -> String? {
     guard fileManager.fileExists(atPath: url.path) else { return nil }
     guard let data = try? Data(contentsOf: url) else { return nil }
-    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return nil
+    }
     guard let mcpServers = json["mcpServers"] as? [String: Any] else { return nil }
     let payload: [String: Any] = ["mcpServers": mcpServers]
-    guard let out = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .withoutEscapingSlashes]) else { return nil }
+    guard
+      let out = try? JSONSerialization.data(
+        withJSONObject: payload, options: [.prettyPrinted, .withoutEscapingSlashes])
+    else { return nil }
     return String(data: out, encoding: .utf8)
   }
 
   private static func stripCodMateManagedBlock(_ text: String) -> String {
-    guard let begin = text.range(of: codmateBegin), let end = text.range(of: codmateEnd) else { return text }
+    guard let begin = text.range(of: codmateBegin), let end = text.range(of: codmateEnd) else {
+      return text
+    }
     var updated = text
     updated.removeSubrange(begin.lowerBound..<end.upperBound)
     return updated

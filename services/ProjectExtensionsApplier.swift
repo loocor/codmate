@@ -37,16 +37,26 @@ actor ProjectExtensionsApplier {
       try? await service.applyMCPServers(codexServers)
     }
 
+    // Claude Code official path: project_root/.mcp.json
+    let claudeRootFile = projectDirectory.appendingPathComponent(".mcp.json", isDirectory: false)
+    // CodMate legacy path: project_root/.claude/.mcp.json (for backward compatibility)
+    let claudeLegacyDir = projectDirectory.appendingPathComponent(".claude", isDirectory: true)
+    let claudeLegacyFile = claudeLegacyDir.appendingPathComponent(".mcp.json", isDirectory: false)
+
     if !claudeServers.isEmpty {
-      let claudeDir = projectDirectory.appendingPathComponent(".claude", isDirectory: true)
-      try? fm.createDirectory(at: claudeDir, withIntermediateDirectories: true)
-      let file = claudeDir.appendingPathComponent(".mcp.json", isDirectory: false)
-      writeClaudeMCPFile(servers: claudeServers, file: file)
+      // Write to Claude Code official path (project root)
+      writeClaudeMCPFile(servers: claudeServers, file: claudeRootFile)
+      // Remove legacy file if it exists to avoid conflicts
+      if fm.fileExists(atPath: claudeLegacyFile.path) {
+        try? fm.removeItem(at: claudeLegacyFile)
+      }
     } else {
-      let claudeDir = projectDirectory.appendingPathComponent(".claude", isDirectory: true)
-      let file = claudeDir.appendingPathComponent(".mcp.json", isDirectory: false)
-      if fm.fileExists(atPath: file.path) {
-        try? fm.removeItem(at: file)
+      // Remove both files when clearing
+      if fm.fileExists(atPath: claudeRootFile.path) {
+        try? fm.removeItem(at: claudeRootFile)
+      }
+      if fm.fileExists(atPath: claudeLegacyFile.path) {
+        try? fm.removeItem(at: claudeLegacyFile)
       }
     }
 
@@ -98,7 +108,9 @@ actor ProjectExtensionsApplier {
       mcpServers[server.name] = config
     }
     obj["mcpServers"] = mcpServers
-    if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .withoutEscapingSlashes]) {
+    if let data = try? JSONSerialization.data(
+      withJSONObject: obj, options: [.prettyPrinted, .withoutEscapingSlashes])
+    {
       try? data.write(to: file, options: .atomic)
     }
   }
