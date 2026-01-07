@@ -281,25 +281,21 @@ struct ClaudeModelMappingSheet: View {
   }
 
   private func providerIcon(for providerId: String?, title: String, modelId: String? = nil) -> Image? {
-    // If providerId is nil (autoProxy mode), try to infer from modelId
+    // If providerId is nil (autoProxy mode), infer icon from title (service provider name)
     if providerId == nil || providerId == UnifiedProviderID.autoProxyId {
-      if let modelId = modelId, let builtin = LocalServerBuiltInProvider.allCases.first(where: { $0.matchesModelId(modelId) }) {
-        let authProvider = UnifiedProviderID.authProvider(for: builtin)
-        if let authProvider = authProvider {
-          let iconName = iconNameForOAuthProvider(authProvider)
-          if let nsImage = ProviderIconThemeHelper.menuImage(named: iconName, size: NSSize(width: 14, height: 14)) {
-            return Image(nsImage: nsImage)
-          }
-        }
-      }
-      // Try to match by title
+      // Priority 1: Try OAuth provider icon by title
       if let authProvider = LocalAuthProvider.allCases.first(where: { $0.displayName == title }) {
         let iconName = iconNameForOAuthProvider(authProvider)
         if let nsImage = ProviderIconThemeHelper.menuImage(named: iconName, size: NSSize(width: 14, height: 14)) {
           return Image(nsImage: nsImage)
         }
       }
-      // Try API key provider icon
+      // Priority 2: Try API key provider icon by title (check customIcon first)
+      // Try to find provider by title to check for customIcon
+      if let provider = findProviderByTitle(title), let customIcon = provider.customIcon {
+        return Image(systemName: customIcon)
+      }
+      // Priority 3: Try preset PNG icon
       if let iconName = ProviderIconResource.iconName(for: title),
          let nsImage = ProviderIconResource.processedImage(
            named: iconName,
@@ -308,6 +304,7 @@ struct ClaudeModelMappingSheet: View {
          ) {
         return Image(nsImage: nsImage)
       }
+      // No fallback - if title doesn't match any known provider, return nil (shows default circle)
       return nil
     }
 
@@ -320,6 +317,11 @@ struct ClaudeModelMappingSheet: View {
       }
       return nil
     case .api(let apiId):
+      // Priority 1: Check for custom SF Symbol icon
+      if let provider = findProviderById(apiId), let customIcon = provider.customIcon {
+        return Image(systemName: customIcon)
+      }
+      // Priority 2: Try preset PNG icon
       if let iconName = ProviderIconResource.iconName(for: apiId) ?? ProviderIconResource.iconName(for: title),
          let nsImage = ProviderIconResource.processedImage(
            named: iconName,
@@ -332,6 +334,25 @@ struct ClaudeModelMappingSheet: View {
     default:
       return nil
     }
+  }
+
+  // Helper to find provider by ID from registry
+  private func findProviderById(_ id: String) -> ProvidersRegistryService.Provider? {
+    let registry = ProvidersRegistryService()
+    // Use synchronous load() instead of async listProviders() to avoid actor isolation warnings
+    let loadedRegistry = registry.load()
+    return loadedRegistry.providers.first(where: { $0.id == id })
+  }
+
+  // Helper to find provider by title/name from registry
+  private func findProviderByTitle(_ title: String) -> ProvidersRegistryService.Provider? {
+    let registry = ProvidersRegistryService()
+    // Use synchronous load() instead of async listProviders() to avoid actor isolation warnings
+    let loadedRegistry = registry.load()
+    return loadedRegistry.providers.first(where: { provider in
+      let displayName = UnifiedProviderID.providerDisplayName(provider)
+      return displayName == title || provider.name == title || provider.id == title
+    })
   }
 
   private func iconNameForOAuthProvider(_ provider: LocalAuthProvider) -> String {

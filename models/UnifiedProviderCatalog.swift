@@ -188,12 +188,9 @@ final class UnifiedProviderCatalogModel: ObservableObject {
             }
           }
           nextModels[id] = sortModels(Array(Set(models)))
-        } else if isEnabled {
-          // Provider is enabled but not using reroute, use catalog models
-          let ids = (provider.catalog?.models ?? []).map { $0.vendorModelId }
-          nextModels[id] = sortModels(ids)
         } else {
-          // Provider is disabled, no models
+          // Provider is enabled but CLIProxyAPI not running or no models returned
+          // Do not fallback to catalog - only show models actually available via CLIProxyAPI
           nextModels[id] = []
         }
         if !available, let hint { availability[id] = hint }
@@ -232,7 +229,11 @@ final class UnifiedProviderCatalogModel: ObservableObject {
       }
 
       // Collect all API key provider models (only from enabled providers)
+      AppLogger.shared.info("API key enabled providers: \(Array(apiKeyEnabledSet))", source: "ProviderCatalog")
+      AppLogger.shared.info("Rerouted model labels: \(Array(mapped.rerouted.keys))", source: "ProviderCatalog")
+
       for provider in providers {
+        let isEnabled = apiKeyEnabledSet.contains(provider.id)
         let providerName = provider.name ?? provider.id
         let displayName = UnifiedProviderID.providerDisplayName(provider)
         // Try multiple label variations
@@ -240,13 +241,19 @@ final class UnifiedProviderCatalogModel: ObservableObject {
         let normalizedName = normalizeLabel(providerName)
         let normalizedId = normalizeLabel(provider.id)
 
+        // Debug: log all attempts
+        AppLogger.shared.info("Provider \(provider.id): trying to match - displayName='\(normalizedDisplayName)', name='\(normalizedName)', id='\(normalizedId)'", source: "ProviderCatalog")
+
         var foundModels: [String] = []
         if let models = mapped.rerouted[normalizedDisplayName] {
           foundModels = models
+          AppLogger.shared.info("Provider \(provider.id): matched by displayName '\(normalizedDisplayName)' -> \(models.count) models", source: "ProviderCatalog")
         } else if let models = mapped.rerouted[normalizedName] {
           foundModels = models
+          AppLogger.shared.info("Provider \(provider.id): matched by name '\(normalizedName)' -> \(models.count) models", source: "ProviderCatalog")
         } else if let models = mapped.rerouted[normalizedId] {
           foundModels = models
+          AppLogger.shared.info("Provider \(provider.id): matched by id '\(normalizedId)' -> \(models.count) models", source: "ProviderCatalog")
         } else {
           // Try fuzzy matching
           for (key, modelList) in mapped.rerouted {
@@ -255,9 +262,20 @@ final class UnifiedProviderCatalogModel: ObservableObject {
               foundModels.append(contentsOf: modelList)
             }
           }
+          if !foundModels.isEmpty {
+            AppLogger.shared.info("Provider \(provider.id): matched by fuzzy -> \(foundModels.count) models", source: "ProviderCatalog")
+          }
         }
-        if !foundModels.isEmpty && apiKeyEnabledSet.contains(provider.id) {
-          allProxyModels.formUnion(foundModels)
+
+        if !foundModels.isEmpty {
+          if isEnabled {
+            allProxyModels.formUnion(foundModels)
+            AppLogger.shared.info("Provider \(provider.id): ADDED \(foundModels.count) models to auto-proxy (enabled)", source: "ProviderCatalog")
+          } else {
+            AppLogger.shared.info("Provider \(provider.id): SKIPPED \(foundModels.count) models (disabled)", source: "ProviderCatalog")
+          }
+        } else {
+          AppLogger.shared.warning("Provider \(provider.id) (\(providerName)): NO models matched from rerouted labels", source: "ProviderCatalog")
         }
       }
 
@@ -361,52 +379,20 @@ final class UnifiedProviderCatalogModel: ObservableObject {
   }
 
   /// Infer provider from model ID (useful when providerId is autoProxy)
-  /// Returns the OAuth provider display name (e.g., "Claude", "Codex", "Gemini") or nil
+  /// Returns the service provider display name (e.g., "AICodeWith", "OpenRouter") or OAuth provider name
   ///
-  /// This method uses a reliable mapping built from LocalModel metadata (provider/source/owned_by)
-  /// and falls back to pattern matching if the mapping is not available.
+  /// This method ONLY uses metadata (owned_by) - the single source of truth.
+  /// No fallback, no pattern matching. Only recognize service providers, not manufacturers.
   func inferProviderFromModel(_ modelId: String) -> String? {
-    // Priority 1: Try the reliable mapping built from LocalModel metadata
+    // Only use metadata mapping built from LocalModel.owned_by
     if let providerId = modelToProviderMap[modelId] {
-      return providerTitle(for: providerId)
+      let title = providerTitle(for: providerId)
+      AppLogger.shared.info("[inferProvider] '\(modelId)' → metadata: providerId=\(providerId), title=\(title ?? "nil")", source: "ProviderCatalog")
+      return title
     }
 
-    // Fallback 1: Try to match against built-in provider model patterns
-    // This is less reliable but works when we don't have LocalModel metadata
-    if let builtin = LocalServerBuiltInProvider.allCases.first(where: { $0.matchesModelId(modelId) }) {
-      // Return clean display name without "(OAuth)" suffix
-      switch builtin {
-      case .anthropic: return "Claude"
-      case .gemini: return "Gemini"
-      case .openai: return "Codex"
-      case .antigravity: return "Antigravity"
-      case .qwen: return "Qwen Code"
-      }
-    }
-
-    // Fallback 2: Try to find in API key providers by checking if model belongs to any provider's catalog
-    for provider in registryProviders {
-      if let catalog = provider.catalog,
-         let models = catalog.models,
-         models.contains(where: { $0.vendorModelId == modelId }) {
-        return UnifiedProviderID.providerDisplayName(provider)
-      }
-    }
-
-    // Fallback 3: Check rerouted models by label (for openai-compatibility providers configured directly in CLIProxyAPI)
-    // This handles cases where providers are configured in CLIProxyAPI but not in CodMate's providers.json
-    for (label, models) in reroutedModelsByLabel {
-      if models.contains(modelId) {
-        // Try to find provider by label first
-        if let apiProvider = findAPIProviderByLabel(label) {
-          return UnifiedProviderID.providerDisplayName(apiProvider)
-        }
-        // If not found, use the label as provider name (capitalize first letter)
-        let capitalized = label.prefix(1).uppercased() + label.dropFirst()
-        return capitalized
-      }
-    }
-
+    // No fallback - if model is not in metadata map, return nil
+    AppLogger.shared.warning("[inferProvider] '\(modelId)' → No metadata found, returning nil", source: "ProviderCatalog")
     return nil
   }
 
@@ -425,7 +411,18 @@ final class UnifiedProviderCatalogModel: ObservableObject {
       builtIn[UnifiedProviderID.oauth(provider)] = []
     }
 
+    AppLogger.shared.info("Mapping \(models.count) models from CLIProxyAPI", source: "ProviderCatalog")
+    var skippedModels: [(id: String, reason: String)] = []
+
     for model in models {
+      // Debug: Log all OAuth models metadata for comparison
+      if model.provider != nil || model.source != nil || model.owned_by != nil {
+        let providerVal = model.provider ?? "nil"
+        let sourceVal = model.source ?? "nil"
+        let ownedByVal = model.owned_by ?? "nil"
+        AppLogger.shared.info("[DEBUG] Model '\(model.id)' raw metadata: provider='\(providerVal)', source='\(sourceVal)', owned_by='\(ownedByVal)'", source: "ProviderCatalog")
+      }
+
       if let builtin = builtInProvider(for: model),
         let auth = UnifiedProviderID.authProvider(for: builtin)
       {
@@ -435,12 +432,18 @@ final class UnifiedProviderCatalogModel: ObservableObject {
         builtIn[id] = list
         // Map model to provider for reliable inference
         modelToProvider[model.id] = id
+        AppLogger.shared.info("Model '\(model.id)' → builtIn(\(builtin.rawValue)) via metadata=[\(model.provider ?? "nil"), \(model.source ?? "nil"), \(model.owned_by ?? "nil")]", source: "ProviderCatalog")
         continue
       }
       guard let label = rerouteProviderLabel(for: model) else {
+        skippedModels.append((id: model.id, reason: "No label (provider=\(model.provider ?? "nil"), source=\(model.source ?? "nil"), owned_by=\(model.owned_by ?? "nil"))"))
         continue
       }
-      let key = normalizeLabel(label)
+      // Debug: log rerouted model details
+      let normalizedLabel = normalizeLabel(label)
+      AppLogger.shared.info("Model '\(model.id)' → rerouted['\(label)'] (normalized: '\(normalizedLabel)') via metadata=[\(model.provider ?? "nil"), \(model.source ?? "nil"), \(model.owned_by ?? "nil")]", source: "ProviderCatalog")
+
+      let key = normalizedLabel
       var list = rerouted[key] ?? []
       if !list.contains(model.id) { list.append(model.id) }
       rerouted[key] = list
@@ -476,6 +479,17 @@ final class UnifiedProviderCatalogModel: ObservableObject {
     // Store rerouted models by label for fallback inference
     reroutedModelsByLabel = rerouted
 
+    // Log skipped models for debugging
+    if !skippedModels.isEmpty {
+      AppLogger.shared.warning("Skipped \(skippedModels.count) models without provider labels:", source: "ProviderCatalog")
+      for (id, reason) in skippedModels.prefix(5) {
+        AppLogger.shared.warning("  - '\(id)': \(reason)", source: "ProviderCatalog")
+      }
+      if skippedModels.count > 5 {
+        AppLogger.shared.warning("  ... and \(skippedModels.count - 5) more", source: "ProviderCatalog")
+      }
+    }
+
     return LocalModelMap(builtIn: builtIn, rerouted: rerouted)
   }
 
@@ -499,6 +513,16 @@ final class UnifiedProviderCatalogModel: ObservableObject {
     {
       return provider
     }
+
+    // If owned_by is present but doesn't match any built-in provider,
+    // this is a third-party provider - don't do pattern matching on model ID
+    if let ownedBy = model.owned_by?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !ownedBy.isEmpty,
+       !LocalServerBuiltInProvider.allCases.contains(where: { $0.matchesOwnedBy(ownedBy) }) {
+      return nil
+    }
+
+    // Only do pattern matching if owned_by is nil or matched a built-in provider
     let modelId = model.id
     if let provider = LocalServerBuiltInProvider.allCases.first(where: { $0.matchesModelId(modelId) }) {
       return provider
@@ -507,7 +531,13 @@ final class UnifiedProviderCatalogModel: ObservableObject {
   }
 
   private func rerouteProviderLabel(for model: CLIProxyService.LocalModel) -> String? {
-    // Priority: provider > source > owned_by
+    // Priority 1: Use cached provider name from config.yaml (most reliable)
+    // This directly reads from our own config.yaml, no guessing needed
+    if let cachedName = CLIProxyService.shared.getProviderName(for: model.id) {
+      return cachedName
+    }
+
+    // Priority 2: Fall back to metadata fields (provider > source > owned_by)
     // CLIProxyAPI returns models with source field containing the provider name from config.yaml
     let hint = model.provider ?? model.source ?? model.owned_by
     let trimmed = hint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

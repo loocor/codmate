@@ -124,7 +124,9 @@ struct GitReviewSettingsView: View {
       Task { await reloadCatalog() }
     }
     .onChange(of: preferences.apiKeyProvidersEnabled) { _ in
-      Task { await reloadCatalog() }
+      Task {
+        await reloadCatalog(forceRefresh: true)
+      }
     }
     .onChange(of: CLIProxyService.shared.isRunning) { _ in
       Task { await reloadCatalog() }
