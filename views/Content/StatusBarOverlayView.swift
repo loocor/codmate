@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct StatusBarOverlayView: View {
   @ObservedObject var store: StatusBarLogStore
@@ -9,10 +10,19 @@ struct StatusBarOverlayView: View {
   @State private var draggedHeight: CGFloat? = nil
   @State private var filterText: String = ""
   @State private var filterLevel: StatusBarLogLevel? = nil  // nil = All
+  @State private var cachedFilteredEntries: [StatusBarLogEntry] = []
+  @State private var cacheKey: (filterText: String, filterLevel: StatusBarLogLevel?, entryCount: Int) = ("", nil, 0)
+  @State private var cachedCombinedText: AttributedString? = nil
+  @State private var cachedCombinedTextKey: Int = 0  // Use entry count + last entry ID hash as cache key
+  @State private var cachedEntryCount: Int = 0  // Track cached entry count for incremental updates
+  @State private var cachedFirstEntryId: UUID? = nil  // Track first entry ID for incremental update validation
+  @State private var cachedLastEntryId: UUID? = nil  // Track last entry ID for incremental update validation
 
   private let maxVisibleLines: Int = 160
   private let minExpandedHeight: CGFloat = 120
   private let maxExpandedHeight: CGFloat = 520
+  private let maxMessageLength: Int = 5000  // Truncate messages longer than this
+  private let truncationMarker = "… [truncated]"
 
   var body: some View {
     if preferences.statusBarVisibility != .hidden {
@@ -24,6 +34,15 @@ struct StatusBarOverlayView: View {
         }
         .onChange(of: preferences.statusBarVisibility) { newValue in
           store.setAutoCollapseEnabled(newValue == .auto)
+        }
+        .onChange(of: filterText) { _ in
+          invalidateCache()
+        }
+        .onChange(of: filterLevel) { _ in
+          invalidateCache()
+        }
+        .onChange(of: store.entries.count) { _ in
+          invalidateCache()
         }
     }
   }
@@ -55,6 +74,7 @@ struct StatusBarOverlayView: View {
         // Log content
         logList
           .frame(height: logListHeight)
+          .frame(maxWidth: .infinity, maxHeight: logListHeight)
           .background(Color(nsColor: .textBackgroundColor))
       } else {
         // Collapsed state - just show the title bar
@@ -127,6 +147,318 @@ struct StatusBarOverlayView: View {
           store.setInteracting(false)
         } : nil
     )
+  }
+  
+  // Custom NSTextView wrapper with custom context menu and full width
+  private struct LogTextView: NSViewRepresentable {
+    let text: AttributedString
+    let isEmpty: Bool
+    let onCopyAll: () -> Void
+    let onClear: () -> Void
+    let canCopy: Bool
+    let canClear: Bool
+    
+    func makeNSView(context: Context) -> NSScrollView {
+      let scrollView = NSScrollView()
+      scrollView.hasVerticalScroller = true
+      scrollView.hasHorizontalScroller = false
+      scrollView.borderType = .noBorder
+      scrollView.drawsBackground = false
+      scrollView.autohidesScrollers = true
+      scrollView.scrollerStyle = .overlay
+      
+      // Create text storage and layout manager
+      let textStorage = NSTextStorage()
+      let layoutManager = NSLayoutManager()
+      textStorage.addLayoutManager(layoutManager)
+      let textContainer = NSTextContainer()
+      textContainer.widthTracksTextView = true
+      textContainer.heightTracksTextView = false
+      // Set initial container size (will be updated after scrollView is configured)
+      textContainer.containerSize = NSSize(width: 400, height: CGFloat.greatestFiniteMagnitude)
+      layoutManager.addTextContainer(textContainer)
+      
+      let textView = LogNSTextView(frame: .zero, textContainer: textContainer)
+      textView.coordinator = context.coordinator
+      textView.isEditable = false
+      textView.isSelectable = true
+      textView.isRichText = false  // Use plain text to avoid formatting issues
+      textView.drawsBackground = false
+      textView.textContainerInset = NSSize(width: 10, height: 6)
+      textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+      textView.textColor = .labelColor
+      textView.autoresizingMask = [.width]
+      textView.isVerticallyResizable = true
+      textView.isHorizontallyResizable = false
+      textView.allowsUndo = false  // Disable undo to improve performance
+      textView.minSize = NSSize(width: 0, height: 0)
+      textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+      
+      // Set initial text (use simple string conversion to avoid crashes)
+      let textString = String(text.characters)
+      let initialString = NSMutableAttributedString(string: textString)
+      initialString.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: initialString.length))
+      initialString.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), range: NSRange(location: 0, length: initialString.length))
+      textStorage.setAttributedString(initialString)
+      
+      scrollView.documentView = textView
+      context.coordinator.textView = textView
+      context.coordinator.scrollView = scrollView
+      context.coordinator.textStorage = textStorage
+      context.coordinator.lastText = textString
+      
+      // Update container width after scrollView is set up
+      DispatchQueue.main.async {
+        let contentWidth = scrollView.contentSize.width
+        if contentWidth > 0 {
+          let padding: CGFloat = 20
+          let availableWidth = max(1, contentWidth - padding)
+          textContainer.containerSize = NSSize(width: availableWidth, height: CGFloat.greatestFiniteMagnitude)
+          layoutManager.ensureLayout(for: textContainer)
+        }
+        // Setup scroll observer after scrollView is fully configured
+        context.coordinator.setupScrollObserver()
+        // Initial check - assume at bottom initially
+        context.coordinator.isUserAtBottom = true
+      }
+      
+      return scrollView
+    }
+    
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+      // Safely check if view is still valid
+      guard nsView.window != nil else { return }
+      guard let textView = nsView.documentView as? LogNSTextView else { return }
+      
+      // Use coordinator's textStorage if available, otherwise fall back to textView's
+      guard let textStorage = context.coordinator.textStorage ?? textView.textStorage else {
+        return
+      }
+      
+      // Check if text actually changed to avoid unnecessary updates
+      let newTextString = String(text.characters)
+      guard context.coordinator.lastText != newTextString else {
+        // Text unchanged, just update menu if needed
+        textView.coordinator = context.coordinator
+        textView.customMenu = makeMenu(coordinator: context.coordinator)
+        return
+      }
+      
+      // Update text - use simple string conversion to avoid crashes
+      // Convert AttributedString to plain NSAttributedString with system colors
+      let simpleString = NSMutableAttributedString(string: newTextString)
+      simpleString.addAttribute(.foregroundColor, value: NSColor.labelColor, range: NSRange(location: 0, length: simpleString.length))
+      simpleString.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), range: NSRange(location: 0, length: simpleString.length))
+      let nsAttributedString = simpleString
+      
+      // Safely update text storage (only update if actually changed)
+      textStorage.beginEditing()
+      textStorage.setAttributedString(nsAttributedString)
+      textStorage.endEditing()
+      
+      context.coordinator.lastText = newTextString
+      
+      // Update menu (only once per text change)
+      textView.coordinator = context.coordinator
+      textView.customMenu = makeMenu(coordinator: context.coordinator)
+      
+      // Update text view width (only once, after text update, with debouncing)
+      // Use a small delay to avoid layout loops
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak nsView, weak textView] in
+        guard let scrollView = nsView, let tv = textView,
+              scrollView.window != nil, tv.window != nil,
+              !scrollView.isHidden else { return }
+        let contentWidth = scrollView.contentSize.width
+        guard contentWidth > 0 else { return }
+        let padding: CGFloat = 20
+        let availableWidth = max(1, contentWidth - padding)
+        if let container = tv.textContainer, let layoutMgr = tv.layoutManager {
+          // Only update if width actually changed to avoid loops
+          let currentWidth = container.containerSize.width
+          if abs(currentWidth - availableWidth) > 1.0 {
+            container.widthTracksTextView = true
+            container.containerSize = NSSize(width: availableWidth, height: CGFloat.greatestFiniteMagnitude)
+            // Force layout update to ensure scrolling works
+            layoutMgr.ensureLayout(for: container)
+            tv.needsDisplay = true
+          }
+        }
+      }
+      
+      // Auto-scroll to bottom if needed (only if user is at bottom, view is visible and not empty)
+      if !isEmpty && !nsView.isHidden && context.coordinator.isUserAtBottom {
+        let coordinator = context.coordinator
+        DispatchQueue.main.async { [weak nsView, weak coordinator] in
+          guard let scrollView = nsView,
+                let tv = scrollView.documentView as? LogNSTextView,
+                tv.window != nil,
+                let coord = coordinator,
+                coord.isUserAtBottom else { return }
+          tv.scrollToEndOfDocument(nil)
+          // Update scroll position after scrolling
+          coord.checkScrollPosition()
+        }
+      }
+    }
+    
+    
+    private func makeMenu(coordinator: Coordinator) -> NSMenu {
+      let menu = NSMenu()
+      
+      // Copy All Logs
+      let copyItem = NSMenuItem(
+        title: "Copy All Logs",
+        action: #selector(Coordinator.copyAll(_:)),
+        keyEquivalent: ""
+      )
+      copyItem.target = coordinator
+      copyItem.isEnabled = canCopy
+      copyItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: nil)
+      menu.addItem(copyItem)
+      
+      menu.addItem(.separator())
+      
+      // Clear Logs (destructive action - use red color)
+      let clearItem = NSMenuItem(
+        title: "Clear Logs",
+        action: #selector(Coordinator.clear(_:)),
+        keyEquivalent: ""
+      )
+      clearItem.target = coordinator
+      clearItem.isEnabled = canClear
+      clearItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)
+      let attributedTitle = NSMutableAttributedString(string: "Clear Logs")
+      attributedTitle.addAttribute(.foregroundColor, value: NSColor.systemRed, range: NSRange(location: 0, length: attributedTitle.length))
+      clearItem.attributedTitle = attributedTitle
+      menu.addItem(clearItem)
+      
+      return menu
+    }
+    
+    func makeCoordinator() -> Coordinator {
+      Coordinator(onCopyAll: onCopyAll, onClear: onClear)
+    }
+    
+    class Coordinator: NSObject {
+      let onCopyAll: () -> Void
+      let onClear: () -> Void
+      weak var textView: LogNSTextView?
+      weak var scrollView: NSScrollView?
+      var textStorage: NSTextStorage?
+      var lastText: String = ""
+      var isUserAtBottom: Bool = true  // Track if user is at bottom (auto-scroll only when true)
+      var scrollObserver: NSObjectProtocol?
+      
+      init(onCopyAll: @escaping () -> Void, onClear: @escaping () -> Void) {
+        self.onCopyAll = onCopyAll
+        self.onClear = onClear
+        super.init()
+      }
+      
+      deinit {
+        if let observer = scrollObserver {
+          NotificationCenter.default.removeObserver(observer)
+        }
+      }
+      
+      func checkScrollPosition() {
+        guard let scrollView = scrollView,
+              let textView = textView else { return }
+        
+        let clipView = scrollView.contentView
+        let offsetY = clipView.bounds.origin.y
+        let viewportHeight = clipView.bounds.height
+        let contentHeight = textView.bounds.height
+        let maxOffset = max(0, contentHeight - viewportHeight)
+        
+        // Check if user is at bottom (within 10pt threshold)
+        let isAtBottom = abs(offsetY - maxOffset) < 10
+        isUserAtBottom = isAtBottom
+      }
+      
+      func setupScrollObserver() {
+        guard scrollObserver == nil,
+              let scrollView = scrollView else { return }
+        
+        // Enable bounds change notifications
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        
+        // Observe scroll events to track user scroll position
+        scrollObserver = NotificationCenter.default.addObserver(
+          forName: NSView.boundsDidChangeNotification,
+          object: scrollView.contentView,
+          queue: .main
+        ) { [weak self] _ in
+          self?.checkScrollPosition()
+        }
+        
+        // Also observe live scroll events for more accurate tracking
+        NotificationCenter.default.addObserver(
+          forName: NSScrollView.willStartLiveScrollNotification,
+          object: scrollView,
+          queue: .main
+        ) { [weak self] _ in
+          self?.checkScrollPosition()
+        }
+        
+        NotificationCenter.default.addObserver(
+          forName: NSScrollView.didEndLiveScrollNotification,
+          object: scrollView,
+          queue: .main
+        ) { [weak self] _ in
+          self?.checkScrollPosition()
+        }
+      }
+      
+      @objc func copyAll(_ sender: Any?) {
+        onCopyAll()
+      }
+      
+      @objc func clear(_ sender: Any?) {
+        onClear()
+      }
+    }
+  }
+  
+  // Custom NSTextView that overrides menu to show custom context menu
+  private class LogNSTextView: NSTextView {
+    var coordinator: LogTextView.Coordinator?
+    var customMenu: NSMenu?
+    
+    override func menu(for event: NSEvent) -> NSMenu? {
+      // Return custom menu on right-click
+      if event.type == .rightMouseDown || event.type == .rightMouseUp {
+        // Ensure menu items have valid targets
+        if let menu = customMenu {
+          for item in menu.items {
+            if item.target == nil {
+              item.target = coordinator
+            }
+          }
+        }
+        return customMenu
+      }
+      return super.menu(for: event)
+    }
+    
+    override func becomeFirstResponder() -> Bool {
+      // Allow text selection but prevent editing
+      return super.becomeFirstResponder()
+    }
+  }
+  
+  private func copyAllLogsToClipboard() {
+    let displayEntries = Array(filteredEntries.suffix(maxVisibleLines))
+    let text = displayEntries.map { entry in
+      let timestamp = timeString(entry.timestamp)
+      let source = entry.source.map { "\($0): " } ?? ""
+      let message = truncateIfNeeded(entry.message)
+      return "\(timestamp) • \(source)\(message)"
+    }.joined(separator: "\n")
+    
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    pasteboard.setString(text, forType: .string)
   }
 
 
@@ -214,7 +546,15 @@ struct StatusBarOverlayView: View {
   }
 
   private var filteredEntries: [StatusBarLogEntry] {
-    store.entries.filter { entry in
+    let currentKey = (filterText, filterLevel, store.entries.count)
+    
+    // Use cache if filter criteria and entry count haven't changed
+    if cacheKey == currentKey && !cachedFilteredEntries.isEmpty {
+      return cachedFilteredEntries
+    }
+    
+    // Recompute filtered entries
+    let filtered = store.entries.filter { entry in
       // Filter by level
       if let filterLevel = filterLevel, entry.level != filterLevel {
         return false
@@ -226,6 +566,11 @@ struct StatusBarOverlayView: View {
       if let source = entry.source, source.lowercased().contains(searchLower) { return true }
       return false
     }
+    
+    // Update cache
+    cacheKey = currentKey
+    cachedFilteredEntries = filtered
+    return filtered
   }
 
   private var statusIcon: some View {
@@ -262,66 +607,197 @@ struct StatusBarOverlayView: View {
 
   private var logList: some View {
     let displayEntries = Array(filteredEntries.suffix(maxVisibleLines))
-    return ScrollViewReader { proxy in
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 4) {
-          ForEach(displayEntries) { entry in
-            logEntryRow(entry)
-              .id(entry.id)
+    
+    // Compute lightweight cache key: entry count + hash of last entry ID (if exists)
+    // Only use last entry ID hash to keep cache key lightweight (memory optimization)
+    let cacheKeyValue = displayEntries.count * 1000 + (displayEntries.last?.id.hashValue ?? 0)
+    
+    // Use cache if key matches, otherwise build (with incremental update if possible)
+    let combinedText: AttributedString
+    if cacheKeyValue == cachedCombinedTextKey, let cached = cachedCombinedText {
+      combinedText = cached
+    } else {
+      // Try incremental update if we have cached text and only new entries were added
+      if let cached = cachedCombinedText,
+         cachedEntryCount > 0,
+         displayEntries.count > cachedEntryCount,
+         let cachedFirstId = cachedFirstEntryId,
+         let cachedLastId = cachedLastEntryId {
+        // Check if previous entries match by comparing first and last cached entry IDs
+        // This is a lightweight check (memory optimization) - only store 2 UUIDs instead of full list
+        let currentFirstId = displayEntries.first?.id
+        let currentLastCachedId = displayEntries.count > cachedEntryCount ? 
+          displayEntries[cachedEntryCount - 1].id : displayEntries.last?.id
+        
+        // If first and last cached entry IDs match, we can safely do incremental update
+        if currentFirstId == cachedFirstId && currentLastCachedId == cachedLastId {
+          // Incremental update: append only new entries (performance optimization)
+          var updated = cached
+          let newEntries = Array(displayEntries.suffix(displayEntries.count - cachedEntryCount))
+          if !newEntries.isEmpty {
+            updated.append(AttributedString("\n"))
+            for (index, entry) in newEntries.enumerated() {
+              if index > 0 {
+                updated.append(AttributedString("\n"))
+              }
+              // For very long messages, use optimized building
+              updated.append(buildSelectableLogLine(entry))
+            }
           }
+          combinedText = updated
+        } else {
+          // Full rebuild needed (entries changed, not just added)
+          combinedText = buildCombinedLogTextOptimized(entries: displayEntries)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+      } else {
+        // Full rebuild (first time or cache invalidated)
+        combinedText = buildCombinedLogTextOptimized(entries: displayEntries)
       }
-      .onChange(of: store.entries.count) { _ in
-        guard !store.isInteracting, let last = displayEntries.last else { return }
-        withAnimation(.easeOut(duration: 0.1)) {
-          proxy.scrollTo(last.id, anchor: .bottom)
-        }
-      }
+      
+      // Update cache with lightweight keys (memory optimization)
+      cachedCombinedText = combinedText
+      cachedCombinedTextKey = cacheKeyValue
+      cachedEntryCount = displayEntries.count
+      cachedFirstEntryId = displayEntries.first?.id
+      cachedLastEntryId = displayEntries.last?.id
     }
-    .simultaneousGesture(
-      DragGesture()
-        .onChanged { _ in store.setInteracting(true) }
-        .onEnded { _ in store.setInteracting(false) }
+    
+    return LogTextView(
+      text: displayEntries.isEmpty ? AttributedString("No log entries") : combinedText,
+      isEmpty: displayEntries.isEmpty,
+      onCopyAll: { copyAllLogsToClipboard() },
+      onClear: {
+        store.clear()
+        invalidateCache()
+      },
+      canCopy: !filteredEntries.isEmpty,
+      canClear: !store.entries.isEmpty
     )
   }
+  
+  /// Invalidate all caches
+  private func invalidateCache() {
+    cacheKey = ("", nil, 0)
+    cachedFilteredEntries = []
+    cachedCombinedText = nil
+    cachedCombinedTextKey = 0
+    cachedEntryCount = 0
+    cachedFirstEntryId = nil
+    cachedLastEntryId = nil
+  }
 
-  private func logEntryRow(_ entry: StatusBarLogEntry) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
-      Text(timeString(entry.timestamp))
-        .font(.system(size: 10, design: .monospaced))
-        .foregroundStyle(.tertiary)
-        .frame(width: 60, alignment: .leading)
-      Circle()
-        .fill(levelColor(entry.level))
-        .frame(width: 5, height: 5)
-      if let source = entry.source, !source.isEmpty {
-        Text(source)
-          .font(.system(size: 10, weight: .medium, design: .monospaced))
-          .foregroundStyle(.secondary)
-          .frame(minWidth: 60, alignment: .leading)
+  /// Build a combined AttributedString from multiple log entries, separated by newlines
+  /// Optimized version that handles large lists efficiently
+  private func buildCombinedLogTextOptimized(entries: [StatusBarLogEntry]) -> AttributedString {
+    guard !entries.isEmpty else { return AttributedString("") }
+    
+    // For very long lists, build in chunks to avoid blocking UI
+    if entries.count > 100 {
+      var result = AttributedString("")
+      // Build first entry immediately
+      result.append(buildSelectableLogLine(entries[0]))
+      
+      // Build remaining entries
+      for index in 1..<entries.count {
+        result.append(AttributedString("\n"))
+        result.append(buildSelectableLogLine(entries[index]))
       }
-      Text(highlightedMessage(entry.message))
-        .font(.system(size: 11, design: .monospaced))
-        .foregroundStyle(levelColor(entry.level))
-        .textSelection(.enabled)
+      return result
+    } else {
+      // For smaller lists, build normally
+      var result = AttributedString("")
+      for (index, entry) in entries.enumerated() {
+        if index > 0 {
+          result.append(AttributedString("\n"))
+        }
+        result.append(buildSelectableLogLine(entry))
+      }
+      return result
     }
-    .padding(.vertical, 1)
+  }
+  
+  private func buildSelectableLogLine(_ entry: StatusBarLogEntry) -> AttributedString {
+    var result = AttributedString("")
+    
+    // Timestamp - use system color that adapts to theme
+    var timestamp = AttributedString(timeString(entry.timestamp))
+    timestamp.font = .system(size: 10, design: .monospaced)
+    // Use a placeholder color that will be replaced by theme-aware color in NSTextView
+    timestamp.foregroundColor = Color.primary.opacity(0.4)
+    result.append(timestamp)
+    result.append(AttributedString(" "))
+    
+    // Bullet point (using Unicode character instead of Circle view)
+    var bullet = AttributedString("•")
+    bullet.foregroundColor = levelColor(entry.level)
+    result.append(bullet)
+    result.append(AttributedString(" "))
+    
+    // Source (if present)
+    if let source = entry.source, !source.isEmpty {
+      var sourceText = AttributedString(source)
+      sourceText.font = .system(size: 10, weight: .medium, design: .monospaced)
+      // Use a placeholder color that will be replaced by theme-aware color
+      sourceText.foregroundColor = Color.secondary
+      result.append(sourceText)
+      result.append(AttributedString(": "))
+    }
+    
+    // Message with truncation for very long messages
+    let message = truncateIfNeeded(entry.message)
+    var messageAttr = highlightedMessage(message)
+    // Apply font and color to the entire message, preserving any existing attributes (like highlight background)
+    messageAttr.font = .system(size: 11, design: .monospaced)
+    messageAttr.foregroundColor = levelColor(entry.level)
+    
+    result.append(messageAttr)
+    
+    return result
+  }
+  
+  /// Truncate message if it exceeds maxMessageLength, keeping head and tail
+  private func truncateIfNeeded(_ message: String) -> String {
+    guard message.count > maxMessageLength else { return message }
+    
+    // Keep head (first 60%) and tail (last 30%), with truncation marker in between
+    let headLength = Int(Double(maxMessageLength) * 0.6)
+    let tailLength = Int(Double(maxMessageLength) * 0.3)
+    
+    let head = String(message.prefix(headLength))
+    let tail = String(message.suffix(tailLength))
+    
+    return "\(head)\n\(truncationMarker)\n\(tail)"
   }
 
   private func highlightedMessage(_ message: String) -> AttributedString {
     guard !filterText.isEmpty else {
       return AttributedString(message)
     }
+    
     var result = AttributedString(message)
-    var searchStart = result.startIndex
-    while searchStart < result.endIndex,
-          let range = result[searchStart...].range(of: filterText, options: .caseInsensitive) {
-      result[range].backgroundColor = .yellow.opacity(0.3)
+    let searchLower = filterText.lowercased()
+    let messageLower = message.lowercased()
+    
+    var searchStart = messageLower.startIndex
+    var matchCount = 0
+    let maxMatches = 100  // Limit matches to avoid performance issues
+    
+    while searchStart < messageLower.endIndex, matchCount < maxMatches {
+      guard let range = messageLower[searchStart...].range(of: searchLower) else {
+        break
+      }
+      
+      // Convert String.Index range to AttributedString.Index range
+      let lowerBound = AttributedString.Index(range.lowerBound, within: result) ?? result.startIndex
+      let upperBound = AttributedString.Index(range.upperBound, within: result) ?? result.endIndex
+      let attrRange = lowerBound..<upperBound
+      
+      result[attrRange].backgroundColor = .yellow.opacity(0.3)
+      
       searchStart = range.upperBound
+      matchCount += 1
     }
+    
     return result
   }
 
