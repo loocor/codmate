@@ -1139,6 +1139,16 @@ struct ProjectEditorSheet: View {
                     ),
                     disabled: !skill.isSelected
                   )
+                  MCPServerTargetToggle(
+                    provider: .gemini,
+                    isOn: Binding(
+                      get: { skill.targets.gemini },
+                      set: { value in
+                        extensionsVM.updateSkillTarget(id: skill.id, target: .gemini, value: value)
+                      }
+                    ),
+                    disabled: !skill.isSelected
+                  )
                 }
               }
               .padding(.vertical, 6)

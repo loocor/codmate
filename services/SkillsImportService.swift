@@ -22,6 +22,11 @@ enum SkillsImportService {
           directory: home.appendingPathComponent(".claude", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
         ),
+        SourceDescriptor(
+          label: "Gemini",
+          directory: home.appendingPathComponent(".gemini", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+        ),
       ]
     case .project(let directory):
       sources = [
@@ -33,6 +38,11 @@ enum SkillsImportService {
         SourceDescriptor(
           label: "Claude",
           directory: directory.appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
+        ),
+        SourceDescriptor(
+          label: "Gemini",
+          directory: directory.appendingPathComponent(".gemini", isDirectory: true)
             .appendingPathComponent("skills", isDirectory: true)
         ),
       ]

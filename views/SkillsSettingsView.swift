@@ -30,7 +30,7 @@ struct SkillsSettingsView: View {
         isImporting: vm.isImporting,
         statusMessage: vm.importStatusMessage,
         title: "Import Skills",
-        subtitle: "Scan Home for existing Codex/Claude skills and import into CodMate.",
+        subtitle: "Scan Home for existing Codex/Claude/Gemini skills and import into CodMate.",
         onCancel: { vm.cancelImport() },
         onImport: { Task { await vm.importSelectedSkills() } }
       )
@@ -160,6 +160,16 @@ struct SkillsSettingsView: View {
                     get: { skill.targets.claude },
                     set: { value in
                       vm.updateSkillTarget(id: skill.id, target: .claude, value: value)
+                    }
+                  ),
+                  disabled: false
+                )
+                MCPServerTargetToggle(
+                  provider: .gemini,
+                  isOn: Binding(
+                    get: { skill.targets.gemini },
+                    set: { value in
+                      vm.updateSkillTarget(id: skill.id, target: .gemini, value: value)
                     }
                   ),
                   disabled: false

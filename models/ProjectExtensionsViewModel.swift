@@ -436,6 +436,8 @@ final class ProjectExtensionsViewModel: ObservableObject {
             "Codex": projectDirectory.appendingPathComponent(".codex", isDirectory: true)
                 .appendingPathComponent("skills", isDirectory: true),
             "Claude": projectDirectory.appendingPathComponent(".claude", isDirectory: true)
+                .appendingPathComponent("skills", isDirectory: true),
+            "Gemini": projectDirectory.appendingPathComponent(".gemini", isDirectory: true)
                 .appendingPathComponent("skills", isDirectory: true)
         ]
         let fm = FileManager.default

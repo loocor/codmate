@@ -13,10 +13,12 @@ actor SkillsSyncService {
     let home = SessionPreferencesStore.getRealUserHomeURL()
     let codexDir = home.appendingPathComponent(".codex", isDirectory: true).appendingPathComponent("skills", isDirectory: true)
     let claudeDir = home.appendingPathComponent(".claude", isDirectory: true).appendingPathComponent("skills", isDirectory: true)
+    let geminiDir = home.appendingPathComponent(".gemini", isDirectory: true).appendingPathComponent("skills", isDirectory: true)
 
     var warnings: [SkillSyncWarning] = []
     warnings.append(contentsOf: syncSkills(skills: skills, target: .codex, destination: codexDir))
     warnings.append(contentsOf: syncSkills(skills: skills, target: .claude, destination: claudeDir))
+    warnings.append(contentsOf: syncSkills(skills: skills, target: .gemini, destination: geminiDir))
     return warnings
   }
 
@@ -24,6 +26,8 @@ actor SkillsSyncService {
     let codexDir = projectDirectory.appendingPathComponent(".codex", isDirectory: true)
       .appendingPathComponent("skills", isDirectory: true)
     let claudeDir = projectDirectory.appendingPathComponent(".claude", isDirectory: true)
+      .appendingPathComponent("skills", isDirectory: true)
+    let geminiDir = projectDirectory.appendingPathComponent(".gemini", isDirectory: true)
       .appendingPathComponent("skills", isDirectory: true)
 
     var warnings: [SkillSyncWarning] = []
@@ -40,6 +44,12 @@ actor SkillsSyncService {
       skills: chosen,
       target: .claude,
       destination: claudeDir,
+      selectionOverride: selectedSkills
+    ))
+    warnings.append(contentsOf: syncSkills(
+      skills: chosen,
+      target: .gemini,
+      destination: geminiDir,
       selectionOverride: selectedSkills
     ))
     return warnings
@@ -82,6 +92,7 @@ actor SkillsSyncService {
       let src = URL(fileURLWithPath: record.path, isDirectory: true)
       do {
         // Codex CLI skips symlinks when loading skills, so we must use copy for codex target
+        // Gemini CLI also supports symlinks, so we can use symlinks for both claude and gemini
         let forceCopy = (target == .codex)
         try ensureSkillLinked(from: src, to: dest, id: record.id, forceCopy: forceCopy)
       } catch {
