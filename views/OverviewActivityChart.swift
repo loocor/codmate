@@ -1,5 +1,5 @@
-import SwiftUI
 import Charts
+import SwiftUI
 
 struct OverviewActivityChart: View {
     let data: ActivityChartData
@@ -16,6 +16,7 @@ struct OverviewActivityChart: View {
 
     private let minBarWidth: CGFloat = 16.0
     private let maxBarWidth: CGFloat = 64.0
+    private let chartCoordinateSpaceName = "OverviewActivityChart"
 
     enum Metric: String, CaseIterable, Identifiable {
         case count = "Sessions"
@@ -38,6 +39,7 @@ struct OverviewActivityChart: View {
                 chartContainer
             }
         }
+        .zIndex(1)
     }
 
     // MARK: - Header
@@ -115,7 +117,7 @@ struct OverviewActivityChart: View {
                             }
                         }
                     }
-                    .contentShape(Rectangle()) // Improve tap area
+                    .contentShape(Rectangle())  // Improve tap area
                     .help("Toggle \(source.rawValue.capitalized)")
                 }
             }
@@ -130,7 +132,7 @@ struct OverviewActivityChart: View {
             // uniqueXCount is no longer used for width calculation
             // let uniqueXCount = uniqueDates.count
             // requiredWidth is calculated later based on time span
-            let chartAreaWidth = geometry.size.width // Full width now
+            let chartAreaWidth = geometry.size.width  // Full width now
 
             // Determine Y-axis domain (Value) - Filtered
             let maxVal = maxYValue(for: uniqueDates)
@@ -159,72 +161,89 @@ struct OverviewActivityChart: View {
 
             // Calculate required width based on TIME SPAN, not point count
             let component: Calendar.Component = data.unit == .day ? .day : .hour
-            let diff = calendar.dateComponents([component], from: minDate, to: maxDate).value(for: component) ?? 0
-            let totalSlots = max(1, diff + 1) // Inclusive count
+            let diff =
+                calendar.dateComponents([component], from: minDate, to: maxDate).value(
+                    for: component) ?? 0
+            let totalSlots = max(1, diff + 1)  // Inclusive count
             let requiredWidth = CGFloat(totalSlots) * stepWidth
 
             // Scrollable Chart Area
-            scrollContainer {
-                ZStack {
-                    HStack(spacing: 0) {
-                        if requiredWidth < chartAreaWidth {
-                            Spacer(minLength: 0)
-                        }
+            ZStack(alignment: .topLeading) {
+                scrollContainer {
+                    ZStack {
+                        HStack(spacing: 0) {
+                            if requiredWidth < chartAreaWidth {
+                                Spacer(minLength: 0)
+                            }
 
-                        chartContent(yScale: yScale, xDomain: xDomain)
-                            .frame(width: requiredWidth, height: 160)
-                            .chartOverlay { proxy in
-                                GeometryReader { geo in
-                                    Rectangle().fill(.clear).contentShape(Rectangle())
-                                        .onContinuousHover { phase in
-                                            switch phase {
-                                            case .active(let location):
-                                                hoverExitTask?.cancel()
-                                                hoverExitTask = nil
-                                                if !isHoveringChartArea {
-                                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                                        isHoveringChartArea = true
-                                                    }
-                                                }
-                                                hoverLocation = location
-                                                // Convert location to X value (Date)
-                                                if let date = proxy.value(atX: location.x, as: Date.self) {
-                                                    // Snap to closest bin
-                                                    hoverDate = snapDate(date, dates: uniqueDates)
-                                                }
-                                            case .ended:
-                                                hoverDate = nil
-                                                hoverExitTask?.cancel()
-                                                hoverExitTask = Task {
-                                                    try? await Task.sleep(nanoseconds: 250_000_000)
-                                                    await MainActor.run {
+                            chartContent(yScale: yScale, xDomain: xDomain)
+                                .frame(width: requiredWidth, height: 160)
+                                .chartOverlay { proxy in
+                                    GeometryReader { geo in
+                                        Rectangle().fill(.clear).contentShape(Rectangle())
+                                            .onContinuousHover { phase in
+                                                switch phase {
+                                                case .active(let location):
+                                                    hoverExitTask?.cancel()
+                                                    hoverExitTask = nil
+                                                    if !isHoveringChartArea {
                                                         withAnimation(.easeInOut(duration: 0.2)) {
-                                                            isHoveringChartArea = false
+                                                            isHoveringChartArea = true
+                                                        }
+                                                    }
+                                                    let chartFrame = geo.frame(
+                                                        in: .named(chartCoordinateSpaceName))
+                                                    hoverLocation = CGPoint(
+                                                        x: chartFrame.minX + location.x,
+                                                        y: chartFrame.minY + location.y
+                                                    )
+                                                    // Convert location to X value (Date)
+                                                    if let date = proxy.value(
+                                                        atX: location.x, as: Date.self)
+                                                    {
+                                                        // Snap to closest bin
+                                                        hoverDate = snapDate(
+                                                            date, dates: uniqueDates)
+                                                    }
+                                                case .ended:
+                                                    hoverDate = nil
+                                                    hoverExitTask?.cancel()
+                                                    hoverExitTask = Task {
+                                                        try? await Task.sleep(
+                                                            nanoseconds: 250_000_000)
+                                                        await MainActor.run {
+                                                            withAnimation(.easeInOut(duration: 0.2))
+                                                            {
+                                                                isHoveringChartArea = false
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
-                                        }
-                                        .onTapGesture(count: 1, coordinateSpace: .local) { location in
-                                            if let date = proxy.value(atX: location.x, as: Date.self),
-                                               let snapped = snapDate(date, dates: uniqueDates) {
-                                                onSelectDate?(snapped)
+                                            .onTapGesture(count: 1, coordinateSpace: .local) {
+                                                location in
+                                                if let date = proxy.value(
+                                                    atX: location.x, as: Date.self),
+                                                    let snapped = snapDate(date, dates: uniqueDates)
+                                                {
+                                                    onSelectDate?(snapped)
+                                                }
                                             }
-                                        }
+                                    }
                                 }
-                            }
-                            .overlay {
-                                if let hoverDate, let points = pointsByDate[hoverDate] {
-                                    tooltip(for: hoverDate, points: points, in: geoSize(from: requiredWidth))
-                                }
-                            }
+                        }
+                        .frame(minWidth: chartAreaWidth, alignment: .trailing)
                     }
-                    .padding(.trailing, CGFloat(barWidth) * 2.0) // Dynamic padding based on bar width
-                    .frame(minWidth: chartAreaWidth, alignment: .trailing)
+                }
+
+                if let hoverDate, let points = pointsByDate[hoverDate] {
+                    tooltip(for: hoverDate, points: points, in: geoSize(from: chartAreaWidth))
+                        .zIndex(10)
                 }
             }
         }
         .frame(height: 160)
+        .coordinateSpace(name: chartCoordinateSpaceName)
     }
 
     @ViewBuilder
@@ -266,8 +285,10 @@ struct OverviewActivityChart: View {
         CGSize(width: width, height: 160)
     }
 
-    private func chartContent(yScale: ClosedRange<Double>, xDomain: ClosedRange<Date>) -> some View {
-        Chart {
+    private func chartContent(yScale: ClosedRange<Double>, xDomain: ClosedRange<Date>) -> some View
+    {
+        let labelWidth = CGFloat(barWidth)
+        return Chart {
             // Baseline axis line
             RuleMark(y: .value("Baseline", 0))
                 .foregroundStyle(Color.secondary.opacity(0.5))
@@ -275,54 +296,72 @@ struct OverviewActivityChart: View {
 
             ForEach(visiblePoints) { point in
                 BarMark(
-                    x: .value("Date", point.date, unit: data.unit == .day ? .day : .hour),
+                    // Use the actual bucket start to align bar centers with axis ticks.
+                    x: .value("Date", point.date),
                     y: .value("Value", value(for: point)),
-                    width: .fixed(barWidth * 0.8) // Use a ratio of the stepWidth for the bar itself
+                    width: .fixed(barWidth * 0.8)  // Use a ratio of the stepWidth for the bar itself
                 )
                 .foregroundStyle(by: .value("Source", point.source.rawValue.capitalized))
             }
         }
         .chartLegend(.hidden)
-        .chartXScale(domain: xDomain) // FIX: Lock X-axis domain
+        .chartXScale(domain: xDomain)  // FIX: Lock X-axis domain
         .chartXAxis {
             AxisMarks(values: .stride(by: data.unit == .day ? .day : .hour)) { value in
                 if let date = value.as(Date.self) {
                     // Custom Month Separator logic
                     if data.unit == .day, isFirstDayOfMonth(date) {
-                        AxisTick(length: 20, stroke: StrokeStyle(lineWidth: 1.5))
+                        AxisTick(length: 5, stroke: StrokeStyle(lineWidth: 1.5))
                             .foregroundStyle(.primary)
-                        AxisValueLabel(format: .dateTime.month(.abbreviated))
-                            .font(.system(size: 10, weight: .bold))
+                        AxisValueLabel {
+                            Text(date.formatted(.dateTime.month(.abbreviated)))
+                                .font(.system(size: 10, weight: .bold))
+                                .frame(width: labelWidth, alignment: .center)
+                                .offset(x: -labelWidth / 2)
+                                .zIndex(1)
+                        }
                     } else {
                         AxisGridLine()
-                            .foregroundStyle(.clear) // Hide regular grid lines
+                            .foregroundStyle(.clear)  // Hide regular grid lines
 
-                        AxisTick()
+                        AxisTick(length: 3, stroke: StrokeStyle(lineWidth: 1))
 
-                        AxisValueLabel(format: data.unit == .day ? .dateTime.day() : .dateTime.hour())
+                        AxisValueLabel {
+                            Text(
+                                date.formatted(
+                                    data.unit == .day ? .dateTime.day() : .dateTime.hour()
+                                )
+                            )
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                            .frame(width: labelWidth, alignment: .center)
+                            .offset(x: -labelWidth / 2)
+                            .zIndex(1)
+                        }
                     }
                 }
             }
         }
-        .chartYAxis(.hidden) // Hide internal Y axis
+        .chartYAxis(.hidden)  // Hide internal Y axis
         .chartYScale(domain: yScale)
         .chartForegroundStyleScale([
             "Codex": color(for: .codex),
             "Claude": color(for: .claude),
-            "Gemini": color(for: .gemini)
+            "Gemini": color(for: .gemini),
         ])
     }
 
     // MARK: - Tooltip
     @ViewBuilder
-    private func tooltip(for date: Date, points: [ActivityChartDataPoint], in containerSize: CGSize) -> some View {
+    private func tooltip(for date: Date, points: [ActivityChartDataPoint], in containerSize: CGSize)
+        -> some View
+    {
         // Filter points based on hidden sources
         let visible = points.filter { !hiddenSources.contains($0.source) }
         if !visible.isEmpty {
             let total = visible.reduce(0) { $0 + value(for: $1) }
-            let dateString = data.unit == .day
+            let dateString =
+                data.unit == .day
                 ? date.formatted(date: .abbreviated, time: .omitted)
                 : date.formatted(date: .omitted, time: .shortened)
 
@@ -330,11 +369,8 @@ struct OverviewActivityChart: View {
             // Estimate height based on items + padding
             let tooltipHeight: CGFloat = CGFloat(40 + (visible.count * 15) + 20)
 
-            // Determine Y Position
-            let initialY = hoverLocation.y - (tooltipHeight / 2) - 20
-            let finalY = (initialY - (tooltipHeight / 2) < 0)
-                ? hoverLocation.y + (tooltipHeight / 2) + 20
-                : initialY
+            // Always keep the tooltip above the hover point.
+            let finalY = hoverLocation.y - (tooltipHeight / 2) - 16
 
             // Determine X Position (Clamp to edges)
             let halfWidth = tooltipWidth / 2
@@ -403,7 +439,7 @@ struct OverviewActivityChart: View {
         case .count:
             return Double(point.sessionCount)
         case .duration:
-            return point.duration / 3600 // Hours
+            return point.duration / 3600  // Hours
         case .tokens:
             return Double(point.totalTokens)
         }
@@ -439,7 +475,9 @@ struct OverviewActivityChart: View {
         // Since bars are discrete, finding the date with min distance is enough
         guard !dates.isEmpty else { return nil }
         // Optimization: since sorted, binary search or linear scan if small
-        return dates.min(by: { abs($0.timeIntervalSince(target)) < abs($1.timeIntervalSince(target)) })
+        return dates.min(by: {
+            abs($0.timeIntervalSince(target)) < abs($1.timeIntervalSince(target))
+        })
     }
 
     private var zoomControlsOpacity: Double {
