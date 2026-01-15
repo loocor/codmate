@@ -5,14 +5,16 @@ enum EditorApp: String, CaseIterable, Identifiable {
     case vscode
     case cursor
     case zed
+    case antigravity
 
     var id: String { rawValue }
     private static let menuIconSize = NSSize(width: 14, height: 14)
 
     /// Editors that are currently available on this system.
     /// This is computed once per launch by probing the bundle id and CLI.
+    /// Results are sorted alphabetically by title.
     static let installedEditors: [EditorApp] = {
-        allCases.filter { $0.isInstalled }
+        allCases.filter(\.isInstalled).sorted(by: { $0.title < $1.title })
     }()
 
     var title: String {
@@ -20,6 +22,7 @@ enum EditorApp: String, CaseIterable, Identifiable {
         case .vscode: return "Visual Studio Code"
         case .cursor: return "Cursor"
         case .zed: return "Zed"
+        case .antigravity: return "Antigravity"
         }
     }
 
@@ -28,6 +31,7 @@ enum EditorApp: String, CaseIterable, Identifiable {
         case .vscode: return "com.microsoft.VSCode"
         case .cursor: return "com.todesktop.230313mzl4w4u92"
         case .zed: return "dev.zed.Zed"
+        case .antigravity: return "com.google.antigravity"
         }
     }
 
@@ -36,6 +40,7 @@ enum EditorApp: String, CaseIterable, Identifiable {
         case .vscode: return "code"
         case .cursor: return "cursor"
         case .zed: return "zed"
+        case .antigravity: return "antigravity"
         }
     }
 

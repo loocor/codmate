@@ -5,7 +5,7 @@ extension SessionListViewModel {
     /// Open a project directory in the specified editor
     /// - Parameters:
     ///   - project: The project to open
-    ///   - editor: The editor app to use (VSCode, Cursor, Zed)
+    ///   - editor: The editor app to use (VSCode, Cursor, Zed, Antigravity)
     /// - Returns: True if successfully opened, false otherwise
     @discardableResult
     func openProjectInEditor(_ project: Project, using editor: EditorApp) -> Bool {

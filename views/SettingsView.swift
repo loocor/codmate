@@ -278,14 +278,14 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 }
                 if editors.isEmpty {
-                  Text("No supported editors found. Install VS Code, Cursor, or Zed.")
+                  Text("No supported editors found. Install VS Code, Cursor, Zed, or Antigravity.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 } else {
                   Picker("", selection: $preferences.defaultFileEditor) {
                     ForEach(editors) { app in
-                      Text(app.title).tag(app)
+                      editorLabel(for: app).tag(app)
                     }
                   }
                   .labelsHidden()
