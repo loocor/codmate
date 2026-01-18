@@ -6,6 +6,20 @@ If you distribute CodMate binaries, keep this file together with `LICENSE`.
 
 ---
 
+Aizen (Ghostty embedding implementation reference)
+Repository: https://github.com/vivy-company/aizen
+License: GNU General Public License v3.0
+
+The GhosttyKit integration code in CodMate was adapted from Aizen's Ghostty embedding implementation. While the code has been significantly modified and adapted for CodMate's use case, we acknowledge Aizen as the original source of the Ghostty integration approach.
+
+Copyright (C) 2025 Vivy Technologies Co., Limited
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+For the full GPL-3.0 license text, see: https://www.gnu.org/licenses/gpl-3.0.html
+
+---
+
 eventsource (1.2.0)
 Repository: https://github.com/mattt/eventsource.git
 License file: LICENSE.md
@@ -29,6 +43,34 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+---
+
+Ghostty
+Repository: https://github.com/ghostty-org/ghostty
+License: MIT License
+
+CodMate uses libghostty, the embeddable terminal library from Ghostty, to provide fast, feature-rich terminal emulation with GPU acceleration. While the integration approach was adapted from Aizen, the core terminal functionality and performance benefits come from Ghostty itself.
+
+Copyright (c) 2022-2025 Ghostty contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ---
 
@@ -481,25 +523,6 @@ under the License.
 Also, please refer to each LICENSE.<component>.txt file, which is located in
 the 'license' directory of the distribution file, for the license terms of the
 components that this product depends on.
-
--------------------------------------------------------------------------------
-
-This product contains a derivation of the Tony Stone's 'process_test_files.rb'.
-
-  * LICENSE (Apache License 2.0):
-    * https://www.apache.org/licenses/LICENSE-2.0
-  * HOMEPAGE:
-    * https://codegists.com/snippet/ruby/generate_xctest_linux_runnerrb_tonystone_ruby
-
----
-
-This product contains a derivation of the lock implementation and various
-scripts from SwiftNIO.
-
-  * LICENSE (Apache License 2.0):
-    * https://www.apache.org/licenses/LICENSE-2.0
-  * HOMEPAGE:
-    * https://github.com/apple/swift-nio
 
 ---
 
@@ -955,30 +978,21 @@ Apache License
 
 ---
 
-SwiftTerm (v1.5.1)
-Repository: https://github.com/loocor/SwiftTerm.git
-License file: LICENSE
+-
 
-Copyright (c) 2019-2022 Miguel de Icaza (https://github.com/migueldeicaza)
-Copyright (c) 2017-2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
-Copyright (c) 2014-2016, SourceLair Private Company (https://www.sourcelair.com)
-Copyright (c) 2012-2013, Christopher Jeffrey (https://github.com/chjj/)
+This product contains a derivation of the Tony Stone's 'process_test_files.rb'.
 
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
+  * LICENSE (Apache License 2.0):
+    * https://www.apache.org/licenses/LICENSE-2.0
+  * HOMEPAGE:
+    * https://codegists.com/snippet/ruby/generate_xctest_linux_runnerrb_tonystone_ruby
 
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
+---
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+This product contains a derivation of the lock implementation and various
+scripts from SwiftNIO.
+
+  * LICENSE (Apache License 2.0):
+    * https://www.apache.org/licenses/LICENSE-2.0
+  * HOMEPAGE:
+    * https://github.com/apple/swift-nio
