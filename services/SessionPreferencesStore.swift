@@ -32,6 +32,10 @@ final class SessionPreferencesStore: ObservableObject {
     didSet { persistCLIPaths() }
   }
 
+  @Published var sessionPathConfigs: [SessionPathConfig] {
+    didSet { persistSessionPaths() }
+  }
+
   private let defaults: UserDefaults
   private let fileManager: FileManager
   private struct Keys {
@@ -111,6 +115,8 @@ final class SessionPreferencesStore: ObservableObject {
     // Legacy keys for migration
     static let legacyUseCLIProxy = "codmate.cliproxy.useForInternal"
     static let legacyCLIProxyPort = "codmate.cliproxy.port"
+    // Session path configurations
+    static let sessionPathConfigs = "codmate.sessions.pathConfigs"
   }
 
   init(
@@ -169,6 +175,16 @@ final class SessionPreferencesStore: ObservableObject {
     self.codexCommandPath = storedCodexCommandPath
     self.claudeCommandPath = storedClaudeCommandPath
     self.geminiCommandPath = storedGeminiCommandPath
+    
+    // Load session path configs (with migration)
+    let loadedConfigs = Self.loadSessionPathConfigs(
+      defaults: defaults,
+      fileManager: fileManager,
+      homeURL: homeURL,
+      currentSessionsRoot: resolvedSessionsRoot
+    )
+    self.sessionPathConfigs = loadedConfigs
+    
     // Resume defaults (defer assigning to self until value is finalized)
     let resumeEmbedded: Bool
     #if APPSTORE
@@ -419,32 +435,36 @@ final class SessionPreferencesStore: ObservableObject {
     defaults.set(sessionsRoot.path, forKey: Keys.sessionsRootPath)
     defaults.set(notesRoot.path, forKey: Keys.notesRootPath)
     defaults.set(projectsRoot.path, forKey: Keys.projectsRootPath)
-    }
+  }
+  
+  private func persistSessionPaths() {
+    persistJSON(sessionPathConfigs, key: Keys.sessionPathConfigs)
+  }
 
-    private static func decodeJSON<T: Decodable>(_ type: T.Type, defaults: UserDefaults, key: String) -> T? {
-        guard let data = defaults.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(T.self, from: data)
-    }
+  private static func decodeJSON<T: Decodable>(_ type: T.Type, defaults: UserDefaults, key: String) -> T? {
+    guard let data = defaults.data(forKey: key) else { return nil }
+    return try? JSONDecoder().decode(T.self, from: data)
+  }
 
-    private func persistJSON<T: Encodable>(_ value: T, key: String) {
-        guard let data = try? JSONEncoder().encode(value) else { return }
-        defaults.set(data, forKey: key)
-    }
+  private func persistJSON<T: Encodable>(_ value: T, key: String) {
+    guard let data = try? JSONEncoder().encode(value) else { return }
+    defaults.set(data, forKey: key)
+  }
 
-    private func persistCLIPaths() {
-        setOptionalPath(codexCommandPath, key: Keys.codexCommandPath)
-        setOptionalPath(claudeCommandPath, key: Keys.claudeCommandPath)
-        setOptionalPath(geminiCommandPath, key: Keys.geminiCommandPath)
-    }
+  private func persistCLIPaths() {
+    setOptionalPath(codexCommandPath, key: Keys.codexCommandPath)
+    setOptionalPath(claudeCommandPath, key: Keys.claudeCommandPath)
+    setOptionalPath(geminiCommandPath, key: Keys.geminiCommandPath)
+  }
 
-    private func setOptionalPath(_ value: String, key: String) {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            defaults.removeObject(forKey: key)
-        } else {
-            defaults.set(trimmed, forKey: key)
-        }
+  private func setOptionalPath(_ value: String, key: String) {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty {
+      defaults.removeObject(forKey: key)
+    } else {
+      defaults.set(trimmed, forKey: key)
     }
+  }
 
     private func ensureDirectoryExists(_ url: URL) {
         var isDir: ObjCBool = false
@@ -898,5 +918,101 @@ final class SessionPreferencesStore: ObservableObject {
 
   var clampedTerminalFontSize: CGFloat {
     CGFloat(SessionPreferencesStore.clampFontSize(terminalFontSize))
+  }
+  
+  // MARK: - Session Path Configs
+  
+  /// Load session path configs with migration from legacy settings
+  private static func loadSessionPathConfigs(
+    defaults: UserDefaults,
+    fileManager: FileManager,
+    homeURL: URL,
+    currentSessionsRoot: URL
+  ) -> [SessionPathConfig] {
+    // Try to load existing configs
+    if let data = defaults.data(forKey: Keys.sessionPathConfigs),
+       let configs = try? JSONDecoder().decode([SessionPathConfig].self, from: data),
+       !configs.isEmpty {
+      return configs
+    }
+    
+    // Migration: generate default configs
+    let codexPath = currentSessionsRoot.path
+    let claudePath = homeURL
+      .appendingPathComponent(".claude", isDirectory: true)
+      .appendingPathComponent("projects", isDirectory: true)
+      .path
+    let geminiPath = homeURL
+      .appendingPathComponent(".gemini", isDirectory: true)
+      .appendingPathComponent("tmp", isDirectory: true)
+      .path
+    
+    return [
+      SessionPathConfig(
+        kind: .codex,
+        path: codexPath,
+        enabled: true,
+        displayName: "Codex"
+      ),
+      SessionPathConfig(
+        kind: .claude,
+        path: claudePath,
+        enabled: true,
+        displayName: "Claude"
+      ),
+      SessionPathConfig(
+        kind: .gemini,
+        path: geminiPath,
+        enabled: true,
+        displayName: "Gemini"
+      )
+    ]
+  }
+  
+  /// Get enabled session paths for a specific kind
+  func enabledSessionPaths(for kind: SessionSource.Kind) -> [URL] {
+    sessionPathConfigs
+      .filter { $0.kind == kind && $0.enabled }
+      .compactMap { URL(fileURLWithPath: $0.path) }
+  }
+  
+  /// Get the primary enabled path for a kind (first enabled, or default if none)
+  func primarySessionPath(for kind: SessionSource.Kind) -> URL? {
+    if let enabled = enabledSessionPaths(for: kind).first {
+      return enabled
+    }
+    // Fallback to default path
+    let home = Self.getRealUserHomeURL()
+    switch kind {
+    case .codex:
+      return sessionsRoot
+    case .claude:
+      return home
+        .appendingPathComponent(".claude", isDirectory: true)
+        .appendingPathComponent("projects", isDirectory: true)
+    case .gemini:
+      return home
+        .appendingPathComponent(".gemini", isDirectory: true)
+        .appendingPathComponent("tmp", isDirectory: true)
+    }
+  }
+  
+  /// Get the config for a specific kind (default or custom)
+  func config(for kind: SessionSource.Kind) -> SessionPathConfig? {
+    sessionPathConfigs.first { $0.kind == kind && $0.isDefault }
+  }
+  
+  /// Check if a path should be ignored based on config
+  func shouldIgnorePath(_ absolutePath: String, under config: SessionPathConfig) -> Bool {
+    guard config.enabled else { return true }
+    let lowercasedPath = absolutePath.lowercased()
+    for ignored in config.ignoredSubpaths {
+      let needle = ignored.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !needle.isEmpty else { continue }
+      if lowercasedPath.contains(needle.lowercased()) {
+        return true
+      }
+    }
+    return false
   }
 }

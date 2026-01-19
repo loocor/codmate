@@ -22,6 +22,8 @@ struct SessionProviderContext: Sendable {
   /// When true, bypass cache-only shortcuts and touch the filesystem to discover new sessions.
   let forceFilesystemScan: Bool
   let cachePolicy: SessionProviderCachePolicy
+  /// Ignored path substrings for filtering during enumeration.
+  let ignoredPaths: [String]
 }
 
 struct SessionProviderResult: Sendable {

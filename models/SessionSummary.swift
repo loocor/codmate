@@ -464,7 +464,7 @@ enum SessionSource: Hashable, Sendable {
         }
     }
 
-    enum Kind: String, Sendable {
+    enum Kind: String, Codable, Sendable {
     case codex
     case claude
     case gemini
