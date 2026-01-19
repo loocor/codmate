@@ -154,7 +154,7 @@ actor GeminiSessionProvider {
     self.fallbackLogFormatter.formatOptions = [.withInternetDateTime]
   }
 
-  func sessions(scope: SessionLoadScope, allowedProjectDirectories: [String]? = nil) async throws -> [SessionSummary] {
+  func sessions(scope: SessionLoadScope, allowedProjectDirectories: [String]? = nil, ignoredPaths: [String] = []) async throws -> [SessionSummary] {
     guard cacheStore != nil else { throw SessionProviderCacheError.cacheUnavailable }
     let preferFullInitialParse = ((try? await cacheStore?.fetchMeta().sessionCount) ?? 0) == 0
     guard let tmpRoot else { return [] }
@@ -175,6 +175,10 @@ actor GeminiSessionProvider {
 
     for hashURL in hashes {
       guard hashURL.hasDirectoryPath else { continue }
+      // Apply ignore rules
+      if shouldIgnorePath(hashURL.path, ignoredPaths: ignoredPaths) {
+        continue
+      }
       let hash = hashURL.lastPathComponent
       guard hash.count == 64,
         hash.range(of: "^[0-9a-f]+$", options: .regularExpression) != nil
@@ -203,6 +207,13 @@ actor GeminiSessionProvider {
         resolvedProjectPath: resolvedPath,
         cacheResults: true)
       for session in aggregated where matches(scope: scope, summary: session.summary) {
+        // Check ignore rules against cwd
+        // Note: Cache is preserved - we filter out ignored sessions but don't delete cache entries.
+        // This allows sessions to reappear if ignore rules are removed later.
+        // (aggregatedSessions already cached with cacheResults: true)
+        if shouldIgnoreSummary(session.summary, ignoredPaths: ignoredPaths) {
+          continue
+        }
         summaries.append(session.summary)
         rowsCacheBySessionId[session.summary.id] = session.rows
         canonicalURLById[session.summary.id] = session.primaryFileURL
@@ -444,6 +455,7 @@ actor GeminiSessionProvider {
 
     var segmentsBySession: [String: [GeminiParsedLog]] = [:]
     for info in fileInfo.files where info.url.pathExtension.lowercased() == "json" {
+      // Note: ignore rules are applied at hash directory level, not individual files
       guard let parsed = parser.parse(
         at: info.url, projectHash: hash, resolvedProjectPath: resolvedProjectPath)
       else { continue }
@@ -754,13 +766,19 @@ extension GeminiSessionProvider: SessionProvider {
       if let cacheStore {
         let dateColumn = context.dateDimension == .updated ? "COALESCE(last_updated_at, started_at)" : "started_at"
         let range = context.dateRange ?? Self.dateRange(for: context.scope)
-        let cached = try await cacheStore.fetchSummaries(
+        var cached = try await cacheStore.fetchSummaries(
           kinds: [.gemini],
           includeRemote: false,
           dateColumn: dateColumn,
           dateRange: range,
           projectIds: context.projectIds
         )
+        // Apply ignore rules to cached results
+        let originalCount = cached.count
+        if !context.ignoredPaths.isEmpty {
+          cached = cached.filter { !shouldIgnoreSummary($0, ignoredPaths: context.ignoredPaths) }
+          print("GeminiSessionProvider: filtered \(originalCount - cached.count) sessions by ignore rules (\(cached.count) remain)")
+        }
         if !cached.isEmpty {
           let filtered = cached.filter { sessionValidity(for: $0.fileURL) != .invalid }
           return SessionProviderResult(summaries: filtered, coverage: nil, cacheHit: true)
@@ -771,7 +789,8 @@ extension GeminiSessionProvider: SessionProvider {
       guard cacheStore != nil else { throw SessionProviderCacheError.cacheUnavailable }
       let summaries = try await sessions(
         scope: context.scope,
-        allowedProjectDirectories: context.projectDirectories
+        allowedProjectDirectories: context.projectDirectories,
+        ignoredPaths: context.ignoredPaths
       )
       return SessionProviderResult(summaries: summaries, coverage: nil, cacheHit: false)
     }
@@ -797,5 +816,15 @@ extension GeminiSessionProvider: SessionProvider {
       else { return nil }
       return (start, end)
     }
+  }
+  
+  // MARK: - Ignore Rules
+  
+  private func shouldIgnorePath(_ absolutePath: String, ignoredPaths: [String]) -> Bool {
+    SessionPathFilter.shouldIgnorePath(absolutePath, ignoredPaths: ignoredPaths)
+  }
+  
+  private func shouldIgnoreSummary(_ summary: SessionSummary, ignoredPaths: [String]) -> Bool {
+    SessionPathFilter.shouldIgnoreSummary(summary, ignoredPaths: ignoredPaths)
   }
 }

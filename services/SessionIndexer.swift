@@ -48,12 +48,13 @@ actor SessionIndexer {
     projectIds: Set<String>? = nil,
     projectDirectories: [String]? = nil,
     dateDimension: DateDimension = .updated,
-    forceFilesystemScan: Bool = false
+    forceFilesystemScan: Bool = false,
+    ignoredPaths: [String] = []
   ) async throws -> [SessionSummary] {
     let meta = try await ensureCacheAvailable()
     let preferFullInitialParse = meta.sessionCount == 0
     // First, try cached meta fast path so repeated .all refreshes don't re-enumerate
-    if !forceFilesystemScan, case .all = scope, let cached = try await cachedAllSummariesFromMeta() {
+    if !forceFilesystemScan, case .all = scope, let cached = try await cachedAllSummariesFromMeta(ignoredPaths: ignoredPaths) {
       return cached
     }
 
@@ -61,7 +62,7 @@ actor SessionIndexer {
       logger.debug("Refresh skipped: already in progress for scope=\(String(describing: scope), privacy: .public)")
       guard !forceFilesystemScan else { return [] }
       // When a refresh is already running, still try to surface cached data for scope
-      if case .all = scope, let cached = try await cachedAllSummariesFromMeta() {
+      if case .all = scope, let cached = try await cachedAllSummariesFromMeta(ignoredPaths: ignoredPaths) {
         return cached
       }
       let fallbackRange: (Date, Date)? = {
@@ -87,13 +88,17 @@ actor SessionIndexer {
         }
       }()
       let dateColumn = dateDimension == .updated ? "COALESCE(last_updated_at, started_at)" : "started_at"
-      if let cached = try? await sqliteStore.fetchSummaries(
+      if var cached = try? await sqliteStore.fetchSummaries(
         kinds: [.codex],
         includeRemote: false,
         dateColumn: dateColumn,
         dateRange: fallbackRange,
         projectIds: projectIds
       ), !cached.isEmpty {
+        // Apply ignore rules to cached summaries
+        if !ignoredPaths.isEmpty {
+          cached = cached.filter { !shouldIgnoreSummary($0, ignoredPaths: ignoredPaths) }
+        }
         return cached
       }
       return []
@@ -172,7 +177,8 @@ actor SessionIndexer {
       dateRange: dateRange,
       dateDimension: dateDimension,
       directories: scopedDirectories,
-      cachedRecords: cachedRecords
+      cachedRecords: cachedRecords,
+      ignoredPaths: ignoredPaths
     )
     logger.info(
       "Refreshing sessions under \(root.path, privacy: .public) scope=\(String(describing: scope), privacy: .public) count=\(sessionFiles.count)"
@@ -228,6 +234,12 @@ actor SessionIndexer {
             (record.fileSize == nil || fsize == nil || record.fileSize == fsize.map { UInt64($0) })
          {
            let summary = record.summary.withParseLevel(fromString: record.parseLevel)
+           // Check ignore rules against cwd
+           // Note: Cache is preserved - we filter out ignored sessions but don't delete cache entries.
+           // This allows sessions to reappear if ignore rules are removed later.
+           if shouldIgnoreSummary(summary, ignoredPaths: ignoredPaths) {
+             continue
+           }
            store(summary: summary, for: url as NSURL, modificationDate: mdate)
            summaries.append(summary)
            continue
@@ -238,6 +250,12 @@ actor SessionIndexer {
       }
 
       if let cached = cachedSummary(for: url as NSURL, modificationDate: mdate) {
+        // Check ignore rules against cwd
+        // Note: Cache is preserved - we filter out ignored sessions but don't delete cache entries.
+        // This allows sessions to reappear if ignore rules are removed later.
+        if shouldIgnoreSummary(cached, ignoredPaths: ignoredPaths) {
+          continue
+        }
         if shouldRecomputeTokens(for: url.path, modificationDate: mdate, summary: cached) {
           pending.append((url, mdate, fsize, cached.parseLevel?.rawValue))
         } else {
@@ -256,6 +274,12 @@ actor SessionIndexer {
             modificationDate: mdate,
             fileSize: fsize.flatMap { UInt64($0) })
         {
+          // Check ignore rules against cwd
+          // Note: Cache is preserved - we filter out ignored sessions but don't delete cache entries.
+          // This allows sessions to reappear if ignore rules are removed later.
+          if shouldIgnoreSummary(disk, ignoredPaths: ignoredPaths) {
+            continue
+          }
           if shouldRecomputeTokens(for: url.path, modificationDate: mdate, summary: disk) {
             pending.append((url, mdate, fsize, prevLevel ?? disk.parseLevel?.rawValue))
           } else {
@@ -328,6 +352,13 @@ actor SessionIndexer {
               }
               
               guard let result = summary else { return .success(nil) }
+              // Check ignore rules against cwd
+              // Note: If ignored, we skip caching this newly parsed session.
+              // Existing cache entries remain untouched - they will be filtered out when reading,
+              // but will reappear if ignore rules are removed later (cache preservation strategy).
+              if self.shouldIgnoreSummary(result, ignoredPaths: ignoredPaths) {
+                return .success(nil)
+              }
               let (cachedSummary, normalizedFullInstructions) = self.prepareSummaryForCache(result)
               
               // Track zero-token stability to avoid re-scans next time if still zero
@@ -541,7 +572,7 @@ actor SessionIndexer {
   }
 
   /// Cached fast path: return all summaries from SQLite meta without touching the filesystem.
-  private func cachedAllSummariesFromMeta() async throws -> [SessionSummary]? {
+  private func cachedAllSummariesFromMeta(ignoredPaths: [String] = []) async throws -> [SessionSummary]? {
     let meta = try await sqliteStore.fetchMeta()
     guard meta.sessionCount > 0 else { return nil }
     let records = try await sqliteStore.fetchAll()
@@ -549,7 +580,12 @@ actor SessionIndexer {
       return nil
     }
     logger.info("SessionIndexer meta hit: sessions=\(records.count, privacy: .public)")
-    return records.map { $0.summary.withParseLevel(fromString: $0.parseLevel) }
+    let summaries = records.map { $0.summary.withParseLevel(fromString: $0.parseLevel) }
+    // Apply ignore rules to cached summaries
+    if !ignoredPaths.isEmpty {
+      return summaries.filter { !shouldIgnoreSummary($0, ignoredPaths: ignoredPaths) }
+    }
+    return summaries
   }
 
   /// Fast tail scan to retrieve latest token_count for Codex/Gemini sessions.
@@ -559,7 +595,8 @@ actor SessionIndexer {
     dateRange: (Date, Date)?,
     dateDimension: DateDimension,
     directories: [URL]? = nil,
-    cachedRecords: [String: SessionIndexRecord]? = nil
+    cachedRecords: [String: SessionIndexRecord]? = nil,
+    ignoredPaths: [String] = []
   ) throws -> [URL] {
     var urls: [URL] = []
     let targets: [URL]
@@ -605,6 +642,16 @@ actor SessionIndexer {
         while let obj = enumerator.nextObject() {
           guard let fileURL = obj as? URL else { continue }
           guard fileURL.pathExtension.lowercased() == "jsonl" else { continue }
+          // Apply ignore rules - check both file path and cwd
+          if shouldIgnorePath(fileURL.path, ignoredPaths: ignoredPaths) {
+            continue
+          }
+          // Quick check cwd if ignore rules are present
+          if !ignoredPaths.isEmpty {
+            if let cwd = fastExtractCWD(url: fileURL), shouldIgnorePath(cwd, ignoredPaths: ignoredPaths) {
+              continue
+            }
+          }
           let values = try? fileURL.resourceValues(
             forKeys: Set<URLResourceKey>([.isRegularFileKey, .contentModificationDateKey]))
           guard values?.isRegularFile == true else { continue }
@@ -640,6 +687,16 @@ actor SessionIndexer {
       while let obj = enumerator.nextObject() {
         guard let fileURL = obj as? URL else { continue }
         if fileURL.pathExtension.lowercased() == "jsonl" {
+          // Apply ignore rules - check both file path and cwd
+          if shouldIgnorePath(fileURL.path, ignoredPaths: ignoredPaths) {
+            continue
+          }
+          // Quick check cwd if ignore rules are present
+          if !ignoredPaths.isEmpty {
+            if let cwd = fastExtractCWD(url: fileURL), shouldIgnorePath(cwd, ignoredPaths: ignoredPaths) {
+              continue
+            }
+          }
           if let dateRange, dateDimension == .updated {
             let values = try? fileURL.resourceValues(forKeys: Set<URLResourceKey>([.contentModificationDateKey]))
             if let mdate = values?.contentModificationDate {
@@ -1328,8 +1385,8 @@ actor SessionIndexer {
   }
 
   /// Returns cached summaries when a full index already exists.
-  func cachedAllSummaries() async throws -> [SessionSummary]? {
-    return try await cachedAllSummariesFromMeta()
+  func cachedAllSummaries(ignoredPaths: [String] = []) async throws -> [SessionSummary]? {
+    return try await cachedAllSummariesFromMeta(ignoredPaths: ignoredPaths)
   }
 }
 
@@ -1348,18 +1405,22 @@ extension SessionIndexer: SessionProvider {
     switch context.cachePolicy {
     case .cacheOnly:
       // Try scoped cached summaries first
-      let cached = try await sqliteStore.fetchSummaries(
+      var cached = try await sqliteStore.fetchSummaries(
         kinds: [.codex],
         includeRemote: false,
         dateColumn: dateColumn(for: context.dateDimension),
         dateRange: context.dateRange,
         projectIds: context.projectIds
       )
+      // Apply ignore rules to cached summaries
+      if !context.ignoredPaths.isEmpty {
+        cached = cached.filter { !shouldIgnoreSummary($0, ignoredPaths: context.ignoredPaths) }
+      }
       if !cached.isEmpty {
         let coverage = await currentCoverage()
         return SessionProviderResult(summaries: cached, coverage: coverage, cacheHit: true)
       }
-      if context.scope == .all, let cached = try await cachedAllSummaries() {
+      if context.scope == .all, let cached = try await cachedAllSummaries(ignoredPaths: context.ignoredPaths) {
         let coverage = await currentCoverage()
         return SessionProviderResult(
           summaries: cached,
@@ -1376,7 +1437,8 @@ extension SessionIndexer: SessionProvider {
         projectIds: context.projectIds,
         projectDirectories: context.projectDirectories,
         dateDimension: context.dateDimension,
-        forceFilesystemScan: context.forceFilesystemScan
+        forceFilesystemScan: context.forceFilesystemScan,
+        ignoredPaths: context.ignoredPaths
       )
       let coverage = await currentCoverage()
       return SessionProviderResult(
@@ -1510,5 +1572,15 @@ extension SessionIndexer: SessionProvider {
       logger.error("fetchRecords(sessionIds:) failed: \(error.localizedDescription, privacy: .public)")
       return []
     }
+  }
+  
+  // MARK: - Ignore Rules
+  
+  nonisolated private func shouldIgnorePath(_ absolutePath: String, ignoredPaths: [String]) -> Bool {
+    SessionPathFilter.shouldIgnorePath(absolutePath, ignoredPaths: ignoredPaths)
+  }
+  
+  nonisolated private func shouldIgnoreSummary(_ summary: SessionSummary, ignoredPaths: [String]) -> Bool {
+    SessionPathFilter.shouldIgnoreSummary(summary, ignoredPaths: ignoredPaths)
   }
 }

@@ -48,7 +48,7 @@ actor ClaudeSessionProvider {
         return FileManager.default.homeDirectoryForCurrentUser
     }
 
-    func sessions(scope: SessionLoadScope) async throws -> [SessionSummary] {
+    func sessions(scope: SessionLoadScope, ignoredPaths: [String] = []) async throws -> [SessionSummary] {
         guard cacheStore != nil else { throw SessionProviderCacheError.cacheUnavailable }
         guard let root else { return [] }
         guard let enumerator = fileManager.enumerator(
@@ -63,6 +63,10 @@ actor ClaudeSessionProvider {
         let urls = enumerator.compactMap { $0 as? URL }
         for url in urls {
             guard url.pathExtension.lowercased() == "jsonl" else { continue }
+            // Apply ignore rules
+            if shouldIgnorePath(url.path, ignoredPaths: ignoredPaths) {
+                continue
+            }
             let values = try url.resourceValues(
                 forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
             guard values.isRegularFile == true else { continue }
@@ -71,6 +75,13 @@ actor ClaudeSessionProvider {
             let summary = try await cachedSummary(for: url, modificationDate: mtime, fileSize: fileSize)
                 ?? parser.parse(at: url, fileSize: fileSize)?.summary
             guard let summary else { continue }
+            // Check ignore rules against cwd
+            // Note: If ignored, we skip caching this newly parsed session.
+            // Existing cache entries remain untouched - they will be filtered out when reading,
+            // but will reappear if ignore rules are removed later (cache preservation strategy).
+            if shouldIgnoreSummary(summary, ignoredPaths: ignoredPaths) {
+                continue
+            }
             guard matches(scope: scope, summary: summary) else { continue }
             cache(summary: summary, for: url, modificationDate: mtime, fileSize: fileSize)
             persist(summary: summary, modificationDate: mtime, fileSize: fileSize)
@@ -413,13 +424,19 @@ extension ClaudeSessionProvider: SessionProvider {
             if let cacheStore {
                 let dateColumn = context.dateDimension == .updated ? "COALESCE(last_updated_at, started_at)" : "started_at"
                 let range = context.dateRange ?? Self.dateRange(for: context.scope)
-                let cached = try await cacheStore.fetchSummaries(
+                var cached = try await cacheStore.fetchSummaries(
                     kinds: [.claude],
                     includeRemote: false,
                     dateColumn: dateColumn,
                     dateRange: range,
                     projectIds: context.projectIds
                 )
+                // Apply ignore rules to cached results
+                let originalCount = cached.count
+                if !context.ignoredPaths.isEmpty {
+                    cached = cached.filter { !shouldIgnoreSummary($0, ignoredPaths: context.ignoredPaths) }
+                    print("ClaudeSessionProvider: filtered \(originalCount - cached.count) sessions by ignore rules (\(cached.count) remain)")
+                }
                 if !cached.isEmpty {
                     return SessionProviderResult(summaries: cached, coverage: nil, cacheHit: true)
                 }
@@ -429,7 +446,7 @@ extension ClaudeSessionProvider: SessionProvider {
             guard let cacheStore else { throw SessionProviderCacheError.cacheUnavailable }
             // Require cache availability; if missing/unopenable, surface error instead of falling back to parse.
             _ = try await cacheStore.fetchMeta()
-            let summaries = try await sessions(scope: context.scope)
+            let summaries = try await sessions(scope: context.scope, ignoredPaths: context.ignoredPaths)
             return SessionProviderResult(summaries: summaries, coverage: nil, cacheHit: false)
         }
     }
@@ -455,4 +472,14 @@ extension ClaudeSessionProvider: SessionProvider {
             return (start, end)
         }
     }
+    
+  // MARK: - Ignore Rules
+  
+  private func shouldIgnorePath(_ absolutePath: String, ignoredPaths: [String]) -> Bool {
+    SessionPathFilter.shouldIgnorePath(absolutePath, ignoredPaths: ignoredPaths)
+  }
+  
+  private func shouldIgnoreSummary(_ summary: SessionSummary, ignoredPaths: [String]) -> Bool {
+    SessionPathFilter.shouldIgnoreSummary(summary, ignoredPaths: ignoredPaths)
+  }
 }
