@@ -6,12 +6,11 @@ struct TagView: View {
     var isEnabled: Bool = true
     var isClosable: Bool = true
     var isRemovable: Bool = true
-    var closeIcon: Image? = nil
     var onClose: (() -> Void)? = nil
     var onToggle: ((Bool) -> Void)? = nil
-    
+
     @State private var isHovered = false
-    
+
     var body: some View {
         HStack(spacing: 4) {
             // Tag text (clickable to toggle if onToggle is provided)
@@ -26,7 +25,7 @@ struct TagView: View {
                         onToggle(!isEnabled)
                     }
                 }
-            
+
             // Close button (if closable and removable)
             if isClosable && isRemovable, let onClose = onClose {
                 Button {
@@ -53,16 +52,14 @@ struct TagView: View {
             isHovered = hovering
         }
     }
-    
+
     private var backgroundColor: Color {
-        if !isEnabled {
+        guard isEnabled else {
             return Color.secondary.opacity(0.08)
         }
-        return isHovered 
-            ? Color.accentColor.opacity(0.15)
-            : Color.accentColor.opacity(0.12)
+        return Color.accentColor.opacity(isHovered ? 0.15 : 0.12)
     }
-    
+
     private var borderColor: Color {
         Color.accentColor.opacity(0.3)
     }
@@ -73,7 +70,7 @@ struct TagsView: View {
     let tags: [TagItem]
     var spacing: CGFloat = 6
     var alignment: HorizontalAlignment = .leading
-    
+
     var body: some View {
         FlowLayout(spacing: spacing, alignment: alignment) {
             ForEach(tags.indices, id: \.self) { index in
@@ -99,7 +96,7 @@ struct TagItem: Identifiable {
     var isRemovable: Bool = true
     var onClose: (() -> Void)? = nil
     var onToggle: ((Bool) -> Void)? = nil
-    
+
     init(
         id: String? = nil,
         text: String,
@@ -123,9 +120,9 @@ struct TagItem: Identifiable {
 struct FlowLayout: Layout {
     var spacing: CGFloat = 6
     var alignment: HorizontalAlignment = .leading
-    
+
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? 10000 // Use a large default if unspecified
+        let maxWidth = proposal.width ?? 10000  // Use a large default if unspecified
         let result = FlowResult(
             in: maxWidth,
             subviews: subviews,
@@ -133,44 +130,49 @@ struct FlowLayout: Layout {
         )
         return result.size
     }
-    
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+
+    func placeSubviews(
+        in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()
+    ) {
         let result = FlowResult(
             in: bounds.width,
             subviews: subviews,
             spacing: spacing
         )
         for (index, subview) in subviews.enumerated() {
-            subview.place(at: CGPoint(x: bounds.minX + result.frames[index].minX,
-                                     y: bounds.minY + result.frames[index].minY),
-                         proposal: .unspecified)
+            subview.place(
+                at: CGPoint(
+                    x: bounds.minX + result.frames[index].minX,
+                    y: bounds.minY + result.frames[index].minY),
+                proposal: .unspecified)
         }
     }
-    
+
     struct FlowResult {
         var size: CGSize = .zero
         var frames: [CGRect] = []
-        
+
         init(in maxWidth: CGFloat, subviews: Subviews, spacing: CGFloat) {
             var currentX: CGFloat = 0
             var currentY: CGFloat = 0
             var lineHeight: CGFloat = 0
-            
-            for (index, subview) in subviews.enumerated() {
+
+            for (_, subview) in subviews.enumerated() {
                 let size = subview.sizeThatFits(.unspecified)
-                
+
                 if currentX + size.width > maxWidth && currentX > 0 {
                     // Start a new line
                     currentY += lineHeight + spacing
                     currentX = 0
                     lineHeight = 0
                 }
-                
-                frames.append(CGRect(x: currentX, y: currentY, width: size.width, height: size.height))
+
+                frames.append(
+                    CGRect(x: currentX, y: currentY, width: size.width, height: size.height))
                 lineHeight = max(lineHeight, size.height)
                 currentX += size.width + spacing
             }
-            
+
             self.size = CGSize(
                 width: maxWidth,
                 height: currentY + lineHeight

@@ -694,7 +694,7 @@ final class SessionListViewModel: ObservableObject {
         Task { await self.syncRemoteHosts(force: true, refreshAfter: true) }
       }
       .store(in: &cancellables)
-    
+
     // Observe session path configs changes (ignore rules, enabled state)
     // When enabled state changes, trigger full refresh to rebuild providers
     // When only ignore rules change, trigger refresh but only from cache (no filesystem scan)
@@ -706,10 +706,12 @@ final class SessionListViewModel: ObservableObject {
       .sink { [weak self] newConfigs in
         guard let self else { return }
         // Check if enabled state changed (requires provider rebuild)
-        let previousEnabled = Set(previousConfigs.filter { $0.enabled }.map { "\($0.kind.rawValue):\($0.id)" })
-        let currentEnabled = Set(newConfigs.filter { $0.enabled }.map { "\($0.kind.rawValue):\($0.id)" })
+        let previousEnabled = Set(
+          previousConfigs.filter { $0.enabled }.map { "\($0.kind.rawValue):\($0.id)" })
+        let currentEnabled = Set(
+          newConfigs.filter { $0.enabled }.map { "\($0.kind.rawValue):\($0.id)" })
         previousConfigs = newConfigs
-        
+
         if previousEnabled != currentEnabled {
           // Enabled state changed - need full refresh to rebuild providers
           // Important: toggling providers can overlap with manual refresh (Cmd+R). Cancel pending work
@@ -822,7 +824,8 @@ final class SessionListViewModel: ObservableObject {
       diagLogger.log(
         "refreshSessions skipped due to cache unavailable (cooldown) ts=\(self.ts(), format: .fixed(precision: 3))"
       )
-      StatusBarLogStore.shared.post("Refresh skipped (cache unavailable)", level: .warning, source: "Sessions")
+      StatusBarLogStore.shared.post(
+        "Refresh skipped (cache unavailable)", level: .warning, source: "Sessions")
       await MainActor.run { self.isLoading = false }
       return
     }
@@ -833,7 +836,8 @@ final class SessionListViewModel: ObservableObject {
       diagLogger.log(
         "refreshSessions skipped (executing or recent) scope=\(scopeKeyValue, privacy: .public) force=\(force, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
       )
-      StatusBarLogStore.shared.post("Refresh skipped (already running)", level: .warning, source: "Sessions")
+      StatusBarLogStore.shared.post(
+        "Refresh skipped (already running)", level: .warning, source: "Sessions")
       await MainActor.run { self.isLoading = false }
       return
     }
@@ -881,7 +885,7 @@ final class SessionListViewModel: ObservableObject {
     // Get ignored paths for Codex (merge all enabled Codex configs)
     let codexConfigs = preferences.sessionPathConfigs.filter { $0.kind == .codex && $0.enabled }
     let codexIgnoredPaths = codexConfigs.flatMap { $0.ignoredSubpaths }
-    
+
     let cacheContext = SessionProviderContext(
       scope: scope,
       sessionsRoot: preferences.sessionsRoot,
@@ -1000,7 +1004,7 @@ final class SessionListViewModel: ObservableObject {
       Task { await self.refreshSelectedSessions(sessionIds: self.selectedSessionIDs, force: force) }
     }
   }
-  
+
   /// Refresh sessions when provider enabled state changes
   /// Loads all sessions (scope: .all) to ensure complete restoration when re-enabling a provider
   private func refreshSessionsForProviderChange(force: Bool = false) async {
@@ -1008,11 +1012,11 @@ final class SessionListViewModel: ObservableObject {
     scheduledFilterRefresh = nil
     let token = UUID()
     activeRefreshToken = token
-    
+
     // Use .all scope to load all sessions when provider state changes
     let scope: SessionLoadScope = .all
     let scopeKeyValue = scopeKey(scope)
-    
+
     isLoading = true
     beginRefreshStatus(force: force)
     activeScopeRefreshes[scopeKeyValue] = token
@@ -1036,19 +1040,19 @@ final class SessionListViewModel: ObservableObject {
         )
       }
     }
-    
+
     await ensureSessionsAccess()
-    
+
     let enabledRemoteHosts = preferences.enabledRemoteHosts
     diagLogger.log(
       "refreshSessionsForProviderChange start force=\(force, privacy: .public) scope=all ts=\(self.ts(), format: .fixed(precision: 3))"
     )
-    
+
     let providers = buildProviders(enabledRemoteHosts: Set(enabledRemoteHosts))
     // Load all sessions, not scoped to current selection
     let codexConfigs = preferences.sessionPathConfigs.filter { $0.kind == .codex && $0.enabled }
     let codexIgnoredPaths = codexConfigs.flatMap { $0.ignoredSubpaths }
-    
+
     let cacheContext = SessionProviderContext(
       scope: scope,
       sessionsRoot: preferences.sessionsRoot,
@@ -1073,12 +1077,12 @@ final class SessionListViewModel: ObservableObject {
       cachePolicy: .refresh,
       ignoredPaths: codexIgnoredPaths
     )
-    
+
     let cachedResults = await loadProviders(providers, context: cacheContext)
     let cachedSessions = dedupProviderSessions(cachedResults)
     let notes = await notesStore.all()
     notesSnapshot = notes
-    
+
     if token == activeRefreshToken, !cachedSessions.isEmpty {
       var cachedForApply = cachedSessions
       apply(notes: notes, to: &cachedForApply)
@@ -1086,10 +1090,10 @@ final class SessionListViewModel: ObservableObject {
       smartMergeAllSessions(newSessions: cachedForApply)
       scheduleFiltersUpdate()
     }
-    
+
     let refreshedResults = await loadProviders(providers, context: refreshContext)
     var sessions = dedupProviderSessions(cachedSessions + refreshedResults)
-    
+
     guard token == activeRefreshToken else { return }
     let previousIDs = Set(allSessions.map { $0.id })
     Task { @MainActor in
@@ -1152,12 +1156,12 @@ final class SessionListViewModel: ObservableObject {
     }
     refreshGeminiUsageStatus(silent: false)
     schedulePathTreeRefresh()
-    
+
     if !selectedSessionIDs.isEmpty {
       Task { await self.refreshSelectedSessions(sessionIds: self.selectedSessionIDs, force: force) }
     }
   }
-  
+
   /// Refresh sessions from cache only (no filesystem scan)
   /// Used when ignore rules change - applies new rules to cached sessions without rescanning
   /// Cache is preserved - sessions will reappear if ignore rules are removed later
@@ -1168,11 +1172,11 @@ final class SessionListViewModel: ObservableObject {
     let scope: SessionLoadScope = .all
     let enabledRemoteHosts = preferences.enabledRemoteHosts
     let providers = buildProviders(enabledRemoteHosts: Set(enabledRemoteHosts))
-    
+
     // Get ignored paths (merge all enabled configs)
     let codexConfigs = preferences.sessionPathConfigs.filter { $0.kind == .codex && $0.enabled }
     let codexIgnoredPaths = codexConfigs.flatMap { $0.ignoredSubpaths }
-    
+
     let cacheContext = SessionProviderContext(
       scope: scope,
       sessionsRoot: preferences.sessionsRoot,
@@ -1185,12 +1189,12 @@ final class SessionListViewModel: ObservableObject {
       cachePolicy: .cacheOnly,
       ignoredPaths: codexIgnoredPaths
     )
-    
+
     let cachedResults = await loadProviders(providers, context: cacheContext)
     let sessions = dedupProviderSessions(cachedResults)
     let notes = await notesStore.all()
     notesSnapshot = notes
-    
+
     var sessionsForApply = sessions
     apply(notes: notes, to: &sessionsForApply)
     registerActivityHeartbeat(previous: allSessions, current: sessionsForApply)
@@ -1389,7 +1393,7 @@ final class SessionListViewModel: ObservableObject {
     diagLogger.log(
       "buildProviders: codex=\(codexEnabled, privacy: .public) claude=\(claudeEnabled, privacy: .public) gemini=\(geminiEnabled, privacy: .public) remoteHosts=\(enabledRemoteHosts.count, privacy: .public)"
     )
-    
+
     if codexEnabled {
       providers.append(indexer)
     }
@@ -1399,7 +1403,7 @@ final class SessionListViewModel: ObservableObject {
     if geminiEnabled {
       providers.append(geminiProvider)
     }
-    
+
     if !enabledRemoteHosts.isEmpty {
       if codexEnabled {
         providers.append(
@@ -1441,11 +1445,16 @@ final class SessionListViewModel: ObservableObject {
       for provider in providers {
         group.addTask { [self] in
           // Get ignored paths for this provider's kind (merge all configs of same kind, must access on MainActor)
+          // Filter out disabled subpaths
           let ignoredPaths = await MainActor.run {
-            let configs = preferences.sessionPathConfigs.filter { $0.kind == provider.kind && $0.enabled }
-            return configs.flatMap { $0.ignoredSubpaths }
+            let configs = preferences.sessionPathConfigs.filter {
+              $0.kind == provider.kind && $0.enabled
+            }
+            return configs.flatMap { config in
+              config.ignoredSubpaths.filter { !config.disabledSubpaths.contains($0) }
+            }
           }
-          
+
           // Create context with provider-specific ignored paths
           let providerContext = SessionProviderContext(
             scope: context.scope,
@@ -1459,7 +1468,7 @@ final class SessionListViewModel: ObservableObject {
             cachePolicy: context.cachePolicy,
             ignoredPaths: ignoredPaths
           )
-          
+
           do {
             let result = try await provider.load(context: providerContext)
             let label = result.summaries.first?.source.baseKind.rawValue ?? provider.kind.rawValue
@@ -1669,7 +1678,8 @@ final class SessionListViewModel: ObservableObject {
     do {
       try actions.delete(summaries: summaries)
       await indexer.deleteSessions(ids: summaries.map(\.id))
-      AppLogger.shared.success("Deleted \(count) session\(count == 1 ? "" : "s")", source: "Sessions")
+      AppLogger.shared.success(
+        "Deleted \(count) session\(count == 1 ? "" : "s")", source: "Sessions")
       await refreshSessions(force: true)
     } catch {
       AppLogger.shared.error("Delete failed: \(error.localizedDescription)", source: "Sessions")
@@ -3426,7 +3436,8 @@ final class SessionListViewModel: ObservableObject {
     do {
       let geminiConfigs = preferences.sessionPathConfigs.filter { $0.kind == .gemini && $0.enabled }
       let geminiIgnoredPaths = geminiConfigs.flatMap { $0.ignoredSubpaths }
-      let subset = try await geminiProvider.sessions(scope: .day(dayOfToday()), ignoredPaths: geminiIgnoredPaths)
+      let subset = try await geminiProvider.sessions(
+        scope: .day(dayOfToday()), ignoredPaths: geminiIgnoredPaths)
       await MainActor.run { self.mergeAndApply(subset) }
     } catch {
       diagLogger.error(
@@ -3438,7 +3449,8 @@ final class SessionListViewModel: ObservableObject {
     do {
       let claudeConfigs = preferences.sessionPathConfigs.filter { $0.kind == .claude && $0.enabled }
       let claudeIgnoredPaths = claudeConfigs.flatMap { $0.ignoredSubpaths }
-      let subset = try await claudeProvider.sessions(scope: .day(dayOfToday()), ignoredPaths: claudeIgnoredPaths)
+      let subset = try await claudeProvider.sessions(
+        scope: .day(dayOfToday()), ignoredPaths: claudeIgnoredPaths)
       await MainActor.run { self.mergeAndApply(subset) }
     } catch {
       diagLogger.error(
@@ -3543,10 +3555,12 @@ extension SessionListViewModel {
 
     let claudeConfigs = preferences.sessionPathConfigs.filter { $0.kind == .claude && $0.enabled }
     let claudeIgnoredPaths = claudeConfigs.flatMap { $0.ignoredSubpaths }
-    let claudeSummaries = (try? await claudeProvider.sessions(scope: .all, ignoredPaths: claudeIgnoredPaths)) ?? []
+    let claudeSummaries =
+      (try? await claudeProvider.sessions(scope: .all, ignoredPaths: claudeIgnoredPaths)) ?? []
     let geminiConfigs = preferences.sessionPathConfigs.filter { $0.kind == .gemini && $0.enabled }
     let geminiIgnoredPaths = geminiConfigs.flatMap { $0.ignoredSubpaths }
-    let geminiSummaries = (try? await geminiProvider.sessions(scope: .all, ignoredPaths: geminiIgnoredPaths)) ?? []
+    let geminiSummaries =
+      (try? await geminiProvider.sessions(scope: .all, ignoredPaths: geminiIgnoredPaths)) ?? []
 
     var idSet = Set<String>()
     for s in codexSummaries { idSet.insert(s.id) }
@@ -3602,7 +3616,8 @@ extension SessionListViewModel {
     minInterval: TimeInterval = 15
   ) {
     if let last = lastUsageRefreshByProvider[provider],
-       triggerDate.timeIntervalSince(last) < minInterval {
+      triggerDate.timeIntervalSince(last) < minInterval
+    {
       return
     }
     lastUsageRefreshByProvider[provider] = triggerDate
@@ -4340,7 +4355,8 @@ extension SessionListViewModel {
     let enabledHosts = preferences.enabledRemoteHosts
     guard !enabledHosts.isEmpty else { return }
     let hostCount = enabledHosts.count
-    AppLogger.shared.info("Syncing \(hostCount) remote host\(hostCount == 1 ? "" : "s")", source: "Remote")
+    AppLogger.shared.info(
+      "Syncing \(hostCount) remote host\(hostCount == 1 ? "" : "s")", source: "Remote")
     await remoteProvider.syncHosts(enabledHosts, force: force)
     await updateRemoteSyncStates()
     AppLogger.shared.success("Remote sync complete", source: "Remote")
