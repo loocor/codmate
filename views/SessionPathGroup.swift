@@ -4,6 +4,8 @@ struct SessionPathGroup: View {
     @Binding var config: SessionPathConfig
     let diagnostics: SessionsDiagnostics.Probe?
     let canDelete: Bool
+    let showToggle: Bool
+    let showHeader: Bool
     var onDelete: (() -> Void)? = nil
     @State private var showingDiagnostics = false
     @State private var showingAddIgnore = false
@@ -13,45 +15,53 @@ struct SessionPathGroup: View {
     private var localAuthProvider: LocalAuthProvider? {
         LocalAuthProvider(rawValue: config.kind.rawValue)
     }
+    
+    private var isEnabled: Bool {
+        showToggle ? config.enabled : true
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header: Icon + Name + Delete (hover) + Switch (always visible)
-            HStack(alignment: .center, spacing: 12) {
-                // Brand icon
-                if let provider = localAuthProvider {
-                    LocalAuthProviderIconView(provider: provider, size: 16, cornerRadius: 3)
-                }
-
-                Text(config.displayName ?? config.kind.displayName)
-                    .font(.headline)
-                    .fontWeight(.medium)
-
-                Spacer()
-
-                // Delete button (only visible on hover, transparent background)
-                if canDelete, let onDelete = onDelete {
-                    Button {
-                        onDelete()
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
+            if showHeader {
+                HStack(alignment: .center, spacing: 12) {
+                    // Brand icon
+                    if let provider = localAuthProvider {
+                        LocalAuthProviderIconView(provider: provider, size: 16, cornerRadius: 3)
                     }
-                    .buttonStyle(.plain)
-                    .opacity(isHovered ? 1.0 : 0.0)
-                    .help("Delete")
-                }
 
-                Toggle("", isOn: $config.enabled)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .controlSize(.small)
+                    Text(config.displayName ?? config.kind.displayName)
+                        .font(.headline)
+                        .fontWeight(.medium)
+
+                    Spacer()
+
+                    // Delete button (only visible on hover, transparent background)
+                    if canDelete, let onDelete = onDelete {
+                        Button {
+                            onDelete()
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .opacity(isHovered ? 1.0 : 0.0)
+                        .help("Delete")
+                    }
+
+                    if showToggle {
+                        Toggle("", isOn: $config.enabled)
+                            .toggleStyle(.switch)
+                            .labelsHidden()
+                            .controlSize(.small)
+                    }
+                }
+                .padding(10)
             }
-            .padding(10)
 
             // Content: Only shown when enabled
-            if config.enabled {
+            if isEnabled {
                 VStack(alignment: .leading, spacing: 0) {
                     Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
                         // Path (first item)

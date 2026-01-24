@@ -57,6 +57,7 @@ struct CodexSettingsView: View {
                     TabView {
                         Tab("Provider", systemImage: "server.rack") { providerPane }
                         Tab("Runtime", systemImage: "gearshape.2") { runtimePane }
+                        Tab("Sessions", systemImage: "folder.badge.gearshape") { sessionsPane }
                         Tab("Features", systemImage: "wand.and.stars") { featuresPane }
                         Tab("Privacy", systemImage: "lock.shield") { privacyPane }
                         Tab("Raw Config", systemImage: "doc.text") { rawConfigPane }
@@ -67,6 +68,8 @@ struct CodexSettingsView: View {
                             .tabItem { Label("Provider", systemImage: "server.rack") }
                         runtimePane
                             .tabItem { Label("Runtime", systemImage: "gearshape.2") }
+                        sessionsPane
+                            .tabItem { Label("Sessions", systemImage: "folder.badge.gearshape") }
                         featuresPane
                             .tabItem { Label("Features", systemImage: "wand.and.stars") }
                         privacyPane
@@ -289,6 +292,13 @@ struct CodexSettingsView: View {
                                 .frame(maxWidth: .infinity, alignment: .trailing)
                         }
                     }
+        }
+    }
+
+    // MARK: - Sessions Pane
+    private var sessionsPane: some View {
+        SettingsTabContent {
+            SessionsPathPane(preferences: preferences, fixedKind: .codex)
         }
     }
 

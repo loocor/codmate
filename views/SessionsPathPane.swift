@@ -3,12 +3,21 @@ import AppKit
 
 struct SessionsPathPane: View {
     @ObservedObject var preferences: SessionPreferencesStore
+    let fixedKind: SessionSource.Kind?
     @State private var diagnostics: [String: SessionsDiagnostics.Probe] = [:]
     @State private var loadingDiagnostics = false
     @State private var showingAddPath = false
-    @State private var selectedKind: SessionSource.Kind = .codex
+    @State private var selectedKind: SessionSource.Kind
+    
+    init(preferences: SessionPreferencesStore, fixedKind: SessionSource.Kind? = nil) {
+        self.preferences = preferences
+        self.fixedKind = fixedKind
+        _selectedKind = State(initialValue: fixedKind ?? .codex)
+    }
     
     var body: some View {
+        let isFixed = fixedKind != nil
+
         VStack(alignment: .leading, spacing: 18) {
             // Default Paths Section
             VStack(alignment: .leading, spacing: 10) {
@@ -28,7 +37,9 @@ struct SessionsPathPane: View {
                                 set: { updateConfig($0) }
                             ),
                             diagnostics: diagnostics[config.id],
-                            canDelete: false
+                            canDelete: false,
+                            showToggle: !isFixed,
+                            showHeader: !isFixed
                         )
                         .disabled(!preferences.isCLIEnabled(config.kind))
                         .opacity(preferences.isCLIEnabled(config.kind) ? 1.0 : 0.6)
@@ -70,6 +81,8 @@ struct SessionsPathPane: View {
                             ),
                             diagnostics: diagnostics[config.id],
                             canDelete: true,
+                            showToggle: true,
+                            showHeader: true,
                             onDelete: {
                                 deleteConfig(config)
                             }
@@ -82,12 +95,14 @@ struct SessionsPathPane: View {
         }
         }
         .task {
+            ensureDefaultEnabled()
             await refreshDiagnostics()
         }
         .sheet(isPresented: $showingAddPath) {
             AddSessionPathSheet(
                 selectedKind: $selectedKind,
                 preferences: preferences,
+                fixedKind: fixedKind,
                 onAdd: { kind, path in
                     addCustomPath(kind: kind, path: path)
                 }
@@ -95,13 +110,20 @@ struct SessionsPathPane: View {
         }
     }
     
+    private var scopedConfigs: [SessionPathConfig] {
+        preferences.sessionPathConfigs.filter { config in
+            guard let fixedKind else { return true }
+            return config.kind == fixedKind
+        }
+    }
+    
     private var defaultPaths: [SessionPathConfig] {
-        preferences.sessionPathConfigs.filter { $0.isDefault }
+        scopedConfigs.filter { $0.isDefault }
             .sorted { $0.kind.rawValue < $1.kind.rawValue }
     }
     
     private var customPaths: [SessionPathConfig] {
-        preferences.sessionPathConfigs.filter { !$0.isDefault }
+        scopedConfigs.filter { !$0.isDefault }
             .sorted { $0.path < $1.path }
     }
     
@@ -112,6 +134,7 @@ struct SessionsPathPane: View {
             preferences.sessionPathConfigs = configs
         }
         Task {
+            ensureDefaultEnabled()
             await refreshDiagnostics()
         }
     }
@@ -144,6 +167,21 @@ struct SessionsPathPane: View {
         }
     }
     
+    private func ensureDefaultEnabled() {
+        guard let fixedKind else { return }
+        var configs = preferences.sessionPathConfigs
+        var didChange = false
+        for index in configs.indices {
+            if configs[index].isDefault && configs[index].kind == fixedKind && !configs[index].enabled {
+                configs[index].enabled = true
+                didChange = true
+            }
+        }
+        if didChange {
+            preferences.sessionPathConfigs = configs
+        }
+    }
+    
     private func refreshDiagnostics() async {
         loadingDiagnostics = true
         defer { loadingDiagnostics = false }
@@ -151,7 +189,7 @@ struct SessionsPathPane: View {
         let diagnosticsService = SessionsDiagnosticsService()
         var newDiagnostics: [String: SessionsDiagnostics.Probe] = [:]
         
-        for config in preferences.sessionPathConfigs {
+        for config in scopedConfigs {
             let url = URL(fileURLWithPath: config.path)
             let probe = await diagnosticsService.probe(root: url, fileExtension: fileExtension(for: config.kind))
             newDiagnostics[config.id] = probe
@@ -175,6 +213,7 @@ struct SessionsPathPane: View {
 struct AddSessionPathSheet: View {
     @Binding var selectedKind: SessionSource.Kind
     @ObservedObject var preferences: SessionPreferencesStore
+    let fixedKind: SessionSource.Kind?
     let onAdd: (SessionSource.Kind, String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selectedPath: String = ""
@@ -185,16 +224,18 @@ struct AddSessionPathSheet: View {
                 .font(.title2)
                 .fontWeight(.bold)
             
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Type")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                Picker("", selection: $selectedKind) {
-                    Text("Codex").tag(SessionSource.Kind.codex)
-                    Text("Claude").tag(SessionSource.Kind.claude)
-                    Text("Gemini").tag(SessionSource.Kind.gemini)
+            if fixedKind == nil {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Type")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Picker("", selection: $selectedKind) {
+                        Text("Codex").tag(SessionSource.Kind.codex)
+                        Text("Claude").tag(SessionSource.Kind.claude)
+                        Text("Gemini").tag(SessionSource.Kind.gemini)
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
             }
             
             VStack(alignment: .leading, spacing: 12) {

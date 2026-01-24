@@ -36,6 +36,7 @@ struct GeminiSettingsView: View {
             Tab("Provider", systemImage: "server.rack") { providerTab }
             Tab("General", systemImage: "gearshape") { generalTab }
             Tab("Runtime", systemImage: "gauge") { runtimeTab }
+            Tab("Sessions", systemImage: "folder.badge.gearshape") { sessionsTab }
             Tab("Model", systemImage: "cpu") { modelTab }
             Tab("Raw Config", systemImage: "doc.text") { rawTab }
           }
@@ -47,6 +48,8 @@ struct GeminiSettingsView: View {
               .tabItem { Label("General", systemImage: "gearshape") }
             runtimeTab
               .tabItem { Label("Runtime", systemImage: "gauge") }
+            sessionsTab
+              .tabItem { Label("Sessions", systemImage: "folder.badge.gearshape") }
             modelTab
               .tabItem { Label("Model", systemImage: "cpu") }
             rawTab
@@ -233,6 +236,12 @@ struct GeminiSettingsView: View {
           }
         }
       }
+    }
+  }
+
+  private var sessionsTab: some View {
+    SettingsTabContent {
+      SessionsPathPane(preferences: preferences, fixedKind: .gemini)
     }
   }
 

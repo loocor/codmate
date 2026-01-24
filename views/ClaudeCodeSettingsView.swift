@@ -59,6 +59,7 @@ struct ClaudeCodeSettingsView: View {
                     TabView {
                         Tab("Provider", systemImage: "server.rack") { SettingsTabContent { providerPane } }
                         Tab("Runtime", systemImage: "gearshape.2") { SettingsTabContent { runtimePane } }
+                        Tab("Sessions", systemImage: "folder.badge.gearshape") { SettingsTabContent { sessionsPane } }
                         Tab("Raw Config", systemImage: "doc.text") { SettingsTabContent { rawPane } }
                     }
                 } else {
@@ -67,6 +68,8 @@ struct ClaudeCodeSettingsView: View {
                             .tabItem { Label("Provider", systemImage: "server.rack") }
                         SettingsTabContent { runtimePane }
                             .tabItem { Label("Runtime", systemImage: "gearshape.2") }
+                        SettingsTabContent { sessionsPane }
+                            .tabItem { Label("Sessions", systemImage: "folder.badge.gearshape") }
                         SettingsTabContent { rawPane }
                             .tabItem { Label("Raw Config", systemImage: "doc.text") }
                     }
@@ -207,6 +210,11 @@ struct ClaudeCodeSettingsView: View {
             }
         }
         .task { await vm.reloadRawSettings() }
+    }
+
+    // MARK: - Sessions
+    private var sessionsPane: some View {
+        SessionsPathPane(preferences: preferences, fixedKind: .claude)
     }
 
     private func buildRawConfigText() -> String {
