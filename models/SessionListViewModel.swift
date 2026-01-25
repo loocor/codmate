@@ -760,8 +760,13 @@ final class SessionListViewModel: ObservableObject {
       let claudeOrigin = await self.providerOrigin(for: .claude)
       let geminiOrigin = await self.providerOrigin(for: .gemini)
       await MainActor.run {
-        if self.preferences.isCLIEnabled(.codex), codexOrigin == .thirdParty {
-          self.setUsageSnapshot(.codex, Self.thirdPartyUsageSnapshot(for: .codex))
+        if self.preferences.isCLIEnabled(.codex) {
+          if codexOrigin == .thirdParty {
+            self.setUsageSnapshot(.codex, Self.thirdPartyUsageSnapshot(for: .codex))
+          } else {
+            // Immediately refresh Codex usage (like Gemini) for better initial UX
+            self.refreshCodexUsageStatus(silent: false)
+          }
         }
         if self.preferences.isCLIEnabled(.claude) {
           if claudeOrigin == .thirdParty {
@@ -1257,6 +1262,17 @@ final class SessionListViewModel: ObservableObject {
     registerActivityHeartbeat(previous: allSessions, current: sessionsForApply)
     smartMergeAllSessions(newSessions: sessionsForApply)
     scheduleFiltersUpdate()
+    
+    // Trigger usage refresh on launch (like Gemini) to ensure usage data is available immediately
+    // This ensures the usage capsule icon and menu show data without requiring user interaction
+    await MainActor.run {
+      if preferences.isCLIEnabled(.codex) {
+        refreshCodexUsageStatus(silent: false)
+      }
+      if preferences.isCLIEnabled(.gemini) {
+        refreshGeminiUsageStatus(silent: false)
+      }
+    }
     
     diagLogger.log(
       "hydrateFromCacheOnLaunch done sessions=\(self.allSessions.count, privacy: .public) ts=\(self.ts(), format: .fixed(precision: 3))"
@@ -3926,7 +3942,26 @@ extension SessionListViewModel {
     setUsageSnapshot(.gemini, snapshot)
   }
 
-  private func refreshCodexUsageStatus() {
+  private func setCodexUsagePlaceholder(
+    _ message: String,
+    action: UsageProviderSnapshot.Action? = .refresh,
+    availability: UsageProviderSnapshot.Availability = .empty
+  ) {
+    let snapshot = UsageProviderSnapshot(
+      provider: .codex,
+      title: UsageProviderKind.codex.displayName,
+      availability: availability,
+      metrics: [],
+      updatedAt: nil,
+      statusMessage: message,
+      requiresReauth: false,
+      origin: .builtin,
+      action: action
+    )
+    setUsageSnapshot(.codex, snapshot)
+  }
+
+  private func refreshCodexUsageStatus(silent: Bool = false) {
     codexUsageTask?.cancel()
     let candidates = latestCodexSessions(limit: 12)
     codexUsageTask = Task { [weak self] in
@@ -3940,6 +3975,15 @@ extension SessionListViewModel {
         return
       }
 
+      // Set placeholder immediately for better UX (like Gemini)
+      if !silent {
+        await MainActor.run {
+          self.setCodexUsagePlaceholder("Refreshing …", action: nil, availability: .comingSoon)
+        }
+      }
+
+      // Fetch plan type from OAuth API (more reliable than RPC)
+      async let oauthPlanType: String? = Self.fetchCodexOAuthPlanType()
       async let rpcSnapshot = self.codexAppServerProbe.fetchIfStaleOrNil(maxAge: 90)
       async let tokenSnapshot: TokenUsageSnapshot? = {
         guard !candidates.isEmpty else { return nil }
@@ -3951,12 +3995,14 @@ extension SessionListViewModel {
         }.value
       }()
 
+      let oauthPlan = await oauthPlanType
       let rpc = await rpcSnapshot
       let snapshot = await tokenSnapshot
 
       guard !Task.isCancelled else { return }
       await MainActor.run {
-        let badge = Self.codexPlanBadge(from: rpc?.planType)
+        // Use OAuth plan type only (no RPC fallback to avoid stale data)
+        let badge = Self.codexPlanBadgeFromOAuth(oauthPlan)
 
         var codexStatus: CodexUsageStatus?
         if let snapshot {
@@ -3991,7 +4037,8 @@ extension SessionListViewModel {
 
         self.codexUsageStatus = codexStatus
         if let codex = codexStatus {
-          self.setUsageSnapshot(.codex, codex.asProviderSnapshot(titleBadge: badge))
+          let snapshot = codex.asProviderSnapshot(titleBadge: badge)
+          self.setUsageSnapshot(.codex, snapshot)
         } else {
           self.setUsageSnapshot(
             .codex,
@@ -4023,6 +4070,77 @@ extension SessionListViewModel {
     if plan.contains("team") { return "Team" }
     if plan.contains("enterprise") { return "Ent" }
     return raw.prefix(1).uppercased() + raw.dropFirst()
+  }
+
+  /// Fetch Codex plan type - matches CodexBar's resolvePlan strategy:
+  /// 1. Prioritize API response (most up-to-date, authoritative)
+  /// 2. Fall back to JWT only if API didn't return a plan type (not if it returned "free")
+  /// This avoids using stale JWT data when API successfully returns a plan type
+  private static func fetchCodexOAuthPlanType() async -> String? {
+    // Primary: Try API call first (matches CodexBar's resolvePlan logic)
+    do {
+      let apiPlan = try await CodexOAuthUsageFetcher.fetchPlanType()
+      // If API returned a plan type (even if "free"), use it - don't fall back to JWT
+      // This matches CodexBar: "if let plan = response.planType?.rawValue, !plan.isEmpty { return plan }"
+      if let apiPlan = apiPlan, !apiPlan.isEmpty {
+        return apiPlan
+      }
+    } catch {
+      // Check if this is a cancellation error (expected when new request cancels old one)
+      // FetchError.networkError wraps the underlying error, so we need to unwrap it
+      var isCancellation = false
+      if let fetchError = error as? CodexOAuthUsageFetcher.FetchError,
+         case .networkError(let underlyingError) = fetchError {
+        isCancellation = (underlyingError as? URLError)?.code == .cancelled
+          || (underlyingError as NSError).domain == NSURLErrorDomain && (underlyingError as NSError).code == NSURLErrorCancelled
+      } else {
+        // Direct URLError check
+        isCancellation = (error as? URLError)?.code == .cancelled
+          || (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorCancelled
+      }
+      
+      // Only log non-cancellation errors (cancellation is expected behavior)
+      if !isCancellation {
+        NSLog("[CodexUsage] OAuth plan type API fetch failed: \(error.localizedDescription)")
+      }
+    }
+
+    // Fallback: Parse JWT token only if API didn't return a plan type
+    // This matches CodexBar: JWT is fallback, not used when API returns a value
+    let jwtPlan = CodexOAuthUsageFetcher.fetchPlanTypeFromJWT()
+    if let jwtPlan = jwtPlan, !jwtPlan.isEmpty {
+      return jwtPlan
+    }
+    return nil
+  }
+
+  /// Convert OAuth plan type to display badge (using exact enum matching)
+  private static func codexPlanBadgeFromOAuth(_ planType: String?) -> String? {
+    guard let plan = planType?.lowercased(), !plan.isEmpty else {
+      return nil
+    }
+    // Match exact plan types from OAuth API
+    let badge: String?
+    switch plan {
+    case "free", "guest", "free_workspace":
+      badge = "Free"  // Show "Free" badge for free users
+    case "go":
+      badge = "Go"
+    case "plus":
+      badge = "Plus"
+    case "pro":
+      badge = "Pro"
+    case "team":
+      badge = "Team"
+    case "business", "enterprise":
+      badge = "Ent"
+    case "education", "edu", "k12", "quorum":
+      badge = "Edu"
+    default:
+      // Show first letter capitalized for unknown types
+      badge = plan.prefix(1).uppercased() + plan.dropFirst()
+    }
+    return badge
   }
 
   private static func claudePlanBadge(from rawPlanType: String?) -> String? {
@@ -4338,9 +4456,12 @@ extension SessionListViewModel {
       guard let snapshot = self.usageSnapshots[provider] else { return true }
       if snapshot.origin == .thirdParty { return false }
       if snapshot.availability == .ready { return false }
+      // If availability is .comingSoon, it means refresh is already in progress (placeholder set)
+      if snapshot.availability == .comingSoon { return false }
       return snapshot.updatedAt == nil
     }
 
+    // Only refresh if not already refreshing (avoid duplicate refresh from refreshSessionsForProviderChange)
     if preferences.isCLIEnabled(.codex), codexOrigin == .builtin, shouldRefresh(.codex) {
       refreshCodexUsageStatus()
     }

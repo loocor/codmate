@@ -15,58 +15,86 @@ struct GeminiUsageStatus: Equatable {
   let planType: String?  // Subscription type (AI Pro, AI Ultra, etc.)
 
   func asProviderSnapshot(titleBadge: String? = nil) -> UsageProviderSnapshot {
-    // Filter buckets to only show models that have been used (remainingFraction < 1.0)
-    let usedBuckets = buckets.filter { bucket in
-      guard let remaining = bucket.remainingFraction else { return false }
-      return remaining < 1.0
+    // Group buckets by model ID to find the lowest quota per model
+    // (input/output tokens might have different quotas; show the more limiting one)
+    var modelQuotaMap: [String: Bucket] = [:]
+    for bucket in buckets {
+      guard let modelId = bucket.modelId, !modelId.isEmpty else { continue }
+      if let existing = modelQuotaMap[modelId] {
+        // Keep the bucket with lower remaining fraction (more constrained)
+        if let newFraction = bucket.remainingFraction,
+           let existingFraction = existing.remainingFraction,
+           newFraction < existingFraction
+        {
+          modelQuotaMap[modelId] = bucket
+        }
+      } else {
+        modelQuotaMap[modelId] = bucket
+      }
     }
 
-    let metrics: [UsageMetricSnapshot] = usedBuckets.map { bucket in
+    // Sort models by name, showing used models first (lower remaining fraction)
+    let sortedModels = modelQuotaMap.sorted { a, b in
+      let aUsed = (a.value.remainingFraction ?? 1.0) < 1.0
+      let bUsed = (b.value.remainingFraction ?? 1.0) < 1.0
+      if aUsed != bUsed { return aUsed }
+      return a.key.localizedStandardCompare(b.key) == .orderedAscending
+    }
+
+    // Create metrics for models - show ALL models with quotas
+    // Models with usage (remainingFraction < 1.0) show full details
+    // Models without usage show a simplified "available" state
+    let metrics: [UsageMetricSnapshot] = sortedModels.compactMap { modelId, bucket in
       let remaining = bucket.remainingFraction?.clamped01()
+      let hasBeenUsed = (remaining ?? 1.0) < 1.0
+
+      // For unused models, show a simplified display
       let percentText: String? = {
         guard let remaining else { return nil }
-        return NumberFormatter.compactPercentFormatter.string(from: NSNumber(value: remaining))
-          ?? String(format: "%.0f%%", remaining * 100)
+        if hasBeenUsed {
+          return NumberFormatter.compactPercentFormatter.string(from: NSNumber(value: remaining))
+            ?? String(format: "%.0f%%", remaining * 100)
+        }
+        return "100%"
       }()
 
-      let labelParts = [bucket.modelId, bucket.tokenType].compactMap { $0 }.filter { !$0.isEmpty }
-      let label = labelParts.first ?? "Usage"
+      let label = modelId
 
       let usageText: String? = {
-        if let amount = bucket.remainingAmount, !amount.isEmpty {
-          return "Remaining \(amount)"
+        if hasBeenUsed {
+          if let amount = bucket.remainingAmount, !amount.isEmpty {
+            return "Remaining \(amount)"
+          }
         }
         return nil
       }()
-
-      // Debug: Log resetTime
-      if let resetTime = bucket.resetTime {
-        NSLog("[GeminiUsage] Creating metric for \(label), resetTime: \(resetTime)")
-      } else {
-        NSLog("[GeminiUsage] Creating metric for \(label), resetTime is nil!")
-      }
 
       return UsageMetricSnapshot(
         kind: .quota,
         label: label,
         usageText: usageText,
         percentText: percentText,
-        progress: remaining,
+        progress: remaining ?? 1.0,
         resetDate: bucket.resetTime,
-        fallbackWindowMinutes: nil
+        fallbackWindowMinutes: 1440  // 24h default for Gemini quotas
       )
     }
 
-    let availability: UsageProviderSnapshot.Availability = metrics.isEmpty ? .empty : .ready
+    // Availability: ready if we have any buckets, empty only if no data at all
+    let availability: UsageProviderSnapshot.Availability = buckets.isEmpty ? .empty : .ready
 
-    // Count total models with quota
-    let totalModels = buckets.count
+    // Count used models
+    let usedModels = sortedModels.filter { (_, bucket) in
+      (bucket.remainingFraction ?? 1.0) < 1.0
+    }.count
+    let totalModels = sortedModels.count
+
     let statusMessage: String? = {
-      if availability == .empty {
-        if totalModels > 0 {
-          return "No models used yet. Quotas available for \(totalModels) models."
-        }
+      if buckets.isEmpty {
         return "No Gemini usage data."
+      }
+      if usedModels == 0 && totalModels > 0 {
+        return "No models used yet. Quotas available for \(totalModels) models."
       }
       return nil
     }()

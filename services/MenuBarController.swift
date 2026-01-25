@@ -504,7 +504,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     case .ready:
       let urgent = snapshot.urgentMetric()
       let percent = urgent?.percentText ?? "-"
-      let name = "\(provider.displayName) (\(percent))"
+      // Include badge in provider name if available (e.g., "Codex Free" or "Codex Plus")
+      var providerName = snapshot.title
+      if let badge = snapshot.titleBadge, !badge.isEmpty {
+        providerName = "\(providerName) \(badge)"
+      }
+      let name = "\(providerName) (\(percent))"
       var reset = resetSummaryText(for: urgent)
       // Capitalize first letter for better presentation
       if !reset.isEmpty, reset.first?.isLowercase == true {
@@ -516,9 +521,19 @@ final class MenuBarController: NSObject, NSMenuDelegate {
       item.attributedTitle = makeAlignedMenuTitle(left: name, right: reset.isEmpty ? " " : reset)
 
     case .empty:
-      item.title = "\(provider.displayName) Not available"
+      // Include badge in provider name if available
+      var providerName = snapshot.title
+      if let badge = snapshot.titleBadge, !badge.isEmpty {
+        providerName = "\(providerName) \(badge)"
+      }
+      item.title = "\(providerName) Not available"
     case .comingSoon:
-      item.title = provider.displayName
+      // Include badge in provider name if available
+      var providerName = snapshot.title
+      if let badge = snapshot.titleBadge, !badge.isEmpty {
+        providerName = "\(providerName) \(badge)"
+      }
+      item.title = providerName
     }
 
     return item
