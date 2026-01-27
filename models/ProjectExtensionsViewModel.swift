@@ -24,6 +24,7 @@ final class ProjectExtensionsViewModel: ObservableObject {
     private var skillRecords: [SkillRecord] = []
     private var projectId: String?
     private var projectDirectory: URL?
+    private var projectTrustLevel: String?
 
     @Published var skills: [SkillSummary] = []
     @Published var mcpSelections: [ProjectMCPSelection] = []
@@ -38,13 +39,14 @@ final class ProjectExtensionsViewModel: ObservableObject {
     @Published var mcpImportStatusMessage: String?
     @Published var skillsImportStatusMessage: String?
 
-    func load(projectId: String?, projectDirectory: String) async {
+    func load(projectId: String?, projectDirectory: String, trustLevel: String? = nil) async {
         isLoading = true
         defer { isLoading = false }
 
         self.projectId = projectId
         let dir = projectDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         self.projectDirectory = dir.isEmpty ? nil : URL(fileURLWithPath: dir, isDirectory: true)
+        self.projectTrustLevel = normalizeTrustLevel(trustLevel)
 
         skillRecords = await skillsStore.list()
         let config: ProjectExtensionsConfig?
@@ -137,11 +139,12 @@ final class ProjectExtensionsViewModel: ObservableObject {
         Task { await persistAndApplyIfPossible() }
     }
 
-    func persistSelections(projectId: String, directory: String?) async {
+    func persistSelections(projectId: String, directory: String?, trustLevel: String?) async {
         self.projectId = projectId
         if let dir = directory?.trimmingCharacters(in: .whitespacesAndNewlines), !dir.isEmpty {
             self.projectDirectory = URL(fileURLWithPath: dir, isDirectory: true)
         }
+        self.projectTrustLevel = normalizeTrustLevel(trustLevel)
         await persistAndApplyIfPossible()
     }
 
@@ -492,7 +495,13 @@ final class ProjectExtensionsViewModel: ObservableObject {
             projectDirectory: projectDirectory,
             mcpSelections: mcpSelections,
             skillRecords: skillRecords,
-            skillSelections: selections
+            skillSelections: selections,
+            trustLevel: projectTrustLevel
         )
+    }
+
+    private func normalizeTrustLevel(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
     }
 }

@@ -1216,7 +1216,7 @@ struct ProjectEditorSheet: View {
     .codmatePresentationSizingIfAvailable()
     .onAppear(perform: load)
     .onChange(of: directory) { newDir in
-      Task { await extensionsVM.load(projectId: modeSelfId(), projectDirectory: newDir) }
+      Task { await extensionsVM.load(projectId: modeSelfId(), projectDirectory: newDir, trustLevel: trustLevel) }
     }
     .alert("Discard changes?", isPresented: $showCloseConfirm) {
       Button("Keep Editing", role: .cancel) {}
@@ -1305,7 +1305,7 @@ struct ProjectEditorSheet: View {
       }
     }
     original = currentSnapshot()
-    Task { await extensionsVM.load(projectId: modeSelfId(), projectDirectory: directory) }
+    Task { await extensionsVM.load(projectId: modeSelfId(), projectDirectory: directory, trustLevel: trustLevel) }
   }
 
   private func slugify(_ s: String) -> String {
@@ -1372,7 +1372,7 @@ struct ProjectEditorSheet: View {
       )
       Task {
         await viewModel.createOrUpdateProject(p)
-        await extensionsVM.persistSelections(projectId: id, directory: dirOpt)
+        await extensionsVM.persistSelections(projectId: id, directory: dirOpt, trustLevel: trust)
         if let ids = autoAssignSessionIDs, !ids.isEmpty {
           await viewModel.assignSessions(to: id, ids: ids)
         }
@@ -1395,7 +1395,7 @@ struct ProjectEditorSheet: View {
       )
       Task {
         await viewModel.createOrUpdateProject(p)
-        await extensionsVM.persistSelections(projectId: old.id, directory: dirOpt)
+        await extensionsVM.persistSelections(projectId: old.id, directory: dirOpt, trustLevel: trust)
         isPresented = false
       }
     }

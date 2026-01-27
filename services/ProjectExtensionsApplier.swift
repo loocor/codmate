@@ -12,14 +12,50 @@ actor ProjectExtensionsApplier {
     projectDirectory: URL,
     mcpSelections: [ProjectMCPSelection],
     skillRecords: [SkillRecord],
-    skillSelections: [SkillsSyncService.SkillSelection]
+    skillSelections: [SkillsSyncService.SkillSelection],
+    trustLevel: String?
   ) async {
+    await ensureCodexTrustedIfNeeded(
+      projectDirectory: projectDirectory,
+      mcpSelections: mcpSelections,
+      skillSelections: skillSelections,
+      trustLevel: trustLevel
+    )
     await applyMCP(projectDirectory: projectDirectory, selections: mcpSelections)
     _ = await skillsSyncer.syncProject(
       skills: skillRecords,
       selections: skillSelections,
       projectDirectory: projectDirectory
     )
+  }
+
+  private func ensureCodexTrustedIfNeeded(
+    projectDirectory: URL,
+    mcpSelections: [ProjectMCPSelection],
+    skillSelections: [SkillsSyncService.SkillSelection],
+    trustLevel: String?
+  ) async {
+    guard SessionPreferencesStore.isCLIEnabled(.codex) else { return }
+    let needsCodexMCP = mcpSelections.contains { $0.isSelected && $0.targets.codex }
+    let needsCodexSkills = skillSelections.contains { $0.isSelected && $0.targets.codex }
+    guard needsCodexMCP || needsCodexSkills else { return }
+
+    if await SecurityScopedBookmarks.shared.isSandboxed {
+      let home = SessionPreferencesStore.getRealUserHomeURL()
+      let codexDir = home.appendingPathComponent(".codex", isDirectory: true)
+      await MainActor.run {
+        AuthorizationHub.shared.ensureDirectoryAccessOrPrompt(
+          directory: codexDir,
+          purpose: .generalAccess,
+          message: "Authorize ~/.codex to update trusted projects"
+        )
+      }
+    }
+
+    let level = trustLevel?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedLevel = (level?.isEmpty == false ? level : nil) ?? "trusted"
+    let service = CodexConfigService()
+    try? await service.ensureProjectTrusted(directory: projectDirectory, trustLevel: resolvedLevel)
   }
 
   private func applyMCP(projectDirectory: URL, selections: [ProjectMCPSelection]) async {

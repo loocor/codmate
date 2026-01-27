@@ -538,6 +538,30 @@ actor CodexConfigService {
         return s
     }
 
+    private func escapeTomlString(_ value: String) -> String {
+        var escaped = value.replacingOccurrences(of: "\\", with: "\\\\")
+        escaped = escaped.replacingOccurrences(of: "\"", with: "\\\"")
+        return escaped
+    }
+
+    private func projectHeader(for path: String, in text: String) -> String {
+        let projects = parseProjects(from: text)
+        if let match = projects.first(where: { project in
+            let dir = project.directory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let idUnquoted = unquote(project.id)
+            return dir == path || idUnquoted == path || project.id == path
+        }) {
+            return "[projects.\(match.id)]"
+        }
+        let escapedPath = escapeTomlString(path)
+        return "[projects.\"\(escapedPath)\"]"
+    }
+
+    private func headerHasQuotedPathKey(_ header: String, path: String) -> Bool {
+        let quotedPath = "\"\(escapeTomlString(path))\""
+        return header == "[projects.\(quotedPath)]"
+    }
+
     private func parseTopLevelString(key: String, from text: String) -> String? {
         // naive: find first line starting with key =
         for raw in text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
@@ -722,6 +746,29 @@ actor CodexConfigService {
     func listProjects() -> [Project] {
         let text = (try? String(contentsOf: paths.configURL, encoding: .utf8)) ?? ""
         return parseProjects(from: text)
+    }
+
+    func ensureProjectTrusted(directory: URL, trustLevel: String = "trusted") throws {
+        let trimmed = trustLevel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let level = trimmed.isEmpty ? "trusted" : trimmed
+        let path = directory.standardizedFileURL.path
+        var text = (try? String(contentsOf: paths.configURL, encoding: .utf8)) ?? ""
+        let header = projectHeader(for: path, in: text)
+        var updated = upsertTableKeyValue(
+            table: header,
+            key: "trust_level",
+            valueText: "\"\(level)\"",
+            in: text
+        )
+        if !headerHasQuotedPathKey(header, path: path) {
+            updated = upsertTableKeyValue(
+                table: header,
+                key: "directory",
+                valueText: "\"\(escapeTomlString(path))\"",
+                in: updated
+            )
+        }
+        try writeConfig(updated)
     }
 
     // Deprecated: CodMate no longer writes projects to config.toml.
