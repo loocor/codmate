@@ -752,7 +752,7 @@ actor CodexConfigService {
         let trimmed = trustLevel.trimmingCharacters(in: .whitespacesAndNewlines)
         let level = trimmed.isEmpty ? "trusted" : trimmed
         let path = directory.standardizedFileURL.path
-        var text = (try? String(contentsOf: paths.configURL, encoding: .utf8)) ?? ""
+        let text = (try? String(contentsOf: paths.configURL, encoding: .utf8)) ?? ""
         let header = projectHeader(for: path, in: text)
         var updated = upsertTableKeyValue(
             table: header,
@@ -1039,7 +1039,11 @@ actor CodexConfigService {
     // Ensure boolean keys are written as bare booleans (true/false), not quoted strings.
     func sanitizeQuotedBooleans() -> Bool {
         var text = (try? String(contentsOf: paths.configURL, encoding: .utf8)) ?? ""
-        let keys = ["show_raw_agent_reasoning", "hide_agent_reasoning"]
+        let keys = [
+            "show_raw_agent_reasoning",
+            "hide_agent_reasoning",
+            "suppress_unstable_features_warning",
+        ]
         var changed = false
         for key in keys {
             let (newText, didChange) = ensureTopLevelBoolLiteral(key: key, in: text)

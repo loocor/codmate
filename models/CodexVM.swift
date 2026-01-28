@@ -76,6 +76,7 @@ final class CodexVM: ObservableObject {
   @Published var envSetPairs: String = ""
   @Published var hideAgentReasoning: Bool = false
   @Published var showRawAgentReasoning: Bool = false
+  @Published var suppressUnstableFeaturesWarning: Bool = false
   @Published var fileOpener: String = "vscode"
   // OTEL
   @Published var otelEnabled: Bool = false
@@ -99,6 +100,7 @@ final class CodexVM: ObservableObject {
   private var debounceShowReasoningTask: Task<Void, Never>? = nil
   private var debounceSandboxTask: Task<Void, Never>? = nil
   private var debounceApprovalTask: Task<Void, Never>? = nil
+  private var debounceSuppressUnstableWarningTask: Task<Void, Never>? = nil
   // Preset helper
   enum ProviderPreset { case k2, glm, deepseek }
   @Published var providerKeyApplyURL: String? = nil
@@ -209,6 +211,12 @@ final class CodexVM: ObservableObject {
     schedule(&debounceShowReasoningTask) { [weak self] in
       guard let self else { return }
       await self.applyShowRawReasoning()
+    }
+  }
+  func scheduleApplySuppressUnstableWarningDebounced() {
+    schedule(&debounceSuppressUnstableWarningTask) { [weak self] in
+      guard let self else { return }
+      await self.applySuppressUnstableWarning()
     }
   }
   func scheduleApplySandboxDebounced() {
@@ -528,6 +536,7 @@ final class CodexVM: ObservableObject {
     featuresLoading = true
     featureError = nil
     do {
+      suppressUnstableFeaturesWarning = await service.getBool("suppress_unstable_features_warning")
       async let overridesTask = service.featureOverrides()
       let infos = try await featuresService.listFeatures()
       let overrides = await overridesTask
@@ -721,6 +730,13 @@ final class CodexVM: ObservableObject {
   }
   func applyShowRawReasoning() async {
     do { try await service.setBool("show_raw_agent_reasoning", showRawAgentReasoning) } catch {
+      lastError = "Failed"
+    }
+  }
+  func applySuppressUnstableWarning() async {
+    do {
+      try await service.setBool("suppress_unstable_features_warning", suppressUnstableFeaturesWarning)
+    } catch {
       lastError = "Failed"
     }
   }

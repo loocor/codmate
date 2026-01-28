@@ -48,21 +48,22 @@ actor CodexFeaturesService {
         for rawLine in stdout.split(separator: "\n") {
             let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            let columns = trimmed.split(omittingEmptySubsequences: true, whereSeparator: { ch in
+            let columns = trimmed.split(omittingEmptySubsequences: true) { ch in
                 ch == "\t" || ch == " "
-            })
-            guard columns.count >= 3 else { continue }
-            let name = String(columns[0])
-            let stage = String(columns[1])
-            let enabledToken = columns[2].lowercased()
-            let enabled: Bool
-            if enabledToken == "true" {
-                enabled = true
-            } else if enabledToken == "false" {
-                enabled = false
-            } else {
-                throw Error.parseFailed
             }
+            guard columns.count >= 3 else { continue }
+            guard let enabledToken = columns.last?.lowercased() else { continue }
+            let enabled: Bool
+            switch enabledToken {
+            case "true":
+                enabled = true
+            case "false":
+                enabled = false
+            default:
+                continue
+            }
+            let name = String(columns[0])
+            let stage = columns.dropFirst().dropLast().map(String.init).joined(separator: " ")
             features.append(CodexFeatureInfo(name: name, stage: stage, enabled: enabled))
         }
         if features.isEmpty { throw Error.parseFailed }

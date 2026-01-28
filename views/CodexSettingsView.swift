@@ -306,6 +306,27 @@ struct CodexSettingsView: View {
     private var featuresPane: some View {
         SettingsTabContent {
             VStack(alignment: .leading, spacing: 16) {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
+                    GridRow {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label("Suppress unstable features warning", systemImage: "exclamationmark.triangle")
+                                .font(.subheadline).fontWeight(.medium)
+                            Text("Hide the Codex CLI unstable-features banner by writing to config.toml.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Toggle("", isOn: $codexVM.suppressUnstableFeaturesWarning)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                            .onChange(of: codexVM.suppressUnstableFeaturesWarning) { _ in
+                                codexVM.scheduleApplySuppressUnstableWarningDebounced()
+                            }
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+                Divider()
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
                         Label("Feature Flags", systemImage: "wand.and.stars")
