@@ -228,6 +228,112 @@ actor CodexConfigService {
         try writeConfig(text)
     }
 
+    // MARK: - Hooks (CodMate-managed)
+    // Codex currently exposes a legacy `notify = ["cmd", "args..."]` mechanism that runs after a turn completes.
+    // We treat a single `Stop` hook (single command) as a mapping target for this legacy interface.
+    func applyHooksFromCodMate(_ rules: [HookRule]) throws -> [HookSyncWarning] {
+        var warnings: [HookSyncWarning] = []
+        let targeted = rules.filter { $0.isEnabled(for: .codex) }
+        var eligible: [HookRule] = []
+        for rule in targeted {
+            let rawEvent = rule.event.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rawEvent.isEmpty else { continue }
+            let resolution = HookEventCatalog.resolveProviderEvent(rawEvent, for: .codex)
+            if resolution.isKnown, !resolution.isSupported {
+                warnings.append(HookSyncWarning(
+                    provider: .codex,
+                    message: "Codex does not support hook event \"\(rawEvent)\"; skipping \"\(rule.name)\"."
+                ))
+                continue
+            }
+            if resolution.name != "Stop" {
+                warnings.append(HookSyncWarning(
+                    provider: .codex,
+                    message: "Codex currently supports only Stop via `notify`; skipping \"\(rule.name)\"."
+                ))
+                continue
+            }
+            eligible.append(rule)
+        }
+
+        guard !eligible.isEmpty else {
+            let existing = getNotifyArray()
+            if shouldClearNotify(existing: existing, rules: rules) {
+                try setNotifyArray(nil)
+            }
+            return warnings
+        }
+
+        guard eligible.count == 1 else {
+            warnings.append(HookSyncWarning(
+                provider: .codex,
+                message: "Codex currently supports only one Stop hook via `notify`. Multiple CodMate rules target Codex; skipping apply."
+            ))
+            return warnings
+        }
+
+        let rule = eligible[0]
+        guard rule.commands.count == 1 else {
+            warnings.append(HookSyncWarning(
+                provider: .codex,
+                message: "Codex `notify` supports only a single command. Hook \"\(rule.name)\" has \(rule.commands.count) command(s); skipping apply."
+            ))
+            return warnings
+        }
+
+        let cmd = rule.commands[0]
+        let program = cmd.command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !program.isEmpty else {
+            warnings.append(HookSyncWarning(provider: .codex, message: "Hook \"\(rule.name)\" has an empty command; skipping apply."))
+            return warnings
+        }
+        if let env = cmd.env, !env.isEmpty {
+            warnings.append(HookSyncWarning(
+                provider: .codex,
+                message: "Codex `notify` does not support per-hook environment variables; ignoring env for \"\(rule.name)\"."
+            ))
+        }
+
+        let previous = getNotifyArray()
+        if let existing = previous.first, existing.contains("codmate-notify") {
+            warnings.append(HookSyncWarning(
+                provider: .codex,
+                message: "Applying this hook will overwrite CodMate's notify bridge and may disable CodMate system notifications for Codex."
+            ))
+        }
+
+        var argv: [String] = [program]
+        if let args = cmd.args, !args.isEmpty {
+            argv.append(contentsOf: args)
+        }
+        try setNotifyArray(argv)
+        return warnings
+    }
+
+    private func shouldClearNotify(existing: [String], rules: [HookRule]) -> Bool {
+        guard !existing.isEmpty else { return false }
+        let candidates = rules.filter { rule in
+            let rawEvent = rule.event.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rawEvent.isEmpty else { return false }
+            let resolution = HookEventCatalog.resolveProviderEvent(rawEvent, for: .codex)
+            return resolution.name == "Stop"
+        }
+        for rule in candidates {
+            for cmd in rule.commands {
+                let program = cmd.command.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !program.isEmpty else { continue }
+                var argv: [String] = [program]
+                if let args = cmd.args, !args.isEmpty {
+                    argv.append(contentsOf: args)
+                }
+                if argv == existing {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     func ensureNotifyBridgeInstalled() throws -> URL {
         let bin = paths.home.deletingLastPathComponent()
             .appendingPathComponent("Library", isDirectory: true)

@@ -47,6 +47,7 @@ actor ClaudeSettingsService {
     private let codMateHookURLPrefix = "codmate://notify?source=claude&event="
     private let claudeNotificationKey = "Notification"
     private let claudeStopKey = "Stop"
+    private let codMateManagedHookNamePrefix = "codmate-hook:"
 
     func applyRuntime(_ r: Runtime) throws {
         var obj = loadObject()
@@ -113,6 +114,166 @@ actor ClaudeSettingsService {
             obj["hooks"] = hooks
         }
         try writeObject(obj)
+    }
+
+    // MARK: - User hooks (CodMate Extensions)
+    func applyHooksFromCodMate(_ rules: [HookRule]) throws -> [HookSyncWarning] {
+        var obj = loadObject()
+        if (obj["allowManagedHooksOnly"] as? Bool) == true {
+            return [
+                HookSyncWarning(
+                    provider: .claude,
+                    message: "Claude Code settings has allowManagedHooksOnly=true; skipping hooks apply."
+                )
+            ]
+        }
+
+        var warnings: [HookSyncWarning] = []
+        var hooks = obj["hooks"] as? [String: Any] ?? [:]
+
+        // Remove previously applied CodMate-managed hooks (by name prefix).
+        hooks = pruneCodMateManagedHooks(hooks)
+
+        let filtered = rules.filter { $0.isEnabled(for: .claude) }
+        for rule in filtered {
+            let rawEvent = rule.event.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rawEvent.isEmpty else { continue }
+            let resolution = HookEventCatalog.resolveProviderEvent(rawEvent, for: .claude)
+            if resolution.isKnown, !resolution.isSupported {
+                warnings.append(HookSyncWarning(
+                    provider: .claude,
+                    message: "Claude Code does not support hook event \"\(rawEvent)\"; skipping \"\(rule.name)\"."
+                ))
+                continue
+            }
+            let event = resolution.name
+
+            let supportsMatcher = HookEventCatalog.supportsMatcher(resolution.canonicalName, provider: .claude)
+            let matcherText = rule.matcher?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let matcher = supportsMatcher ? (matcherText?.isEmpty == false ? matcherText : nil) : nil
+            if !supportsMatcher, matcherText?.isEmpty == false {
+                warnings.append(HookSyncWarning(
+                    provider: .claude,
+                    message: "Claude hook event \"\(event)\" does not support matcher; ignoring matcher for \"\(rule.name)\"."
+                ))
+            }
+
+            var hookObjects: [[String: Any]] = []
+            for (index, cmd) in rule.commands.enumerated() {
+                let program = cmd.command.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !program.isEmpty else { continue }
+                var hook: [String: Any] = [
+                    "type": "command",
+                    "command": program,
+                    "name": "\(codMateManagedHookNamePrefix)\(rule.id):\(index)"
+                ]
+                if let args = cmd.args, !args.isEmpty { hook["args"] = args }
+                if let timeout = cmd.timeoutMs { hook["timeout"] = timeout }
+                if let env = cmd.env, !env.isEmpty {
+                    warnings.append(HookSyncWarning(
+                        provider: .claude,
+                        message: "Claude Code hook commands do not support env in settings.json; ignoring env for \"\(rule.name)\"."
+                    ))
+                }
+                hookObjects.append(hook)
+            }
+            guard !hookObjects.isEmpty else { continue }
+
+            var entries = (hooks[event] as? [[String: Any]]) ?? []
+            let matcherKey: String? = matcher
+
+            if let idx = entries.firstIndex(where: { entry in
+                let existing = (entry["matcher"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let existingKey = (existing?.isEmpty == false) ? existing : nil
+                return existingKey == matcherKey
+            }) {
+                var entry = entries[idx]
+                var nested = (entry["hooks"] as? [[String: Any]]) ?? []
+                nested.append(contentsOf: hookObjects)
+                entry["hooks"] = nested
+                entries[idx] = entry
+            } else {
+                var entry: [String: Any] = ["hooks": hookObjects]
+                if let matcherKey { entry["matcher"] = matcherKey }
+                entries.append(entry)
+            }
+
+            hooks[event] = entries
+        }
+
+        if hooks.isEmpty {
+            obj.removeValue(forKey: "hooks")
+        } else {
+            obj["hooks"] = hooks
+        }
+        try writeObject(obj)
+        return warnings
+    }
+
+    func importHooksAsCodMateRules() -> [HookRule] {
+        let obj = loadObject()
+        guard let hooks = obj["hooks"] as? [String: Any] else { return [] }
+        var rules: [HookRule] = []
+
+        for (event, value) in hooks {
+            guard let entries = value as? [[String: Any]] else { continue }
+            let canonicalEvent = HookEventCatalog.canonicalName(for: event, provider: .claude)
+            for entry in entries {
+                let matcher = (entry["matcher"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let hookList = entry["hooks"] as? [[String: Any]] else { continue }
+
+                var commands: [HookCommand] = []
+                for hook in hookList {
+                    guard (hook["type"] as? String) == "command" else { continue }
+                    guard let command = hook["command"] as? String else { continue }
+                    if command.contains(codMateHookURLPrefix) { continue } // managed by Notifications UI
+                    let args = hook["args"] as? [String]
+                    let timeout = (hook["timeout"] as? Int) ?? (hook["timeout"] as? NSNumber)?.intValue
+                    commands.append(HookCommand(command: command, args: args, env: nil, timeoutMs: timeout))
+                }
+                guard !commands.isEmpty else { continue }
+                let name = HookEventCatalog.defaultName(event: canonicalEvent, matcher: matcher, command: commands.first)
+                let targets = HookTargets(codex: false, claude: true, gemini: false)
+                rules.append(HookRule(
+                    name: name,
+                    event: canonicalEvent,
+                    matcher: (matcher?.isEmpty == false ? matcher : nil),
+                    commands: commands,
+                    enabled: true,
+                    targets: targets,
+                    source: "import"
+                ))
+            }
+        }
+        return rules
+    }
+
+    private func pruneCodMateManagedHooks(_ hooks: [String: Any]) -> [String: Any] {
+        var out: [String: Any] = [:]
+        for (event, value) in hooks {
+            guard let entries = value as? [[String: Any]] else {
+                out[event] = value
+                continue
+            }
+            var newEntries: [[String: Any]] = []
+            for var entry in entries {
+                guard var nested = entry["hooks"] as? [[String: Any]] else {
+                    newEntries.append(entry)
+                    continue
+                }
+                nested.removeAll { hook in
+                    guard let name = hook["name"] as? String else { return false }
+                    return name.hasPrefix(codMateManagedHookNamePrefix)
+                }
+                guard !nested.isEmpty else { continue }
+                entry["hooks"] = nested
+                newEntries.append(entry)
+            }
+            if !newEntries.isEmpty {
+                out[event] = newEntries
+            }
+        }
+        return out
     }
 
     private func containsCodMateHook(in hooks: [String: Any], key: String, event: HookEvent) -> Bool {

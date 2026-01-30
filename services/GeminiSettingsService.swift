@@ -31,6 +31,7 @@ actor GeminiSettingsService {
 
   private typealias JSONObject = [String: Any]
   private let codMateHookURLPrefix = "codmate://notify?source=gemini&event="
+  private let codMateManagedHookNamePrefix = "codmate-hook:"
 
   private enum HookEvent: String {
     case permission
@@ -118,6 +119,138 @@ actor GeminiSettingsService {
       update(&object, path: ["tools", "enableHooks"], value: true)
     }
     try writeJSONObject(object)
+  }
+
+  // MARK: - User hooks (CodMate Extensions)
+  func applyHooksFromCodMate(_ rules: [HookRule]) throws -> [HookSyncWarning] {
+    var warnings: [HookSyncWarning] = []
+    var object = loadJSONObject()
+    var hooks = object["hooks"] as? JSONObject ?? [:]
+
+    hooks = pruneCodMateManagedHooks(hooks)
+
+    let filtered = rules.filter { $0.isEnabled(for: .gemini) }
+    for rule in filtered {
+      let rawEvent = rule.event.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !rawEvent.isEmpty else { continue }
+      let resolution = HookEventCatalog.resolveProviderEvent(rawEvent, for: .gemini)
+      if resolution.isKnown, !resolution.isSupported {
+        warnings.append(HookSyncWarning(
+          provider: .gemini,
+          message: "Gemini CLI does not support hook event \"\(rawEvent)\"; skipping \"\(rule.name)\"."
+        ))
+        continue
+      }
+      let event = resolution.name
+
+      let supportsMatcher = HookEventCatalog.supportsMatcher(resolution.canonicalName, provider: .gemini)
+      let matcherText = rule.matcher?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let matcher: String = {
+        if supportsMatcher {
+          return (matcherText?.isEmpty == false ? matcherText! : "*")
+        }
+        if matcherText?.isEmpty == false {
+          warnings.append(HookSyncWarning(
+            provider: .gemini,
+            message: "Gemini hook event \"\(event)\" does not support matcher; ignoring matcher for \"\(rule.name)\"."
+          ))
+        }
+        return "*"
+      }()
+
+      var hookObjects: [JSONObject] = []
+      for (index, cmd) in rule.commands.enumerated() {
+        let program = cmd.command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !program.isEmpty else { continue }
+        var hook: JSONObject = [
+          "name": "\(codMateManagedHookNamePrefix)\(rule.id):\(index)",
+          "type": "command",
+          "command": program,
+        ]
+        if let args = cmd.args, !args.isEmpty { hook["args"] = args }
+        if let timeout = cmd.timeoutMs { hook["timeout"] = timeout }
+        if let env = cmd.env, !env.isEmpty {
+          warnings.append(HookSyncWarning(
+            provider: .gemini,
+            message: "Gemini CLI hook commands do not support env in settings.json; ignoring env for \"\(rule.name)\"."
+          ))
+        }
+        hookObjects.append(hook)
+      }
+      guard !hookObjects.isEmpty else { continue }
+
+      var entries = (hooks[event] as? [JSONObject]) ?? []
+      if let idx = entries.firstIndex(where: { entry in
+        let existing = (entry["matcher"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (existing?.isEmpty == false ? existing : "*") == matcher
+      }) {
+        var entry = entries[idx]
+        var nested = (entry["hooks"] as? [JSONObject]) ?? []
+        nested.append(contentsOf: hookObjects)
+        entry["hooks"] = nested
+        entry["matcher"] = matcher
+        entries[idx] = entry
+      } else {
+        entries.append([
+          "matcher": matcher,
+          "hooks": hookObjects
+        ])
+      }
+      hooks[event] = entries
+    }
+
+    if hooks.isEmpty {
+      object.removeValue(forKey: "hooks")
+    } else {
+      object["hooks"] = hooks
+    }
+
+    if !filtered.isEmpty {
+      update(&object, path: ["tools", "enableMessageBusIntegration"], value: true)
+      update(&object, path: ["tools", "enableHooks"], value: true)
+    }
+
+    try writeJSONObject(object)
+    return warnings
+  }
+
+  func importHooksAsCodMateRules() -> [HookRule] {
+    let object = loadJSONObject()
+    guard let hooks = object["hooks"] as? JSONObject else { return [] }
+    var rules: [HookRule] = []
+    for (event, value) in hooks {
+      guard let entries = value as? [JSONObject] else { continue }
+      let canonicalEvent = HookEventCatalog.canonicalName(for: event, provider: .gemini)
+      for entry in entries {
+        let matcher = (entry["matcher"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let hookList = entry["hooks"] as? [JSONObject] else { continue }
+
+        var commands: [HookCommand] = []
+        for hook in hookList {
+          guard (hook["type"] as? String) == "command" else { continue }
+          guard let command = hook["command"] as? String else { continue }
+          if command.contains(codMateHookURLPrefix) { continue } // managed by Notifications UI
+          if (hook["name"] as? String) == "codmate-notify" { continue }
+          let args = hook["args"] as? [String]
+          let timeout = (hook["timeout"] as? Int) ?? (hook["timeout"] as? NSNumber)?.intValue
+          commands.append(HookCommand(command: command, args: args, env: nil, timeoutMs: timeout))
+        }
+
+        guard !commands.isEmpty else { continue }
+        let name = HookEventCatalog.defaultName(event: canonicalEvent, matcher: matcher, command: commands.first)
+        let targets = HookTargets(codex: false, claude: false, gemini: true)
+        rules.append(HookRule(
+          name: name,
+          event: canonicalEvent,
+          matcher: (matcher?.isEmpty == false ? matcher : nil),
+          commands: commands,
+          enabled: true,
+          targets: targets,
+          source: "import"
+        ))
+      }
+    }
+    return rules
   }
 
   // MARK: - MCP Servers
@@ -262,6 +395,35 @@ actor GeminiSettingsService {
       }
     }
     return false
+  }
+
+  private func pruneCodMateManagedHooks(_ hooks: JSONObject) -> JSONObject {
+    var out: JSONObject = [:]
+    for (event, value) in hooks {
+      guard let entries = value as? [JSONObject] else {
+        out[event] = value
+        continue
+      }
+
+      var newEntries: [JSONObject] = []
+      for var entry in entries {
+        guard var nested = entry["hooks"] as? [JSONObject] else {
+          newEntries.append(entry)
+          continue
+        }
+        nested.removeAll { hook in
+          guard let name = hook["name"] as? String else { return false }
+          return name.hasPrefix(codMateManagedHookNamePrefix)
+        }
+        guard !nested.isEmpty else { continue }
+        entry["hooks"] = nested
+        newEntries.append(entry)
+      }
+      if !newEntries.isEmpty {
+        out[event] = newEntries
+      }
+    }
+    return out
   }
 
   private func updateNotificationHooksContainer(_ hooks: JSONObject, enabled: Bool) -> JSONObject {
