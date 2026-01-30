@@ -1,0 +1,156 @@
+{
+  "events": [
+    {
+      "name": "Setup",
+      "description": "Load context and configure the environment during repository initialization or maintenance.",
+      "providers": ["claude"],
+      "supportsMatcher": false
+    },
+    {
+      "name": "SessionStart",
+      "description": "Runs when a session starts.",
+      "providers": ["claude", "gemini"],
+      "supportsMatcher": true,
+      "matchers": [
+        { "value": "startup", "description": "Session starts fresh.", "providers": ["gemini"] },
+        { "value": "resume", "description": "Session resumes from history.", "providers": ["gemini"] },
+        { "value": "clear", "description": "Session is cleared and restarted.", "providers": ["gemini"] }
+      ]
+    },
+    {
+      "name": "UserPromptSubmit",
+      "description": "Runs when the user submits a prompt.",
+      "providers": ["claude", "gemini"],
+      "aliases": { "gemini": "BeforeAgent" },
+      "supportsMatcher": true,
+      "matchers": [
+        { "value": "*", "description": "Wildcard matcher.", "providers": ["gemini"] }
+      ]
+    },
+    {
+      "name": "PreToolUse",
+      "description": "Runs before a tool is called.",
+      "providers": ["claude", "gemini"],
+      "aliases": { "gemini": "BeforeTool" },
+      "supportsMatcher": true,
+      "matchers": [
+        { "value": "Bash", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Write", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Edit", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Read", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Write|Edit", "description": "Regex example.", "providers": ["claude"] },
+        { "value": "Notebook.*", "description": "Regex example.", "providers": ["claude"] },
+        { "value": "*", "description": "Wildcard matcher.", "providers": ["gemini"] },
+        { "value": "write_.*", "description": "Regex example.", "providers": ["gemini"] }
+      ]
+    },
+    {
+      "name": "PermissionRequest",
+      "description": "Runs when a tool permission is requested.",
+      "providers": ["claude"],
+      "supportsMatcher": true,
+      "matchers": [
+        { "value": "Bash", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Write", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Edit", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Read", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Write|Edit", "description": "Regex example.", "providers": ["claude"] },
+        { "value": "Notebook.*", "description": "Regex example.", "providers": ["claude"] }
+      ]
+    },
+    {
+      "name": "PostToolUse",
+      "description": "Runs after a tool call succeeds.",
+      "providers": ["claude", "gemini"],
+      "aliases": { "gemini": "AfterTool" },
+      "supportsMatcher": true,
+      "matchers": [
+        { "value": "Bash", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Write", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Edit", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Read", "description": "Tool name.", "providers": ["claude"] },
+        { "value": "Write|Edit", "description": "Regex example.", "providers": ["claude"] },
+        { "value": "Notebook.*", "description": "Regex example.", "providers": ["claude"] },
+        { "value": "*", "description": "Wildcard matcher.", "providers": ["gemini"] },
+        { "value": "write_.*", "description": "Regex example.", "providers": ["gemini"] }
+      ]
+    },
+    {
+      "name": "PostToolUseFailure",
+      "description": "Runs after a tool call fails.",
+      "providers": ["claude"],
+      "supportsMatcher": false
+    },
+    {
+      "name": "SubagentStart",
+      "description": "Runs when a subagent (Task tool call) starts.",
+      "providers": ["claude"],
+      "supportsMatcher": false
+    },
+    {
+      "name": "SubagentStop",
+      "description": "Runs when a subagent (Task tool call) finishes.",
+      "providers": ["claude"],
+      "supportsMatcher": false,
+      "note": "Prompt-based hooks are supported for this event."
+    },
+    {
+      "name": "Stop",
+      "description": "Runs when the assistant finishes responding.",
+      "providers": ["claude", "gemini", "codex"],
+      "aliases": { "gemini": "AfterAgent" },
+      "supportsMatcher": true,
+      "matchers": [
+        { "value": "*", "description": "Wildcard matcher.", "providers": ["gemini"] }
+      ],
+      "note": "Prompt-based hooks are supported for this event."
+    },
+    {
+      "name": "PreCompact",
+      "description": "Runs before context compaction.",
+      "providers": ["claude", "gemini"],
+      "aliases": { "gemini": "PreCompress" },
+      "supportsMatcher": true,
+      "matchers": [
+        { "value": "*", "description": "Wildcard matcher.", "providers": ["gemini"] }
+      ]
+    },
+    {
+      "name": "SessionEnd",
+      "description": "Runs when a session ends.",
+      "providers": ["claude", "gemini"],
+      "supportsMatcher": true,
+      "matchers": [
+        { "value": "exit", "description": "Session exits.", "providers": ["gemini"] },
+        { "value": "clear", "description": "Session is cleared.", "providers": ["gemini"] }
+      ]
+    },
+    {
+      "name": "Notification",
+      "description": "Runs when the CLI raises a notification.",
+      "providers": ["claude", "gemini"],
+      "supportsMatcher": true,
+      "matchers": [
+        { "value": "*", "description": "Wildcard matcher.", "providers": ["gemini"] }
+      ]
+    },
+    {
+      "name": "BeforeModel",
+      "description": "Runs before a request is sent to the model.",
+      "providers": ["gemini"],
+      "supportsMatcher": true
+    },
+    {
+      "name": "AfterModel",
+      "description": "Runs after the model responds, before tool selection.",
+      "providers": ["gemini"],
+      "supportsMatcher": true
+    },
+    {
+      "name": "BeforeToolSelection",
+      "description": "Runs before tool selection.",
+      "providers": ["gemini"],
+      "supportsMatcher": true
+    }
+  ]
+}

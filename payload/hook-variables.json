@@ -1,0 +1,219 @@
+{
+  "variables": [
+    {
+      "name": "CLAUDE_PROJECT_DIR",
+      "kind": "env",
+      "description": "Project root directory",
+      "providers": ["claude", "gemini"],
+      "note": "Gemini alias"
+    },
+    {
+      "name": "CLAUDE_ENV_FILE",
+      "kind": "env",
+      "description": "Path to environment file",
+      "providers": ["claude"],
+      "note": "SessionStart/Setup"
+    },
+    {
+      "name": "GEMINI_PROJECT_DIR",
+      "kind": "env",
+      "description": "Project root directory",
+      "providers": ["gemini"]
+    },
+    {
+      "name": "GEMINI_SESSION_ID",
+      "kind": "env",
+      "description": "Session identifier",
+      "providers": ["gemini"]
+    },
+    {
+      "name": "GEMINI_CWD",
+      "kind": "env",
+      "description": "Current working directory",
+      "providers": ["gemini"]
+    },
+    {
+      "name": "session_id",
+      "kind": "stdin",
+      "description": "Session identifier",
+      "providers": ["claude", "gemini"]
+    },
+    {
+      "name": "transcript_path",
+      "kind": "stdin",
+      "description": "Transcript JSON path",
+      "providers": ["claude", "gemini"]
+    },
+    {
+      "name": "cwd",
+      "kind": "stdin",
+      "description": "Current working directory",
+      "providers": ["claude", "gemini"]
+    },
+    {
+      "name": "permission_mode",
+      "kind": "stdin",
+      "description": "Permission mode",
+      "providers": ["claude"]
+    },
+    {
+      "name": "hook_event_name",
+      "kind": "stdin",
+      "description": "Hook event name",
+      "providers": ["claude", "gemini"]
+    },
+    {
+      "name": "timestamp",
+      "kind": "stdin",
+      "description": "Event timestamp",
+      "providers": ["gemini"]
+    },
+    {
+      "name": "tool_name",
+      "kind": "stdin",
+      "description": "Tool name",
+      "providers": ["claude", "gemini"],
+      "note": "Claude: PreToolUse/PermissionRequest/PostToolUse/PostToolUseFailure · Gemini: BeforeTool/AfterTool"
+    },
+    {
+      "name": "tool_input",
+      "kind": "stdin",
+      "description": "Tool input JSON",
+      "providers": ["claude", "gemini"],
+      "note": "Claude: PreToolUse/PermissionRequest/PostToolUse/PostToolUseFailure · Gemini: BeforeTool/AfterTool"
+    },
+    {
+      "name": "tool_use_id",
+      "kind": "stdin",
+      "description": "Tool use identifier",
+      "providers": ["claude"],
+      "note": "PreToolUse/PermissionRequest/PostToolUse/PostToolUseFailure"
+    },
+    {
+      "name": "tool_response",
+      "kind": "stdin",
+      "description": "Tool response JSON",
+      "providers": ["claude", "gemini"],
+      "note": "Claude: PostToolUse/PostToolUseFailure · Gemini: AfterTool"
+    },
+    {
+      "name": "mcp_context",
+      "kind": "stdin",
+      "description": "MCP context JSON",
+      "providers": ["gemini"],
+      "note": "BeforeTool/AfterTool"
+    },
+    {
+      "name": "prompt",
+      "kind": "stdin",
+      "description": "User prompt",
+      "providers": ["claude", "gemini"],
+      "note": "Claude: UserPromptSubmit · Gemini: BeforeAgent/AfterAgent"
+    },
+    {
+      "name": "prompt_response",
+      "kind": "stdin",
+      "description": "Agent response",
+      "providers": ["gemini"],
+      "note": "AfterAgent"
+    },
+    {
+      "name": "stop_hook_active",
+      "kind": "stdin",
+      "description": "Stop hook state",
+      "providers": ["claude", "gemini"],
+      "note": "Claude: Stop/SubagentStop · Gemini: AfterAgent"
+    },
+    {
+      "name": "agent_id",
+      "kind": "stdin",
+      "description": "Subagent identifier",
+      "providers": ["claude"],
+      "note": "SubagentStart/SubagentStop"
+    },
+    {
+      "name": "agent_transcript_path",
+      "kind": "stdin",
+      "description": "Subagent transcript JSON path",
+      "providers": ["claude"],
+      "note": "SubagentStop"
+    },
+    {
+      "name": "llm_request",
+      "kind": "stdin",
+      "description": "Model request JSON",
+      "providers": ["gemini"],
+      "note": "BeforeModel/BeforeToolSelection/AfterModel"
+    },
+    {
+      "name": "llm_response",
+      "kind": "stdin",
+      "description": "Model response JSON",
+      "providers": ["gemini"],
+      "note": "AfterModel"
+    },
+    {
+      "name": "message",
+      "kind": "stdin",
+      "description": "Notification message",
+      "providers": ["claude", "gemini"],
+      "note": "Notification"
+    },
+    {
+      "name": "notification_type",
+      "kind": "stdin",
+      "description": "Notification type",
+      "providers": ["claude", "gemini"],
+      "note": "Notification"
+    },
+    {
+      "name": "details",
+      "kind": "stdin",
+      "description": "Notification details JSON",
+      "providers": ["gemini"],
+      "note": "Notification"
+    },
+    {
+      "name": "trigger",
+      "kind": "stdin",
+      "description": "Compaction trigger",
+      "providers": ["claude", "gemini"],
+      "note": "Claude: PreCompact/Setup · Gemini: PreCompress"
+    },
+    {
+      "name": "custom_instructions",
+      "kind": "stdin",
+      "description": "Custom instructions",
+      "providers": ["claude"],
+      "note": "PreCompact"
+    },
+    {
+      "name": "source",
+      "kind": "stdin",
+      "description": "Session start source",
+      "providers": ["claude", "gemini"],
+      "note": "SessionStart"
+    },
+    {
+      "name": "model",
+      "kind": "stdin",
+      "description": "Model name",
+      "providers": ["claude"],
+      "note": "SessionStart"
+    },
+    {
+      "name": "agent_type",
+      "kind": "stdin",
+      "description": "Agent type",
+      "providers": ["claude"],
+      "note": "SessionStart/SubagentStart"
+    },
+    {
+      "name": "reason",
+      "kind": "stdin",
+      "description": "Session end reason",
+      "providers": ["claude", "gemini"],
+      "note": "SessionEnd"
+    }
+  ]
+}

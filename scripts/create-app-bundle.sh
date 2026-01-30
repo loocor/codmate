@@ -231,6 +231,14 @@ fi
 if [[ -f "$ROOT_DIR/payload/terminals.json" ]]; then
   cp -f "$ROOT_DIR/payload/terminals.json" "$RESOURCES_DIR/terminals.json"
 fi
+if [[ -f "$ROOT_DIR/payload/hook-variables.json" ]]; then
+  mkdir -p "$RESOURCES_DIR/payload"
+  cp -f "$ROOT_DIR/payload/hook-variables.json" "$RESOURCES_DIR/payload/hook-variables.json"
+fi
+if [[ -f "$ROOT_DIR/payload/hook-events.json" ]]; then
+  mkdir -p "$RESOURCES_DIR/payload"
+  cp -f "$ROOT_DIR/payload/hook-events.json" "$RESOURCES_DIR/payload/hook-events.json"
+fi
 if [[ -d "$ROOT_DIR/payload/commands" ]]; then
   mkdir -p "$RESOURCES_DIR/payload"
   cp -R "$ROOT_DIR/payload/commands" "$RESOURCES_DIR/payload/commands"
