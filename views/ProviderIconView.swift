@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ProviderIconView: View {
@@ -10,23 +11,31 @@ struct ProviderIconView: View {
   @Environment(\.colorScheme) private var colorScheme
 
   var body: some View {
-    if let name = iconName(for: provider) {
-      Image(name)
-        .resizable()
-        .interpolation(.high)
-        .aspectRatio(contentMode: .fit)
-        .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-        .providerIconTheme(iconName: name)
-        .saturation(saturation)
-        .opacity(opacity)
-    } else {
-      Circle()
-        .fill(accent(for: provider))
-        .frame(width: dotSize, height: dotSize)
-        .saturation(saturation)
-        .opacity(opacity)
+    Group {
+      if let name = iconName(for: provider),
+         let image = ProviderIconResource.processedImage(
+           named: name,
+           size: NSSize(width: size, height: size),
+           isDarkMode: colorScheme == .dark
+         ) {
+        Image(nsImage: image)
+          .resizable()
+          .interpolation(.high)
+          .aspectRatio(contentMode: .fit)
+          .frame(width: size, height: size)
+          .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+          .saturation(saturation)
+          .opacity(opacity)
+      } else {
+        Circle()
+          .fill(accent(for: provider))
+          .frame(width: dotSize, height: dotSize)
+          .saturation(saturation)
+          .opacity(opacity)
+      }
     }
+    .frame(width: size, height: size, alignment: .center)
+    .id(colorScheme)
   }
 
   private var dotSize: CGFloat {
