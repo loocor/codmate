@@ -15,7 +15,7 @@ struct ExtensionsSettingsView: View {
                             SettingsTabContent { CommandsSettingsView(preferences: preferences) }
                         }
                         Tab("Hooks", systemImage: "link", value: ExtensionsSettingsTab.hooks) {
-                            SettingsTabContent { HooksSettingsView() }
+                            SettingsTabContent { HooksSettingsView(preferences: preferences) }
                         }
                         Tab("MCP Servers", systemImage: "server.rack", value: ExtensionsSettingsTab.mcp) {
                             SettingsTabContent {
@@ -36,7 +36,7 @@ struct ExtensionsSettingsView: View {
                             .tabItem { Label("Commands", systemImage: "command") }
                             .tag(ExtensionsSettingsTab.commands)
 
-                        SettingsTabContent { HooksSettingsView() }
+                        SettingsTabContent { HooksSettingsView(preferences: preferences) }
                             .tabItem { Label("Hooks", systemImage: "link") }
                             .tag(ExtensionsSettingsTab.hooks)
 

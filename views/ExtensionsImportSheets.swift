@@ -388,6 +388,142 @@ struct CommandsImportSheet: View {
   }
 }
 
+struct HooksImportSheet: View {
+  @Binding var candidates: [HookImportCandidate]
+  let isImporting: Bool
+  let statusMessage: String?
+  let title: String
+  let subtitle: String
+  let onCancel: () -> Void
+  let onImport: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text(title)
+        .font(.title3)
+        .fontWeight(.semibold)
+      Text(subtitle)
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+
+      if isImporting {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("Scanning…")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 160)
+      } else if candidates.isEmpty {
+        VStack(spacing: 8) {
+          Image(systemName: "link")
+            .font(.system(size: 28))
+            .foregroundStyle(.secondary)
+          Text(statusMessage ?? "No hooks found.")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 200)
+      } else {
+        List {
+          ForEach($candidates) { $item in
+            VStack(alignment: .leading, spacing: 6) {
+              HStack(alignment: .top, spacing: 8) {
+                Toggle("", isOn: $item.isSelected)
+                  .labelsHidden()
+                  .controlSize(.small)
+
+                VStack(alignment: .leading, spacing: 4) {
+                  Text(item.rule.name.isEmpty ? item.rule.event : item.rule.name)
+                    .font(.body.weight(.medium))
+                  Text(summaryText(item.rule))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                  Text("Sources: \(item.sources.sorted().joined(separator: ", "))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                VStack(alignment: .trailing, spacing: 6) {
+                  Picker("", selection: $item.resolution) {
+                    ForEach(ImportResolutionChoice.allCases) { choice in
+                      Text(choice.title).tag(choice)
+                    }
+                  }
+                  .labelsHidden()
+                  .pickerStyle(.segmented)
+                  .frame(width: 240)
+
+                  if item.resolution == .rename {
+                    TextField("New name", text: $item.renameName)
+                      .textFieldStyle(.roundedBorder)
+                      .frame(maxWidth: 220)
+                  }
+                }
+              }
+
+              if item.hasConflict {
+                Label("Already exists in CodMate (default: skip)", systemImage: "exclamationmark.triangle")
+                  .font(.caption)
+                  .foregroundStyle(.orange)
+              } else if item.hasNameCollision {
+                Label("Duplicate name in import list", systemImage: "exclamationmark.triangle")
+                  .font(.caption)
+                  .foregroundStyle(.orange)
+              }
+            }
+            .padding(.vertical, 6)
+            .contextMenu {
+              buildOpenMenu(sourcePaths: item.sourcePaths)
+              buildRevealMenu(sourcePaths: item.sourcePaths)
+            }
+          }
+        }
+        .listStyle(.inset)
+      }
+
+      Spacer(minLength: 0)
+
+      if let statusMessage, !statusMessage.isEmpty {
+        Text(statusMessage)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
+
+      HStack {
+        Text("Conflicts default to Skip. Review before importing.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+        Spacer()
+        if candidates.isEmpty && !isImporting {
+          Button("Close") { onCancel() }
+            .buttonStyle(.borderedProminent)
+        } else {
+          Button("Cancel") { onCancel() }
+          Button("Import") { onImport() }
+            .buttonStyle(.borderedProminent)
+            .disabled(isImporting || candidates.filter { $0.isSelected }.isEmpty)
+        }
+      }
+    }
+    .padding(importSheetPadding)
+  }
+
+  private func summaryText(_ rule: HookRule) -> String {
+    let event = rule.event.isEmpty ? "Event" : rule.event
+    let matcher = rule.matcher?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let cmd = rule.commands.first?.command.trimmingCharacters(in: .whitespacesAndNewlines)
+    let parts = [
+      event,
+      (matcher?.isEmpty == false ? "matcher: \(matcher!)" : nil),
+      (cmd?.isEmpty == false ? cmd : nil),
+      "\(rule.commands.count) command(s)"
+    ].compactMap { $0 }
+    return parts.joined(separator: " · ")
+  }
+}
+
 @ViewBuilder
 private func buildOpenMenu(sourcePaths: [String: String]) -> some View {
   let editors = EditorApp.installedEditors

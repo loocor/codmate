@@ -85,3 +85,24 @@ struct MCPImportCandidate: Identifiable {
   var renameName: String
   var signature: String
 }
+
+struct HookImportCandidate: Identifiable, Hashable {
+  let id: UUID
+  var rule: HookRule
+  var sources: [String]
+  var sourcePaths: [String: String]
+  var isSelected: Bool
+  var hasConflict: Bool
+  var hasNameCollision: Bool
+  var resolution: ImportResolutionChoice
+  var renameName: String
+  var signature: String
+
+  func hash(into hasher: inout Hasher) {
+    hasher.combine(id)
+  }
+
+  static func == (lhs: HookImportCandidate, rhs: HookImportCandidate) -> Bool {
+    lhs.id == rhs.id
+  }
+}
