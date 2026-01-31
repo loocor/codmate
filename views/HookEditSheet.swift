@@ -26,22 +26,49 @@ struct HookEditSheet: View {
   @State private var variablePicker: VariablePickerContext?
   @State private var variableQuery: String = ""
   @State private var variableFilter: HookVariableFilter = .all
+  @State private var wizardActive: Bool = false
+  @State private var didHydrate: Bool = false
+  @FocusState private var focusedField: FocusField?
   @FocusState private var eventSearchFocused: Bool
   private let variablePopoverSize: CGSize = CGSize(width: 360, height: 380)
   private let eventPopoverSize: CGSize = CGSize(width: 360, height: 380)
   @FocusState private var variableSearchFocused: Bool
+
+  private enum FocusField {
+    case name
+  }
 
   private let customEventKey = "__custom__"
   private let sheetMaxHeight: CGFloat = 560
   private let generalRowMinHeight: CGFloat = 28
 
   var body: some View {
+    if wizardActive {
+      HookWizardSheet(preferences: preferences, onApply: { draft in
+        applyDraft(draft)
+        wizardActive = false
+      }, onCancel: {
+        wizardActive = false
+      })
+    } else {
+      formBody
+    }
+  }
+
+  private var formBody: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .firstTextBaseline) {
         Text(rule == nil ? "New Hook" : "Edit Hook")
           .font(.title3)
           .fontWeight(.semibold)
         Spacer()
+        Button {
+          wizardActive = true
+        } label: {
+          Image(systemName: "sparkles")
+        }
+        .buttonStyle(.borderless)
+        .help("AI Wizard")
       }
 
       if #available(macOS 15.0, *) {
@@ -86,6 +113,13 @@ struct HookEditSheet: View {
     }
     .padding(16)
     .frame(maxHeight: sheetMaxHeight)
+    .onAppear {
+      if rule == nil {
+        DispatchQueue.main.async {
+          focusedField = .name
+        }
+      }
+    }
     .alert(item: $pendingDeleteCommand) { item in
       Alert(
         title: Text("Delete Command?"),
@@ -97,7 +131,12 @@ struct HookEditSheet: View {
         secondaryButton: .cancel { pendingDeleteCommand = nil }
       )
     }
-    .onAppear { hydrateFromRule() }
+    .onAppear {
+      if !didHydrate {
+        hydrateFromRule()
+        didHydrate = true
+      }
+    }
   }
 
   private var canSave: Bool {
@@ -161,6 +200,7 @@ struct HookEditSheet: View {
       GridRow {
         Text("Name").font(.subheadline).fontWeight(.medium)
         TextField("Optional display name", text: $name)
+          .focused($focusedField, equals: .name)
           .frame(minHeight: generalRowMinHeight)
           .frame(maxWidth: .infinity, alignment: .trailing)
       }
@@ -303,6 +343,23 @@ struct HookEditSheet: View {
     if commands.isEmpty { commands = [EditableHookCommand()] }
   }
 
+  private func applyDraft(_ draft: HookWizardDraft) {
+    name = draft.name ?? ""
+    descriptionText = draft.description ?? ""
+    enabled = true
+    if let descriptor = HookEventCatalog.descriptor(for: draft.event) {
+      selectedEvent = descriptor.name
+      customEvent = ""
+    } else {
+      selectedEvent = customEventKey
+      customEvent = draft.event
+    }
+    matcher = draft.matcher ?? ""
+    targets = draft.targets ?? HookTargets()
+    commands = draft.commands.map { EditableHookCommand(from: $0) }
+    if commands.isEmpty { commands = [EditableHookCommand()] }
+  }
+
   private func removeCommand(_ id: UUID) {
     commands.removeAll { $0.id == id }
     hoveringCommandIds.remove(id)
@@ -341,7 +398,8 @@ struct HookEditSheet: View {
             HStack(alignment: .top, spacing: 8) {
               placeholderEditor(
                 text: $commands[index].argsText,
-                placeholder: "one argument per line"
+                placeholder: "one argument per line",
+                height: 88
               )
               variableInsertButton(commandId: id, target: .args)
                 .padding(.top, 4)
@@ -356,7 +414,8 @@ struct HookEditSheet: View {
             HStack(alignment: .top, spacing: 8) {
               placeholderEditor(
                 text: $commands[index].envText,
-                placeholder: "KEY=VALUE, one per line"
+                placeholder: "KEY=VALUE, one per line",
+                height: 88
               )
               variableInsertButton(commandId: id, target: .env)
                 .padding(.top, 4)
@@ -420,7 +479,11 @@ struct HookEditSheet: View {
     )
   }
 
-  private func placeholderEditor(text: Binding<String>, placeholder: String) -> some View {
+  private func placeholderEditor(
+    text: Binding<String>,
+    placeholder: String,
+    height: CGFloat = 44
+  ) -> some View {
     ZStack(alignment: .topLeading) {
       if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         Text(placeholder)
@@ -431,7 +494,7 @@ struct HookEditSheet: View {
       }
       TextEditor(text: text)
         .font(.system(.caption, design: .monospaced))
-        .frame(height: 44)
+        .frame(height: height)
         .scrollContentBackground(.hidden)
         .background(Color(nsColor: .textBackgroundColor))
     }

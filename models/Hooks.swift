@@ -60,11 +60,45 @@ struct HookCommand: Codable, Equatable, Hashable, Sendable {
   var env: [String: String]?
   var timeoutMs: Int?
 
+  private enum CodingKeys: String, CodingKey {
+    case command
+    case args
+    case env
+    case timeoutMs
+  }
+
+  private struct KeyValuePair: Codable, Hashable {
+    var key: String
+    var value: String
+  }
+
   init(command: String, args: [String]? = nil, env: [String: String]? = nil, timeoutMs: Int? = nil) {
     self.command = command
     self.args = args
     self.env = env
     self.timeoutMs = timeoutMs
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    command = try container.decode(String.self, forKey: .command)
+    args = try container.decodeIfPresent([String].self, forKey: .args)
+    timeoutMs = try container.decodeIfPresent(Int.self, forKey: .timeoutMs)
+    if let dict = try? container.decodeIfPresent([String: String].self, forKey: .env) {
+      env = dict
+    } else if let pairs = try? container.decodeIfPresent([KeyValuePair].self, forKey: .env) {
+      env = Dictionary(uniqueKeysWithValues: pairs.map { ($0.key, $0.value) })
+    } else {
+      env = nil
+    }
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(command, forKey: .command)
+    try container.encodeIfPresent(args, forKey: .args)
+    try container.encodeIfPresent(env, forKey: .env)
+    try container.encodeIfPresent(timeoutMs, forKey: .timeoutMs)
   }
 }
 
