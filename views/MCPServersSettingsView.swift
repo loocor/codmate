@@ -49,7 +49,12 @@ struct MCPServersSettingsPane: View {
                 .frame(minWidth: 640, minHeight: 420)
         }
         .sheet(isPresented: $showEditorSheet) {
-            MCPServerEditorSheet(vm: vm, isEditing: editorIsEditingExisting, onClose: { showEditorSheet = false })
+            MCPServerEditorSheet(
+                vm: vm,
+                preferences: preferences,
+                isEditing: editorIsEditingExisting,
+                onClose: { showEditorSheet = false }
+            )
                 .frame(minWidth: 760, minHeight: 480)
         }
         .sheet(isPresented: $vm.showImportSheet) {
@@ -547,63 +552,93 @@ private struct NewMCPServerSheet: View {
 // MARK: - Unified Editor Sheet (JSON + Form)
 private struct MCPServerEditorSheet: View {
     @ObservedObject var vm: MCPServersViewModel
+    @ObservedObject var preferences: SessionPreferencesStore
     var isEditing: Bool
     var onClose: () -> Void
     @State private var selectedTab: Int = 0 // 0=Form, 1=JSON
     @State private var isDropTargeted: Bool = false
     @State private var breathing: Bool = false
+    @State private var wizardActive: Bool = false
+    @FocusState private var focusedField: FocusField?
+
+    private enum FocusField {
+        case name
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(isEditing ? "Edit MCP Server" : "New MCP Server").font(.title3).fontWeight(.semibold)
-                Spacer()
-            }
-            if !isEditing {
-                SettingsTabContent { importArea }
-            }
-            if #available(macOS 15.0, *) {
-                TabView(selection: $selectedTab) {
-                    Tab("Form", systemImage: "slider.horizontal.3", value: 0) {
-                        SettingsTabContent { formTab }
+        if wizardActive {
+            MCPWizardSheet(preferences: preferences, onApply: { draft in
+                applyDraft(draft)
+                wizardActive = false
+            }, onCancel: {
+                wizardActive = false
+            })
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(isEditing ? "Edit MCP Server" : "New MCP Server").font(.title3).fontWeight(.semibold)
+                    Spacer()
+                    Button {
+                        wizardActive = true
+                    } label: {
+                        Image(systemName: "sparkles")
                     }
-                    Tab("JSON", systemImage: "doc.text", value: 1) {
-                        SettingsTabContent { jsonConfigTab }
+                    .buttonStyle(.borderless)
+                    .help("AI Wizard")
+                }
+                if !isEditing {
+                    SettingsTabContent { importArea }
+                }
+                if #available(macOS 15.0, *) {
+                    TabView(selection: $selectedTab) {
+                        Tab("Form", systemImage: "slider.horizontal.3", value: 0) {
+                            SettingsTabContent { formTab }
+                        }
+                        Tab("JSON", systemImage: "doc.text", value: 1) {
+                            SettingsTabContent { jsonConfigTab }
+                        }
                     }
-                }
-            } else {
-                TabView(selection: $selectedTab) {
-                    SettingsTabContent { formTab }
-                        .tabItem { Label("Form", systemImage: "slider.horizontal.3") }
-                        .tag(0)
-                    SettingsTabContent { jsonConfigTab }
-                        .tabItem { Label("JSON", systemImage: "doc.text") }
-                        .tag(1)
-                }
-            }
-            if let msg = vm.testMessage, !msg.isEmpty {
-                Text(msg)
-                    .font(.caption)
-                    .foregroundStyle(msg.hasPrefix("Connected") ? .green : .red)
-            }
-            HStack {
-                if vm.testInProgress {
-                    Button("Stop") { vm.cancelTest() }
-                        .buttonStyle(.bordered)
                 } else {
-                    Button("Test") { vm.startTest() }
-                        .buttonStyle(.bordered)
+                    TabView(selection: $selectedTab) {
+                        SettingsTabContent { formTab }
+                            .tabItem { Label("Form", systemImage: "slider.horizontal.3") }
+                            .tag(0)
+                        SettingsTabContent { jsonConfigTab }
+                            .tabItem { Label("JSON", systemImage: "doc.text") }
+                            .tag(1)
+                    }
                 }
-                Spacer()
-                Button("Cancel") { onClose() }
-                Button(isEditing ? "Save" : "Create") {
-                    Task { if await vm.saveForm() { onClose() } }
+                if let msg = vm.testMessage, !msg.isEmpty {
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundStyle(msg.hasPrefix("Connected") ? .green : .red)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!vm.formCanSave())
+                HStack {
+                    if vm.testInProgress {
+                        Button("Stop") { vm.cancelTest() }
+                            .buttonStyle(.bordered)
+                    } else {
+                        Button("Test") { vm.startTest() }
+                            .buttonStyle(.bordered)
+                    }
+                    Spacer()
+                    Button("Cancel") { onClose() }
+                    Button(isEditing ? "Save" : "Create") {
+                        Task { if await vm.saveForm() { onClose() } }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!vm.formCanSave())
+                }
+            }
+            .padding(16)
+            .onAppear {
+                if !isEditing {
+                    DispatchQueue.main.async {
+                        focusedField = .name
+                    }
+                }
             }
         }
-        .padding(16)
     }
 
     // MARK: - Import area (top, new-only)
@@ -691,7 +726,12 @@ private struct MCPServerEditorSheet: View {
     // MARK: - Form Tab (primary)
     @ViewBuilder private var formTab: some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
-            GridRow { Text("Name").font(.subheadline).fontWeight(.medium); TextField("server-id", text: $vm.formName).frame(maxWidth: .infinity, alignment: .trailing) }
+            GridRow {
+                Text("Name").font(.subheadline).fontWeight(.medium)
+                TextField("server-id", text: $vm.formName)
+                    .focused($focusedField, equals: .name)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
             GridRow {
                 Text("Kind").font(.subheadline).fontWeight(.medium)
                 Picker("", selection: $vm.formKind) {
@@ -818,6 +858,26 @@ private struct MCPServerEditorSheet: View {
             return String(data: data, encoding: .utf8)
         }
         return nil
+    }
+
+    private func applyDraft(_ draft: MCPWizardDraft) {
+        vm.formName = draft.name
+        vm.formKind = draft.kind
+        vm.formURL = draft.url ?? ""
+        vm.formCommand = draft.command ?? ""
+        vm.formArgs = (draft.args ?? []).joined(separator: "\n")
+        vm.formEnvText = formatPairs(draft.env)
+        vm.formHeadersText = formatPairs(draft.headers)
+        if let targets = draft.targets {
+            vm.formTargetsCodex = targets.codex
+            vm.formTargetsClaude = targets.claude
+            vm.formTargetsGemini = targets.gemini
+        }
+    }
+
+    private func formatPairs(_ dict: [String: String]?) -> String {
+        guard let dict, !dict.isEmpty else { return "" }
+        return dict.keys.sorted().map { "\($0)=\(dict[$0]!)" }.joined(separator: "\n")
     }
 }
 
