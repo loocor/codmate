@@ -143,6 +143,44 @@ actor SkillsStore {
     return record
   }
 
+  func createFromWizard(draft: SkillWizardDraft, enabled: Bool = false) async throws -> SkillRecord {
+    let proposed = draft.id.isEmpty ? draft.name : draft.id
+    let skillId = try validateAndNormalizeSkillName(proposed)
+
+    try fm.createDirectory(at: paths.libraryDir, withIntermediateDirectories: true)
+    let destination = paths.libraryDir.appendingPathComponent(skillId, isDirectory: true)
+
+    if fm.fileExists(atPath: destination.path) {
+      let suggested = suggestNewId(basedOn: skillId)
+      throw SkillCreationError.nameConflict(existing: skillId, suggested: suggested)
+    }
+
+    try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+
+    let skillMarkdown = generateSkillMarkdownFromDraft(draft, id: skillId)
+    let skillFile = destination.appendingPathComponent("SKILL.md", isDirectory: false)
+    try skillMarkdown.write(to: skillFile, atomically: true, encoding: .utf8)
+
+    try writeMarker(to: destination, id: skillId, sourceType: "wizard")
+
+    let summary = draft.summary?.isEmpty == false ? draft.summary! : draft.description
+    let record = SkillRecord(
+      id: skillId,
+      name: draft.name,
+      description: draft.description,
+      summary: summary,
+      tags: draft.tags,
+      source: "Wizard",
+      path: destination.path,
+      isEnabled: enabled,
+      targets: draft.targets ?? MCPServerTargets(codex: true, claude: true, gemini: false),
+      installedAt: Date()
+    )
+
+    upsert(record)
+    return record
+  }
+
   private func validateAndNormalizeSkillName(_ name: String) throws -> String {
     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else {
@@ -215,6 +253,70 @@ Assistant: [Expected behavior]
 - Add any special considerations or limitations
 - Document required tools or dependencies
 - Include best practices or tips
+
+"""
+  }
+
+  nonisolated func generateSkillMarkdownFromDraft(_ draft: SkillWizardDraft, id: String) -> String {
+    let title = draft.name.isEmpty ? id : draft.name
+    let summary = draft.summary?.isEmpty == false ? draft.summary! : draft.description
+    let tagsBlock: String = {
+      if draft.tags.isEmpty { return "" }
+      let lines = draft.tags.map { "  - \($0)" }.joined(separator: "\n")
+      return "tags:\n\(lines)\n"
+    }()
+
+    let instructions: String = {
+      if draft.instructions.isEmpty { return "" }
+      return draft.instructions.enumerated().map { index, step in
+        "\(index + 1). \(step)"
+      }.joined(separator: "\n")
+    }()
+
+    let examples: String = {
+      if draft.examples.isEmpty { return "" }
+      return draft.examples.enumerated().map { index, example in
+        let title = example.title.isEmpty ? "Example \(index + 1)" : example.title
+        return """
+**\(title)**
+```
+User: \(example.user)
+Assistant: \(example.assistant)
+```
+"""
+      }.joined(separator: "\n\n")
+    }()
+
+    let notes: String = {
+      if draft.notes.isEmpty { return "" }
+      return draft.notes.map { "- \($0)" }.joined(separator: "\n")
+    }()
+
+    return """
+---
+name: \(id)
+description: \(draft.description)
+metadata:
+  short-description: \(summary)
+\(tagsBlock)---
+
+# \(title)
+
+## Overview
+
+\(draft.overview)
+
+## Instructions
+
+\(instructions)
+
+## Examples
+
+\(examples)
+
+## Notes
+
+\(notes)
 
 """
   }

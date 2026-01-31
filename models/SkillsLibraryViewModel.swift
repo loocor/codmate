@@ -42,6 +42,11 @@ final class SkillsLibraryViewModel: ObservableObject {
     @Published var newSkillName: String = ""
     @Published var newSkillDescription: String = ""
     @Published var createErrorMessage: String?
+    @Published var pendingWizardDraft: SkillWizardDraft? = nil
+    @Published var createStartsWithWizard: Bool = false
+    @Published var wizardPreviewSkill: SkillSummary? = nil
+
+    private var wizardPreviewURL: URL? = nil
     @Published var showImportSheet: Bool = false
     @Published var importCandidates: [SkillImportCandidate] = []
     @Published var isImporting: Bool = false
@@ -391,10 +396,13 @@ final class SkillsLibraryViewModel: ObservableObject {
         }
     }
 
-    func prepareCreateSkill() {
+    func prepareCreateSkill(startWithWizard: Bool = false) {
+        createStartsWithWizard = startWithWizard
         newSkillName = ""
         newSkillDescription = ""
         createErrorMessage = nil
+        pendingWizardDraft = nil
+        clearWizardPreview()
         showCreateSheet = true
     }
 
@@ -403,20 +411,38 @@ final class SkillsLibraryViewModel: ObservableObject {
         newSkillName = ""
         newSkillDescription = ""
         createErrorMessage = nil
+        pendingWizardDraft = nil
+        createStartsWithWizard = false
+        clearWizardPreview()
     }
 
     func createSkill() {
         createErrorMessage = nil
         Task {
             do {
-                let record = try await store.createFromTemplate(
-                    name: newSkillName,
-                    description: newSkillDescription
-                )
+                guard var draft = pendingWizardDraft else {
+                    await MainActor.run {
+                        createErrorMessage = "Use the wizard to create a skill."
+                    }
+                    return
+                }
+                let trimmedName = newSkillName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedName.isEmpty {
+                    draft.id = trimmedName
+                    draft.name = trimmedName
+                }
+                let trimmedDesc = newSkillDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedDesc.isEmpty {
+                    draft.description = trimmedDesc
+                }
+                let record = try await store.createFromWizard(draft: draft, enabled: false)
                 await MainActor.run {
                     showCreateSheet = false
                     newSkillName = ""
                     newSkillDescription = ""
+                    pendingWizardDraft = nil
+                    createStartsWithWizard = false
+                    clearWizardPreview()
                 }
                 await load()
                 await MainActor.run {
@@ -433,6 +459,72 @@ final class SkillsLibraryViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    func applyWizardDraft(_ draft: SkillWizardDraft) {
+        pendingWizardDraft = draft
+        newSkillName = draft.id.isEmpty ? draft.name : draft.id
+        newSkillDescription = draft.description
+        createErrorMessage = nil
+        refreshWizardPreview()
+    }
+
+    func refreshWizardPreview() {
+        guard var draft = pendingWizardDraft else {
+            clearWizardPreview()
+            return
+        }
+        let trimmedName = newSkillName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty {
+            draft.id = trimmedName
+            draft.name = trimmedName
+        }
+        let trimmedDesc = newSkillDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedDesc.isEmpty {
+            draft.description = trimmedDesc
+        }
+
+        let previewDir: URL
+        if let existing = wizardPreviewURL {
+            previewDir = existing
+        } else {
+            let previewId = "wizard-preview-\(UUID().uuidString)"
+            previewDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent(previewId, isDirectory: true)
+            wizardPreviewURL = previewDir
+        }
+        let previewId = "wizard-preview-\(UUID().uuidString)"
+        do {
+            try FileManager.default.createDirectory(at: previewDir, withIntermediateDirectories: true)
+            let markdown = store.generateSkillMarkdownFromDraft(draft, id: previewId)
+            let skillFile = previewDir.appendingPathComponent("SKILL.md", isDirectory: false)
+            try markdown.write(to: skillFile, atomically: true, encoding: .utf8)
+
+            let summary = draft.summary?.isEmpty == false ? draft.summary! : draft.description
+            let targets = draft.targets ?? MCPServerTargets(codex: true, claude: true, gemini: false)
+            wizardPreviewSkill = SkillSummary(
+                id: previewId,
+                name: draft.name,
+                description: draft.description,
+                summary: summary,
+                tags: draft.tags,
+                source: "Wizard Preview",
+                path: previewDir.path,
+                isSelected: false,
+                targets: targets,
+                sourceType: "preview"
+            )
+        } catch {
+            wizardPreviewSkill = nil
+        }
+    }
+
+    private func clearWizardPreview() {
+        if let url = wizardPreviewURL {
+            try? FileManager.default.removeItem(at: url)
+        }
+        wizardPreviewURL = nil
+        wizardPreviewSkill = nil
     }
 
     func openInEditor(_ skill: SkillSummary, using editor: EditorApp) {

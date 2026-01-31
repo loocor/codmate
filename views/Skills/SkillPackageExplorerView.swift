@@ -8,6 +8,8 @@ struct SkillPackageExplorerView: View {
   let skill: SkillSummary
   var onReveal: () -> Void
   var onUninstall: () -> Void
+  var showsHeader: Bool = true
+  var showsActions: Bool = true
 
   @State private var treeQuery: String = ""
   @State private var expandedDirs: Set<String> = []
@@ -33,7 +35,9 @@ struct SkillPackageExplorerView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      header
+      if showsHeader {
+        header
+      }
       HStack(alignment: .top, spacing: 12) {
         fileTree
           .frame(minWidth: 240, maxWidth: 280, maxHeight: .infinity)
@@ -74,21 +78,23 @@ struct SkillPackageExplorerView: View {
           .foregroundStyle(.secondary)
       }
       Spacer()
-      HStack(spacing: 8) {
-        Button {
-          onReveal()
-        } label: {
-          Image(systemName: "finder")
+      if showsActions {
+        HStack(spacing: 8) {
+          Button {
+            onReveal()
+          } label: {
+            Image(systemName: "finder")
+          }
+          .buttonStyle(.borderless)
+          .help("Reveal in Finder")
+          Button(role: .destructive) {
+            onUninstall()
+          } label: {
+            Image(systemName: "trash")
+          }
+          .buttonStyle(.borderless)
+          .help("Move to Trash")
         }
-        .buttonStyle(.borderless)
-        .help("Reveal in Finder")
-        Button(role: .destructive) {
-          onUninstall()
-        } label: {
-          Image(systemName: "trash")
-        }
-        .buttonStyle(.borderless)
-        .help("Move to Trash")
       }
     }
   }
@@ -468,14 +474,15 @@ struct SkillPackageExplorerView: View {
       return ([], false, "Unable to enumerate skill files.")
     }
 
-    let base = root.path + "/"
+    let rootResolved = root.resolvingSymlinksInPath()
+    let base = rootResolved.path.hasSuffix("/") ? rootResolved.path : rootResolved.path + "/"
     var collected: [String] = []
     var truncated = false
 
     while let item = enumerator.nextObject() as? URL {
-      let path = item.path
-      guard path.hasPrefix(base) else { continue }
-      let relative = String(path.dropFirst(base.count))
+      let itemPath = item.resolvingSymlinksInPath().path
+      guard itemPath.hasPrefix(base) else { continue }
+      let relative = String(itemPath.dropFirst(base.count))
       if relative.isEmpty { continue }
       if relative == ".codmate.json" || relative.hasSuffix("/.codmate.json") { continue }
       if relative == ".git" || relative.hasPrefix(".git/") {

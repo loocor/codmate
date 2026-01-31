@@ -23,7 +23,8 @@ struct SkillsSettingsView: View {
         .frame(minWidth: 520, minHeight: 340)
     }
     .sheet(isPresented: $vm.showCreateSheet) {
-      SkillCreateSheet(vm: vm)
+      SkillCreateSheet(preferences: preferences, vm: vm, startInWizard: vm.createStartsWithWizard)
+        .frame(minWidth: 760, minHeight: 520, maxHeight: 720)
     }
     .sheet(isPresented: $vm.showImportSheet) {
       SkillsImportSheet(
@@ -257,14 +258,26 @@ private struct SkillsInstallSheet: View {
   @ObservedObject var vm: SkillsLibraryViewModel
   @State private var importerPresented = false
   @State private var isDropTargeted = false
+  @FocusState private var urlFieldFocused: Bool
   private let rowWidth: CGFloat = 420
   private let fieldWidth: CGFloat = 320
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      Text("Install Skill")
-        .font(.title3)
-        .fontWeight(.semibold)
+      HStack(alignment: .firstTextBaseline) {
+        Text("Install Skill")
+          .font(.title3)
+          .fontWeight(.semibold)
+        Spacer()
+        Button {
+          vm.cancelInstall()
+          vm.prepareCreateSkill(startWithWizard: true)
+        } label: {
+          Image(systemName: "sparkles")
+        }
+        .buttonStyle(.borderless)
+        .help("AI Wizard")
+      }
 
       dropArea
 
@@ -295,6 +308,7 @@ private struct SkillsInstallSheet: View {
           HStack {
             Spacer(minLength: 0)
             TextField("https://example.com/skill.zip", text: $vm.pendingInstallText)
+              .focused($urlFieldFocused)
               .textFieldStyle(.roundedBorder)
               .frame(width: rowWidth)
             Spacer(minLength: 0)
@@ -319,15 +333,6 @@ private struct SkillsInstallSheet: View {
       .frame(height: 64)
 
       HStack {
-        Button {
-          vm.cancelInstall()
-          vm.prepareCreateSkill()
-        } label: {
-          Label("Template", systemImage: "doc.badge.plus")
-        }
-        .buttonStyle(.bordered)
-        .help("Create a new skill from template")
-
         Spacer()
         Button("Cancel") { vm.cancelInstall() }
         Button("Install") { vm.finishInstall() }
@@ -336,6 +341,12 @@ private struct SkillsInstallSheet: View {
       }
     }
     .padding(16)
+    .onAppear {
+      urlFieldFocused = false
+    }
+    .onChange(of: vm.installMode) { _ in
+      urlFieldFocused = false
+    }
     .onDrop(of: [UTType.fileURL, UTType.url, UTType.plainText], isTargeted: $isDropTargeted) {
       providers in
       handleDrop(providers)
@@ -473,10 +484,22 @@ private struct SkillsInstallSheet: View {
     HStack(spacing: 8) {
       Spacer(minLength: 0)
       HStack(spacing: 8) {
-        TextField("", text: .constant(value))
-          .textFieldStyle(.roundedBorder)
-          .disabled(true)
-          .frame(width: fieldWidth)
+        Text(value)
+          .font(.body)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .frame(width: fieldWidth, alignment: .leading)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 6)
+          .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+              .fill(Color(nsColor: .textBackgroundColor))
+              .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                  .stroke(Color.secondary.opacity(0.2))
+              )
+          )
         Button("Choose…") { action() }
       }
       .frame(width: rowWidth, alignment: .center)
@@ -545,13 +568,55 @@ private struct SkillConflictResolutionSheet: View {
 }
 
 private struct SkillCreateSheet: View {
+  @ObservedObject var preferences: SessionPreferencesStore
   @ObservedObject var vm: SkillsLibraryViewModel
+  private let startInWizard: Bool
+  @State private var wizardActive: Bool
+
+  init(
+    preferences: SessionPreferencesStore,
+    vm: SkillsLibraryViewModel,
+    startInWizard: Bool = false
+  ) {
+    self.preferences = preferences
+    self.vm = vm
+    self.startInWizard = startInWizard
+    _wizardActive = State(initialValue: startInWizard)
+  }
 
   var body: some View {
+    if wizardActive {
+      SkillWizardSheet(preferences: preferences, onApply: { draft in
+        applyDraft(draft)
+        wizardActive = false
+      }, onCancel: {
+        wizardActive = false
+      })
+    } else {
+      formBody
+    }
+  }
+
+  private var formBody: some View {
     VStack(alignment: .leading, spacing: 16) {
-      Text("Create Skill from Template")
-        .font(.title3)
-        .fontWeight(.semibold)
+      HStack(alignment: .firstTextBaseline) {
+        Text("Create Skill")
+          .font(.title3)
+          .fontWeight(.semibold)
+        Spacer()
+        Button {
+          wizardActive = true
+        } label: {
+          Image(systemName: "sparkles")
+        }
+        .buttonStyle(.borderless)
+        .help("AI Wizard")
+      }
+      if vm.pendingWizardDraft == nil {
+        Text("Run the AI wizard to generate a draft, then review before creating.")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
 
       VStack(alignment: .leading, spacing: 8) {
         Text("Skill Name")
@@ -571,6 +636,17 @@ private struct SkillCreateSheet: View {
         TextField("Describe what this skill does and when to use it", text: $vm.newSkillDescription)
           .textFieldStyle(.roundedBorder)
       }
+      if let preview = vm.wizardPreviewSkill {
+        SkillPackageExplorerView(
+          skill: preview,
+          onReveal: {},
+          onUninstall: {},
+          showsHeader: false,
+          showsActions: false
+        )
+        .id(preview.id)
+        .frame(minHeight: 220, maxHeight: 320)
+      }
 
       if let error = vm.createErrorMessage {
         Text(error)
@@ -585,10 +661,27 @@ private struct SkillCreateSheet: View {
         Spacer()
         Button("Create") { vm.createSkill() }
           .buttonStyle(.borderedProminent)
-          .disabled(vm.newSkillName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          .disabled(
+            vm.pendingWizardDraft == nil
+              || vm.newSkillName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+          )
       }
     }
     .padding(16)
     .frame(minWidth: 480, minHeight: 280)
+    .onChange(of: vm.newSkillName) { _ in
+      if vm.pendingWizardDraft != nil {
+        vm.refreshWizardPreview()
+      }
+    }
+    .onChange(of: vm.newSkillDescription) { _ in
+      if vm.pendingWizardDraft != nil {
+        vm.refreshWizardPreview()
+      }
+    }
+  }
+
+  private func applyDraft(_ draft: SkillWizardDraft) {
+    vm.applyWizardDraft(draft)
   }
 }
