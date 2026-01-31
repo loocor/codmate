@@ -13,6 +13,7 @@ struct CommandsSettingsView: View {
     }
     .sheet(isPresented: $vm.showAddSheet) {
       CommandEditSheet(
+        preferences: preferences,
         command: nil,
         onSave: { command in
           Task {
@@ -38,6 +39,7 @@ struct CommandsSettingsView: View {
     }
     .sheet(item: $vm.editingCommand) { command in
       CommandEditSheet(
+        preferences: preferences,
         command: command,
         onSave: { updated in
           Task {
@@ -423,6 +425,7 @@ struct CommandDetailExplorerView: View {
 
 // MARK: - Command Edit Sheet
 struct CommandEditSheet: View {
+  @ObservedObject var preferences: SessionPreferencesStore
   let command: CommandRecord?
   let onSave: (CommandRecord) -> Void
   let onCancel: () -> Void
@@ -439,8 +442,28 @@ struct CommandEditSheet: View {
   @State private var claudeEnabled = true
   @State private var geminiEnabled = false
   @State private var selectedTab: Int = 0
+  @State private var wizardActive: Bool = false
+  @State private var didHydrate: Bool = false
+  @FocusState private var focusedField: FocusField?
+
+  private enum FocusField {
+    case name
+  }
 
   var body: some View {
+    if wizardActive {
+      CommandWizardSheet(preferences: preferences, onApply: { draft in
+        applyDraft(draft)
+        wizardActive = false
+      }, onCancel: {
+        wizardActive = false
+      })
+    } else {
+      formBody
+    }
+  }
+
+  @ViewBuilder private var formBody: some View {
     VStack(alignment: .leading, spacing: 12) {
       // Header (title only)
       HStack(alignment: .firstTextBaseline) {
@@ -448,6 +471,13 @@ struct CommandEditSheet: View {
           .font(.title3)
           .fontWeight(.semibold)
         Spacer()
+        Button {
+          wizardActive = true
+        } label: {
+          Image(systemName: "sparkles")
+        }
+        .buttonStyle(.borderless)
+        .help("AI Wizard")
       }
 
       // Tabs
@@ -474,18 +504,15 @@ struct CommandEditSheet: View {
       // Bottom buttons
       HStack {
         Spacer()
-        Button("Cancel") {
-          onCancel()
-        }
-        Button(command == nil ? "Create" : "Save") {
-          saveCommand()
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(name.isEmpty || description.isEmpty || prompt.isEmpty)
+        Button("Cancel") { onCancel() }
+        Button(command == nil ? "Create" : "Save") { saveCommand() }
+          .buttonStyle(.borderedProminent)
+          .disabled(name.isEmpty || description.isEmpty || prompt.isEmpty)
       }
     }
     .padding(16)
     .onAppear {
+      if didHydrate { return }
       if let cmd = command {
         id = cmd.id
         name = cmd.name
@@ -499,6 +526,27 @@ struct CommandEditSheet: View {
         claudeEnabled = cmd.targets.claude
         geminiEnabled = cmd.targets.gemini
       }
+      didHydrate = true
+      if command == nil {
+        DispatchQueue.main.async {
+          focusedField = .name
+        }
+      }
+    }
+  }
+
+  private func applyDraft(_ draft: CommandWizardDraft) {
+    name = draft.name
+    description = draft.description
+    prompt = draft.prompt
+    argumentHint = draft.argumentHint ?? ""
+    model = draft.model ?? ""
+    allowedTools = (draft.allowedTools ?? []).joined(separator: ", ")
+    tags = draft.tags.joined(separator: ", ")
+    if let targets = draft.targets {
+      codexEnabled = targets.codex
+      claudeEnabled = targets.claude
+      geminiEnabled = targets.gemini
     }
   }
 
@@ -507,6 +555,7 @@ struct CommandEditSheet: View {
       GridRow {
         Text("Name").font(.subheadline).fontWeight(.medium)
         TextField("command-name", text: $name)
+          .focused($focusedField, equals: .name)
           .frame(maxWidth: .infinity, alignment: .trailing)
       }
       GridRow {
