@@ -1,0 +1,125 @@
+{
+  "type": "object",
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": [
+        "question",
+        "draft"
+      ]
+    },
+    "questions": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "draft": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "argumentHint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "allowedTools": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "targets": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "codex": {
+              "type": "boolean"
+            },
+            "claude": {
+              "type": "boolean"
+            },
+            "gemini": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "codex",
+            "claude",
+            "gemini"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "prompt",
+        "tags",
+        "argumentHint",
+        "model",
+        "allowedTools",
+        "targets"
+      ],
+      "additionalProperties": false
+    },
+    "warnings": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "mode",
+    "questions",
+    "draft",
+    "warnings",
+    "notes"
+  ],
+  "additionalProperties": false
+}

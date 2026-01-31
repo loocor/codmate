@@ -1,0 +1,140 @@
+{
+  "type": "object",
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": [
+        "question",
+        "draft"
+      ]
+    },
+    "questions": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "draft": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "overview": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "examples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "user": {
+                "type": "string"
+              },
+              "assistant": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "user",
+              "assistant"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "targets": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "codex": {
+              "type": "boolean"
+            },
+            "claude": {
+              "type": "boolean"
+            },
+            "gemini": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "codex",
+            "claude",
+            "gemini"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "tags",
+        "overview",
+        "instructions",
+        "examples",
+        "notes",
+        "summary",
+        "targets"
+      ],
+      "additionalProperties": false
+    },
+    "warnings": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "mode",
+    "questions",
+    "draft",
+    "warnings"
+  ],
+  "additionalProperties": false
+}

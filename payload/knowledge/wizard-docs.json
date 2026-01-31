@@ -1,0 +1,43 @@
+{
+  "sources": [
+    {
+      "feature": "skills",
+      "provider": "codex",
+      "url": "https://developers.openai.com/codex/app-server#skills",
+      "maxChars": 3000,
+      "cacheTTLHours": 168
+    },
+    {
+      "feature": "skills",
+      "provider": "claude",
+      "url": "https://code.claude.com/docs/en/skills",
+      "maxChars": 3000,
+      "cacheTTLHours": 168
+    },
+    {
+      "feature": "skills",
+      "provider": "gemini",
+      "url": "https://geminicli.com/docs/cli/skills/",
+      "maxChars": 3000,
+      "cacheTTLHours": 168
+    },
+    {
+      "feature": "mcp",
+      "url": "https://modelcontextprotocol.io/registry/about",
+      "maxChars": 3000,
+      "cacheTTLHours": 72
+    },
+    {
+      "feature": "mcp",
+      "url": "https://registry.modelcontextprotocol.io/",
+      "maxChars": 3000,
+      "cacheTTLHours": 24
+    },
+    {
+      "feature": "mcp",
+      "url": "https://mcp.so/",
+      "maxChars": 3000,
+      "cacheTTLHours": 24
+    }
+  ]
+}

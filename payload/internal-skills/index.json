@@ -1,0 +1,192 @@
+{
+  "skills": [
+    {
+      "id": "hooks-wizard",
+      "feature": "hooks",
+      "title": "Hooks Wizard",
+      "description": "Generate CodMate hook drafts from requirements.",
+      "version": "1.0",
+      "invocations": [
+        {
+          "provider": "codex",
+          "args": [
+            "exec",
+            "--output-schema",
+            "{{schemaFile}}",
+            "--output-last-message",
+            "{{outputFile}}",
+            "--color",
+            "never",
+            "--skip-git-repo-check",
+            "-"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "file",
+          "timeoutSeconds": 45
+        },
+        {
+          "provider": "claude",
+          "args": [
+            "-p",
+            "--output-format",
+            "text"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "stdout",
+          "timeoutSeconds": 45
+        },
+        {
+          "provider": "gemini",
+          "args": [
+            "--output-format",
+            "text"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "stdout",
+          "timeoutSeconds": 45
+        }
+      ]
+    },
+    {
+      "id": "commands-wizard",
+      "feature": "commands",
+      "title": "Commands Wizard",
+      "description": "Generate slash command drafts from requirements.",
+      "version": "1.0",
+      "invocations": [
+        {
+          "provider": "codex",
+          "args": [
+            "exec",
+            "--output-schema",
+            "{{schemaFile}}",
+            "--output-last-message",
+            "{{outputFile}}",
+            "--color",
+            "never",
+            "--skip-git-repo-check",
+            "-"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "file",
+          "timeoutSeconds": 45
+        },
+        {
+          "provider": "claude",
+          "args": [
+            "-p",
+            "--output-format",
+            "text"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "stdout",
+          "timeoutSeconds": 45
+        },
+        {
+          "provider": "gemini",
+          "args": [
+            "--output-format",
+            "text"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "stdout",
+          "timeoutSeconds": 45
+        }
+      ]
+    },
+    {
+      "id": "mcp-wizard",
+      "feature": "mcp",
+      "title": "MCP Wizard",
+      "description": "Generate MCP server drafts from requirements.",
+      "version": "1.0",
+      "invocations": [
+        {
+          "provider": "codex",
+          "args": [
+            "exec",
+            "--output-schema",
+            "{{schemaFile}}",
+            "--output-last-message",
+            "{{outputFile}}",
+            "--color",
+            "never",
+            "--skip-git-repo-check",
+            "-"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "file",
+          "timeoutSeconds": 45
+        },
+        {
+          "provider": "claude",
+          "args": [
+            "-p",
+            "--output-format",
+            "text"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "stdout",
+          "timeoutSeconds": 45
+        },
+        {
+          "provider": "gemini",
+          "args": [
+            "--output-format",
+            "text"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "stdout",
+          "timeoutSeconds": 45
+        }
+      ]
+    },
+    {
+      "id": "skills-wizard",
+      "feature": "skills",
+      "title": "Skills Wizard",
+      "description": "Generate CodMate skill drafts from requirements.",
+      "version": "1.0",
+      "invocations": [
+        {
+          "provider": "codex",
+          "args": [
+            "exec",
+            "--output-schema",
+            "{{schemaFile}}",
+            "--output-last-message",
+            "{{outputFile}}",
+            "--color",
+            "never",
+            "--skip-git-repo-check",
+            "-"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "file",
+          "timeoutSeconds": 45
+        },
+        {
+          "provider": "claude",
+          "args": [
+            "-p",
+            "--output-format",
+            "text"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "stdout",
+          "timeoutSeconds": 45
+        },
+        {
+          "provider": "gemini",
+          "args": [
+            "--output-format",
+            "text"
+          ],
+          "inputMode": "stdin",
+          "outputMode": "stdout",
+          "timeoutSeconds": 45
+        }
+      ]
+    }
+  ]
+}

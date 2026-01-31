@@ -44,6 +44,10 @@ final class SessionPreferencesStore: ObservableObject {
     didSet { persistCLIEnablement() }
   }
 
+  @Published var wizardPreferredProvider: String {
+    didSet { defaults.set(wizardPreferredProvider, forKey: Keys.wizardPreferredProvider) }
+  }
+
   @Published var sessionPathConfigs: [SessionPathConfig] {
     didSet { persistSessionPaths() }
   }
@@ -60,6 +64,7 @@ final class SessionPreferencesStore: ObservableObject {
     static let cliCodexEnabled = "codmate.cli.codex.enabled"
     static let cliClaudeEnabled = "codmate.cli.claude.enabled"
     static let cliGeminiEnabled = "codmate.cli.gemini.enabled"
+    static let wizardPreferredProvider = "codmate.wizard.preferredProvider"
     static let resumeUseEmbedded = "codex.resume.useEmbedded"
     static let resumeCopyClipboard = "codex.resume.copyClipboard"
     static let resumeExternalApp = "codex.resume.externalApp"
@@ -182,6 +187,7 @@ final class SessionPreferencesStore: ObservableObject {
     let storedCodexCommandPath = defaults.string(forKey: Keys.codexCommandPath) ?? ""
     let storedClaudeCommandPath = defaults.string(forKey: Keys.claudeCommandPath) ?? ""
     let storedGeminiCommandPath = defaults.string(forKey: Keys.geminiCommandPath) ?? ""
+    let storedWizardProvider = defaults.string(forKey: Keys.wizardPreferredProvider) ?? ""
 
     var storedCodexEnabled = defaults.object(forKey: Keys.cliCodexEnabled) as? Bool ?? true
     let storedClaudeEnabled = defaults.object(forKey: Keys.cliClaudeEnabled) as? Bool ?? true
@@ -201,6 +207,7 @@ final class SessionPreferencesStore: ObservableObject {
     self.cliCodexEnabled = storedCodexEnabled
     self.cliClaudeEnabled = storedClaudeEnabled
     self.cliGeminiEnabled = storedGeminiEnabled
+    self.wizardPreferredProvider = storedWizardProvider
     
     // Load session path configs (with migration)
     let loadedConfigs = Self.loadSessionPathConfigs(
@@ -965,7 +972,7 @@ final class SessionPreferencesStore: ObservableObject {
     if let data = defaults.data(forKey: Keys.sessionPathConfigs),
        let configs = try? JSONDecoder().decode([SessionPathConfig].self, from: data),
        !configs.isEmpty {
-      return configs
+      return applyInternalWizardIgnore(to: configs, homeURL: homeURL)
     }
     
     // Migration: generate default configs
@@ -979,7 +986,7 @@ final class SessionPreferencesStore: ObservableObject {
       .appendingPathComponent("tmp", isDirectory: true)
       .path
     
-    return [
+    let defaults: [SessionPathConfig] = [
       SessionPathConfig(
         kind: .codex,
         path: codexPath,
@@ -999,6 +1006,22 @@ final class SessionPreferencesStore: ObservableObject {
         displayName: "Gemini"
       )
     ]
+    return applyInternalWizardIgnore(to: defaults, homeURL: homeURL)
+  }
+
+  private static func applyInternalWizardIgnore(
+    to configs: [SessionPathConfig],
+    homeURL: URL
+  ) -> [SessionPathConfig] {
+    let ignored = InternalWizardPaths.ignoredSubpaths(home: homeURL)
+    guard !ignored.isEmpty else { return configs }
+    return configs.map { config in
+      var updated = config
+      for path in ignored where !updated.ignoredSubpaths.contains(path) {
+        updated.ignoredSubpaths.append(path)
+      }
+      return updated
+    }
   }
   
   /// Get enabled session paths for a specific kind

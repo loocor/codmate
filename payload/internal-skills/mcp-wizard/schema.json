@@ -1,0 +1,172 @@
+{
+  "type": "object",
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": [
+        "question",
+        "draft"
+      ]
+    },
+    "questions": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "draft": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "stdio",
+            "sse",
+            "streamable_http"
+          ]
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "args": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "headers": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "codex": {
+              "type": "boolean"
+            },
+            "claude": {
+              "type": "boolean"
+            },
+            "gemini": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "codex",
+            "claude",
+            "gemini"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "command",
+        "args",
+        "env",
+        "url",
+        "headers",
+        "description",
+        "targets"
+      ],
+      "additionalProperties": false
+    },
+    "warnings": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "mode",
+    "questions",
+    "draft",
+    "warnings",
+    "notes"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,163 @@
+{
+  "type": "object",
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": [
+        "question",
+        "draft"
+      ]
+    },
+    "questions": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "draft": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event": {
+          "type": "string"
+        },
+        "matcher": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "codex": {
+              "type": "boolean"
+            },
+            "claude": {
+              "type": "boolean"
+            },
+            "gemini": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "codex",
+            "claude",
+            "gemini"
+          ]
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "args": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "value"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "timeoutMs": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "command",
+              "args",
+              "env",
+              "timeoutMs"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "event",
+        "commands",
+        "name",
+        "description",
+        "matcher",
+        "targets"
+      ],
+      "additionalProperties": false
+    },
+    "warnings": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "notes": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "mode",
+    "questions",
+    "draft",
+    "warnings",
+    "notes"
+  ],
+  "additionalProperties": false
+}
