@@ -247,6 +247,14 @@ if [[ -d "$ROOT_DIR/payload/prompts" ]]; then
   mkdir -p "$RESOURCES_DIR/payload"
   cp -R "$ROOT_DIR/payload/prompts" "$RESOURCES_DIR/payload/prompts"
 fi
+if [[ -d "$ROOT_DIR/payload/internal-skills" ]]; then
+  mkdir -p "$RESOURCES_DIR/payload"
+  cp -R "$ROOT_DIR/payload/internal-skills" "$RESOURCES_DIR/payload/internal-skills"
+fi
+if [[ -d "$ROOT_DIR/payload/knowledge" ]]; then
+  mkdir -p "$RESOURCES_DIR/payload"
+  cp -R "$ROOT_DIR/payload/knowledge" "$RESOURCES_DIR/payload/knowledge"
+fi
 if [[ -f "$ROOT_DIR/PrivacyInfo.xcprivacy" ]]; then
   cp -f "$ROOT_DIR/PrivacyInfo.xcprivacy" "$RESOURCES_DIR/PrivacyInfo.xcprivacy"
 fi
