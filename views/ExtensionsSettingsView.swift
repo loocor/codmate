@@ -4,6 +4,8 @@ struct ExtensionsSettingsView: View {
     @Binding var selectedTab: ExtensionsSettingsTab
     @ObservedObject var preferences: SessionPreferencesStore
     var openMCPMateDownload: () -> Void
+    @EnvironmentObject private var wizardGuard: WizardGuard
+    @State private var lastStableTab: ExtensionsSettingsTab = .commands
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -57,6 +59,16 @@ struct ExtensionsSettingsView: View {
                 }
             }
             .padding(.bottom, 16)
+        }
+        .onAppear { lastStableTab = selectedTab }
+        .onChange(of: selectedTab) { newValue in
+          if wizardGuard.isActive {
+            if newValue != lastStableTab {
+              selectedTab = lastStableTab
+            }
+          } else {
+            lastStableTab = newValue
+          }
         }
     }
 

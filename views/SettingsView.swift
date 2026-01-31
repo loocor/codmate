@@ -11,11 +11,13 @@ struct SettingsView: View {
   @StateObject private var geminiVM = GeminiVM()
   @StateObject private var claudeVM = ClaudeCodeVM()
   @StateObject private var updateViewModel = UpdateViewModel()
+  @StateObject private var wizardGuard = WizardGuard()
   @EnvironmentObject private var viewModel: SessionListViewModel
   @ObservedObject private var permissionsManager = SandboxPermissionsManager.shared
   @State private var availableRemoteHosts: [SSHHost] = []
   @State private var isRequestingSSHAccess = false
   @State private var availableThemes: [String] = []
+  @State private var lastStableCategory: SettingCategory
 
   init(
     preferences: SessionPreferencesStore, selection: Binding<SettingCategory>,
@@ -24,6 +26,7 @@ struct SettingsView: View {
     self._preferences = ObservedObject(wrappedValue: preferences)
     self._selectedCategory = selection
     self._selectedExtensionsTab = extensionsTab
+    self._lastStableCategory = State(initialValue: selection.wrappedValue)
   }
 
   var body: some View {
@@ -78,6 +81,7 @@ struct SettingsView: View {
         .controlSize(.small)
         .environment(\.defaultMinListRowHeight, 18)
         .navigationSplitViewColumnWidth(min: 240, ideal: 260, max: 300)
+        .disabled(wizardGuard.isActive)
       } detail: {
         selectedCategoryView
           .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -88,6 +92,16 @@ struct SettingsView: View {
       .codmateToolbarRemovingSidebarToggleIfAvailable()
     }
     .frame(minWidth: 900, minHeight: 520)
+    .environmentObject(wizardGuard)
+    .onChange(of: selectedCategory) { newValue in
+      if wizardGuard.isActive {
+        if newValue != lastStableCategory {
+          selectedCategory = lastStableCategory
+        }
+      } else {
+        lastStableCategory = newValue
+      }
+    }
   }
 
   private final class SettingsWindowDelegate: NSObject, NSWindowDelegate {
