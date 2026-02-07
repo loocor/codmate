@@ -29,5 +29,8 @@ dist/
 .codex/
 .gemini/
 
+# Sisyphus (agent) workspace
+.sisyphus/
+
 # Local build artifacts
 libghostty.a

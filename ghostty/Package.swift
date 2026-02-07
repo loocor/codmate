@@ -1,6 +1,11 @@
 // swift-tools-version: 6.0
 
 import PackageDescription
+import Foundation
+
+let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+let vendorLibDirDefault = packageDir.appendingPathComponent("Vendor/lib").path
+let vendorLibDir = ProcessInfo.processInfo.environment["GHOSTTY_VENDOR_LIB"] ?? vendorLibDirDefault
 
 let package = Package(
     name: "ghostty",
@@ -30,7 +35,7 @@ let package = Package(
             linkerSettings: [
                 .linkedLibrary("ghostty"),
                 .unsafeFlags([
-                    "-L", "/Volumes/External/GitHub/CodMate/ghostty/Vendor/lib",
+                    "-L", vendorLibDir,
                     "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
                     // Enable dead code stripping to remove unused symbols from static library
                     "-Xlinker", "-dead_strip",

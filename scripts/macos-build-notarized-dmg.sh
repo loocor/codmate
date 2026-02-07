@@ -16,6 +16,7 @@ set -euo pipefail
 #   OUTPUT_DIR=artifacts
 #   SIGNING_CERT="Developer ID Application"
 #   SANDBOX=on|off (default: off)
+#   SKIP_NOTARIZATION=1
 #   APPLE_NOTARY_PROFILE="AC_PROFILE"
 #   APPLE_ID / APPLE_PASSWORD / TEAM_ID
 
@@ -83,10 +84,11 @@ if [[ -z "$SIGNING_CERT" ]]; then
   SIGNING_CERT="Developer ID Application"
 fi
 
+CODESIGN_IDENTITY=""
 if security find-identity -v -p codesigning | grep -q "$SIGNING_CERT"; then
   CODESIGN_IDENTITY="$(security find-identity -v -p codesigning | grep "$SIGNING_CERT" | head -1 | sed 's/.*"\(.*\)".*/\1/')"
 else
-  CODESIGN_IDENTITY="$SIGNING_CERT"
+  echo "[warn] Signing identity not found ($SIGNING_CERT). Falling back to ad-hoc signature."
 fi
 
 unset ENTITLEMENTS_ARG
@@ -94,11 +96,31 @@ if [[ "$SANDBOX" == "on" ]]; then
   ENTITLEMENTS_ARG=(--entitlements "$ENTITLEMENTS_PATH")
 fi
 
-NOTARY_MODE="none"
-if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
-  NOTARY_MODE="profile"
-elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "$TEAM_ID" ]]; then
-  NOTARY_MODE="apple"
+NOTARY_MODE="${NOTARY_MODE:-auto}"
+if [[ "${SKIP_NOTARIZATION:-}" == "1" || "$NOTARY_MODE" == "none" ]]; then
+  NOTARY_MODE="none"
+elif [[ "$NOTARY_MODE" == "profile" ]]; then
+  if [[ -z "${APPLE_NOTARY_PROFILE:-}" ]]; then
+    echo "[error] NOTARY_MODE=profile requires APPLE_NOTARY_PROFILE" >&2
+    exit 1
+  fi
+elif [[ "$NOTARY_MODE" == "apple" ]]; then
+  if [[ -z "${APPLE_ID:-}" || -z "${APPLE_PASSWORD:-}" || -z "$TEAM_ID" ]]; then
+    echo "[error] NOTARY_MODE=apple requires APPLE_ID, APPLE_PASSWORD, and TEAM_ID" >&2
+    exit 1
+  fi
+else
+  NOTARY_MODE="none"
+  if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
+    NOTARY_MODE="profile"
+  elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "$TEAM_ID" ]]; then
+    NOTARY_MODE="apple"
+  fi
+fi
+
+if [[ "$NOTARY_MODE" != "none" && -z "$CODESIGN_IDENTITY" ]]; then
+  echo "[warn] Notarization requires a Developer ID signing identity. Disabling notarization." >&2
+  NOTARY_MODE="none"
 fi
 
 echo "=========================================="
