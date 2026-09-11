@@ -34,6 +34,8 @@ enum ProviderIconResource {
       name: "OpenRouterIcon", requiresDarkModeInversion: true,
       aliases: ["openrouter", "open-router"]),
     IconMetadata(
+      name: "RequestyIcon", requiresDarkModeInversion: true, aliases: ["requesty"]),
+    IconMetadata(
       name: "ZaiIcon", requiresDarkModeInversion: true, aliases: ["zai", "z.ai", "glm"]),
     IconMetadata(
       name: "KimiIcon", requiresDarkModeInversion: true, aliases: ["kimi", "k2", "moonshot"]),
@@ -82,6 +84,8 @@ enum ProviderIconResource {
         return "MiniMaxIcon"
       } else if baseURL.contains("openrouter.ai") {
         return "OpenRouterIcon"
+      } else if baseURL.contains("requesty.ai") {
+        return "RequestyIcon"
       } else if baseURL.contains("zai.com") || baseURL.contains("z.ai")
         || baseURL.contains("bigmodel.cn")
       {

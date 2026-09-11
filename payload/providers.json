@@ -49,6 +49,49 @@
       }
     },
     {
+      "id" : "requesty",
+      "name" : "Requesty",
+      "class" : "openai-compatible",
+      "managedByCodMate" : true,
+      "envKey" : "REQUESTY_API_KEY",
+      "keyURL" : "https://app.requesty.ai/api-keys",
+      "docsURL" : "https://docs.requesty.ai",
+      "connectors" : {
+        "codex" : {
+          "baseURL" : "https://router.requesty.ai/v1",
+          "wireAPI" : "chat",
+          "envHttpHeaders" : {
+            "HTTP-Referer" : "REQUESTY_REFERRER",
+            "X-Title" : "REQUESTY_TITLE"
+          }
+        },
+        "claudeCode" : {
+          "baseURL" : "https://router.requesty.ai",
+          "modelAliases" : {
+            "default" : "anthropic/claude-sonnet-4-5"
+          },
+          "envHttpHeaders" : {
+            "x-api-key" : "REQUESTY_API_KEY",
+            "HTTP-Referer" : "REQUESTY_REFERRER",
+            "X-Title" : "REQUESTY_TITLE"
+          }
+        }
+      },
+      "catalog" : {
+        "models" : [
+          { "vendorModelId" : "openai/gpt-4o-mini", "caps" : { "reasoning": false, "tool_use": true, "long_context": true, "vision": true } },
+          { "vendorModelId" : "anthropic/claude-sonnet-4-5", "caps" : { "reasoning": true, "tool_use": true, "long_context": true, "vision": true } },
+          { "vendorModelId" : "google/gemini-2.5-flash", "caps" : { "reasoning": true, "tool_use": true, "long_context": true, "vision": true } }
+        ]
+      },
+      "recommended" : { 
+        "defaultModelFor" : { 
+          "codex" : "openai/gpt-4o-mini",
+          "claudeCode" : "anthropic/claude-sonnet-4-5"
+        } 
+      }
+    },
+    {
       "id" : "openai",
       "name" : "OpenAI",
       "class" : "openai-compatible",

@@ -83,7 +83,7 @@ Coding Guidelines
 - Testability: keep parsers and small helpers pure; avoid `Process()`/AppKit in ViewModel.
 - Provider Icon Theme Handling:
   - Use `ProviderIconThemeHelper` (in `utils/ProviderIconThemeHelper.swift`) for consistent dark/light mode icon adaptation.
-  - Icons that are black or dark-colored (ChatGPTIcon/Codex, KimiIcon, ZaiIcon, OpenRouterIcon) must be inverted in dark mode for visibility.
+  - Icons that are black or dark-colored (ChatGPTIcon/Codex, KimiIcon, ZaiIcon, OpenRouterIcon, RequestyIcon) must be inverted in dark mode for visibility.
   - For SwiftUI views: use `.providerIconTheme(iconName:)` modifier or `ProviderIconDarkModeModifier` directly.
   - For AppKit menus: use `ProviderIconThemeHelper.menuImage(named:)` which automatically handles resizing and dark mode inversion.
   - Do NOT manually check dark mode and invert icons; always use the helper to ensure consistency across the app.
