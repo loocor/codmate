@@ -1384,7 +1384,7 @@ private struct ProviderEditorSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 12) {
                 // Icon picker (only for user-created providers, not bundled/preset providers)
-                // Bundled providers (Anthropic, DeepSeek, GLM, K2, MiniMax, OpenAI, OpenRouter, Requesty) use preset brand icons
+                // Bundled providers (Anthropic, DeepSeek, GLM, K2, MiniMax, OpenAI, OpenRouter, Requesty) use preset icons
                 if vm.isNewProvider
                     || (!vm.isEditingBundledProvider()
                         && vm.editingProviderBinding()?.managedByCodMate == true)
